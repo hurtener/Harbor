@@ -33,6 +33,17 @@ type catalog struct {
 	// search index. nil means Search returns empty (honest "discovery
 	// unavailable"). Set via WithSearchCache option at construction.
 	searchCache ToolSearchCache
+	// searchMu serializes search-index reconciliation. Each reconcile reads
+	// the CURRENT catalog state for the touched names and applies it, so
+	// serialized reconciles converge the index on the latest catalog state
+	// regardless of the order concurrent mutations finish in.
+	searchMu sync.Mutex
+	// searchDirty holds names whose last index write failed (guarded by
+	// searchMu, bounded by maxSearchDirty). They are retried on the next
+	// reconcile or Search; searchDirtyN mirrors its size for a lock-free
+	// check on the Search path.
+	searchDirty  map[string]struct{}
+	searchDirtyN atomic.Int64
 
 	// bus is the optional canonical event bus. When set, Register wraps
 	// every registered descriptor's Invoke in the ONE universal
@@ -48,9 +59,21 @@ type catalog struct {
 // ToolSearchCache is the tool search index surface the catalog
 // delegates to. Defined here to avoid import cycles between
 // internal/tools and internal/tools/drivers/searchcache.
+//
+// The catalog is the index's only writer and keeps it a mirror of the
+// current catalog: every registration, replacement, source publication,
+// rollback and deregistration reconciles the touched names (upsert when
+// present, Remove when absent), so no row outlives its tool.
 type ToolSearchCache interface {
-	Search(ctx context.Context, query string, tags []string, limit int) ([]Tool, error)
+	// Search returns up to req.Limit rows admitted by req.Visible, ordered
+	// by relevance. Visibility is applied before the limit. Returned rows
+	// carry Name and Tags only; callers materialize everything else from
+	// their own authoritative view.
+	Search(ctx context.Context, req ToolSearchRequest) ([]Tool, error)
+	// Sync upserts the given tools.
 	Sync(ctx context.Context, tools []Tool) error
+	// Remove deletes the named rows; absent names are ignored.
+	Remove(ctx context.Context, names []string) error
 	Close() error
 }
 
@@ -136,24 +159,124 @@ func (c *catalog) Register(d ToolDescriptor) error {
 	c.byName[d.Tool.Name] = d
 	c.sourceGenerations[d.Tool.Source]++
 	c.generation.Add(1)
-	sc := c.searchCache
 	c.mu.Unlock()
 
-	// propagate registration to the SearchCache
-	// (AC-9 sync hook). Use Background ctx with a brief timeout so
-	// registration latency on the FTS5 path stays bounded; an error
-	// here is logged at warn (the registration itself succeeded; a
-	// missing cache row only degrades discovery, not dispatch).
-	if sc != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := sc.Sync(ctx, []Tool{d.Tool}); err != nil {
-			slog.Warn("tools/catalog: searchCache.Sync failed",
-				slog.String("tool", d.Tool.Name),
-				slog.String("err", err.Error()))
+	// Propagate registration to the SearchCache (AC-9 sync hook). An index
+	// failure is logged at warn: the registration itself succeeded and a
+	// missing row only degrades ranked discovery, never dispatch.
+	c.reconcileSearch("register", []string{d.Tool.Name})
+	return nil
+}
+
+// maxSearchDirty bounds the retry set of names whose index write failed.
+// Beyond it a failure is only logged: the index is an accelerator, and
+// tool_search merges an in-memory pass over the run's own view whenever the
+// index returns fewer than the requested results.
+const maxSearchDirty = 4096
+
+// reconcileSearch brings the search index in line with the CURRENT catalog
+// state for names (plus any earlier failed names): a present name is
+// upserted with its current Tool, an absent name is removed. Runs outside
+// c.mu (index I/O never blocks Resolve/List) and under searchMu, so
+// concurrent reconciles cannot apply an older snapshot after a newer one.
+// Bounded by a short timeout; a failed write marks its names dirty for
+// retry rather than leaving a silent gap.
+func (c *catalog) reconcileSearch(op string, names []string) {
+	if c.searchCache == nil || (len(names) == 0 && c.searchDirtyN.Load() == 0) {
+		return
+	}
+	c.searchMu.Lock()
+	defer c.searchMu.Unlock()
+	c.reconcileSearchLocked(context.Background(), op, names)
+}
+
+// retrySearchDirty retries failed index writes without waiting for another
+// reconcile (a Search that finds one in progress simply proceeds). The
+// retry is bounded by the caller's ctx, so a cancelled or short-deadline
+// search is never held by index I/O; names a cancelled retry could not
+// write stay dirty.
+func (c *catalog) retrySearchDirty(ctx context.Context) {
+	if c.searchCache == nil || c.searchDirtyN.Load() == 0 || ctx.Err() != nil || !c.searchMu.TryLock() {
+		return
+	}
+	defer c.searchMu.Unlock()
+	c.reconcileSearchLocked(ctx, "retry", nil)
+}
+
+// reconcileSearchLocked does the work under parent (additionally bounded by
+// a short timeout); caller holds searchMu.
+func (c *catalog) reconcileSearchLocked(parent context.Context, op string, names []string) {
+	sc := c.searchCache
+	if len(c.searchDirty) > 0 {
+		for name := range c.searchDirty {
+			names = append(names, name)
+		}
+		c.searchDirty = nil
+		c.searchDirtyN.Store(0)
+	}
+	if len(names) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(names))
+	upserts := make([]Tool, 0, len(names))
+	var removals []string
+	c.mu.RLock()
+	for _, name := range names {
+		if _, dup := seen[name]; dup || name == "" {
+			continue
+		}
+		seen[name] = struct{}{}
+		if d, ok := c.byName[name]; ok {
+			upserts = append(upserts, d.Tool)
+		} else {
+			removals = append(removals, name)
 		}
 	}
-	return nil
+	c.mu.RUnlock()
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	if len(removals) > 0 {
+		if err := sc.Remove(ctx, removals); err != nil {
+			slog.Warn("tools/catalog: searchCache.Remove failed; will retry",
+				slog.String("op", op), slog.Int("names", len(removals)), slog.String("err", err.Error()))
+			c.markSearchDirty(removals)
+		}
+	}
+	if len(upserts) > 0 {
+		if err := sc.Sync(ctx, upserts); err != nil {
+			slog.Warn("tools/catalog: searchCache.Sync failed; will retry",
+				slog.String("op", op), slog.Int("names", len(upserts)), slog.String("err", err.Error()))
+			dirty := make([]string, 0, len(upserts))
+			for _, t := range upserts {
+				dirty = append(dirty, t.Name)
+			}
+			c.markSearchDirty(dirty)
+		}
+	}
+}
+
+// markSearchDirty records names for retry, up to maxSearchDirty. Caller
+// holds searchMu.
+func (c *catalog) markSearchDirty(names []string) {
+	if c.searchDirty == nil {
+		c.searchDirty = make(map[string]struct{}, min(len(names), maxSearchDirty))
+	}
+	dropped := 0
+	for _, name := range names {
+		if _, ok := c.searchDirty[name]; ok {
+			continue
+		}
+		if len(c.searchDirty) >= maxSearchDirty {
+			dropped++
+			continue
+		}
+		c.searchDirty[name] = struct{}{}
+	}
+	c.searchDirtyN.Store(int64(len(c.searchDirty)))
+	if dropped > 0 {
+		slog.Warn("tools/catalog: search index retry set full; dropped names rely on the in-memory search fallback",
+			slog.Int("dropped", dropped))
+	}
 }
 
 // Epoch implements CatalogGenerationReporter.
@@ -211,6 +334,18 @@ func (c *catalog) List(filter CatalogFilter) []Tool {
 // names a tool not currently in the catalog. In that case NO
 // replacement happens — the failure is all-or-nothing.
 func (c *catalog) Replace(wrapped []ToolDescriptor) error {
+	if err := c.replaceLocked(wrapped); err != nil {
+		return err
+	}
+	names := make([]string, 0, len(wrapped))
+	for _, d := range wrapped {
+		names = append(names, d.Tool.Name)
+	}
+	c.reconcileSearch("replace", names)
+	return nil
+}
+
+func (c *catalog) replaceLocked(wrapped []ToolDescriptor) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Validate first; mutate second.
@@ -249,28 +384,27 @@ func (c *catalog) Replace(wrapped []ToolDescriptor) error {
 // This is the physical inverse of the boot-time per-source Register loop the
 // MCP attach path runs: detach-on-reconcile deregisters a no-longer-declared
 // MCP server's tools so the next run's projected catalog excludes them
-// (mcp.connection.removed / rollback-past-add). The optional SearchCache is
-// NOT pruned here (its interface carries no per-row delete); a removed tool
-// may linger in Search results until the index is rebuilt, but Resolve — the
-// dispatch gate — no longer finds it, so a stale Search hit cannot be
-// invoked. Deregistration is rare (a control-plane removal), so a full scan
-// under the write lock is cheaper than maintaining a source→names index on
-// every Register.
+// (mcp.connection.removed / rollback-past-add). The removed names are then
+// pruned from the optional SearchCache, so a detached source leaves no index
+// rows behind. Deregistration is rare (a control-plane removal), so a full
+// scan under the write lock is cheaper than maintaining a source→names index
+// on every Register.
 func (c *catalog) DeregisterSource(source ToolSourceID) int {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	var removed int
+	var removed []string
 	for name, d := range c.byName {
 		if d.Tool.Source == source {
 			delete(c.byName, name)
-			removed++
+			removed = append(removed, name)
 		}
 	}
-	if removed > 0 {
+	if len(removed) > 0 {
 		c.sourceGenerations[source]++
 		c.generation.Add(1)
 	}
-	return removed
+	c.mu.Unlock()
+	c.reconcileSearch("deregister_source", removed)
+	return len(removed)
 }
 
 // StageSource implements ToolCatalog. Validation and collision checks happen
@@ -345,30 +479,44 @@ func (s *catalogSourceSwap) Commit() {
 		return
 	}
 	s.done = true
-	replacements := append([]ToolDescriptor(nil), s.replacements...)
-	sc := s.catalog.searchCache
+	names := s.touchedNames()
 	s.mu.Unlock()
-	if sc == nil || len(replacements) == 0 {
-		return
+	// The prior set's names that the publication dropped are removed and the
+	// replacements upserted — reconciled against the CURRENT catalog, so a
+	// later publication of the same source is never overwritten.
+	s.catalog.reconcileSearch("source_publication", names)
+}
+
+// touchedNames is every name the swap may have changed: the prior set plus
+// the replacements. Caller holds s.mu.
+func (s *catalogSourceSwap) touchedNames() []string {
+	names := make([]string, 0, len(s.prior)+len(s.replacements))
+	for _, d := range s.prior {
+		names = append(names, d.Tool.Name)
 	}
-	views := make([]Tool, 0, len(replacements))
-	for _, d := range replacements {
-		views = append(views, d.Tool)
+	for _, d := range s.replacements {
+		names = append(names, d.Tool.Name)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := sc.Sync(ctx, views); err != nil {
-		slog.Warn("tools/catalog: searchCache.Sync failed after source publication",
-			slog.String("source", string(s.source)), slog.String("err", err.Error()))
-	}
+	return names
 }
 
 func (s *catalogSourceSwap) Rollback() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.done {
+		s.mu.Unlock()
 		return nil
 	}
+	if err := s.rollbackLocked(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	names := s.touchedNames()
+	s.mu.Unlock()
+	s.catalog.reconcileSearch("source_rollback", names)
+	return nil
+}
+
+func (s *catalogSourceSwap) rollbackLocked() error {
 	s.catalog.mu.Lock()
 	defer s.catalog.mu.Unlock()
 	if s.catalog.sourceGenerations[s.source] != s.generation {
@@ -388,27 +536,23 @@ func (s *catalogSourceSwap) Rollback() error {
 	return nil
 }
 
-// Search implements ToolCatalog. Delegates to
-// the attached SearchCache when present; returns an empty slice when
-// no cache is configured (honest "discovery unavailable" — no panic).
+// Search implements ToolCatalog. Delegates to the attached SearchCache when
+// present; returns an empty slice when no cache is configured (honest "index
+// unavailable" — no panic) or when req.Visible is nil (fail closed: the index
+// is process-wide and holds every principal's tools).
 //
-// A cache error logs at warn and returns an empty slice — the
-// signature can't propagate (planners pass through `RunContext.Catalog`,
-// which is also error-free by design). Operators watch
-// `tools.search_cache_error` log entries to detect cache health.
-func (c *catalog) Search(ctx context.Context, query string, tags []string, limit int) []Tool {
-	c.mu.RLock()
+// A cache error logs at warn and returns an empty slice — the signature
+// can't propagate. The query text is not logged (it is model-authored).
+func (c *catalog) Search(ctx context.Context, req ToolSearchRequest) []Tool {
 	sc := c.searchCache
-	c.mu.RUnlock()
-	if sc == nil {
+	if sc == nil || req.Visible == nil {
 		return nil
 	}
-	results, err := sc.Search(ctx, query, tags, limit)
+	c.retrySearchDirty(ctx)
+	results, err := sc.Search(ctx, req)
 	if err != nil {
 		slog.Warn("tools/catalog: search cache returned an error",
-			slog.String("query", query),
-			slog.Any("tags", tags),
-			slog.Int("limit", limit),
+			slog.Int("limit", req.Limit),
 			slog.String("err", err.Error()))
 		return nil
 	}

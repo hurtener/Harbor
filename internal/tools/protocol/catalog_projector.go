@@ -55,11 +55,6 @@ type CatalogProjector struct {
 	// session B's projection.
 	adminMu   sync.RWMutex
 	overrides map[string]prototypes.ToolApprovalPolicy
-	// loading is the optional agent-config loading-mode resolver
-	// `tools.describe` consults when the request names an agent_id. Nil ⇒
-	// describe always reports the boot-effective mode (byte-compatible with
-	// the surface before this projection existed).
-	loading LoadingResolver
 	// structural caches configuration inventories (structure only) keyed by
 	// principal and input stamp; see catalog_cache.go. afterStructuralBuild
 	// is a test-only hook run between a miss's build and its re-stamp.
@@ -92,9 +87,11 @@ type LogicalSourceResolver interface {
 	LogicalNameOfSource(tools.ToolSourceID) (string, bool)
 }
 
-// WithCatalogViewResolver wires the per-request effective catalog view. A nil
-// resolver is treated as not supplied, preserving the existing raw-catalog
-// behavior for embedders that have not assembled agent-config projection.
+// WithCatalogViewResolver wires the per-request effective catalog view. It is
+// required for any read: the process catalog holds every principal's tools,
+// so a projector without a resolver fails closed (ErrCatalogViewUnavailable)
+// rather than listing unscoped rows. A nil resolver is treated as not
+// supplied.
 func WithCatalogViewResolver(r CatalogViewResolver) CatalogProjectorOption {
 	return func(p *CatalogProjector) {
 		if r != nil {
@@ -110,34 +107,6 @@ func WithLogicalSourceResolver(r LogicalSourceResolver) CatalogProjectorOption {
 	return func(p *CatalogProjector) {
 		if r != nil {
 			p.logicalSources = r
-		}
-	}
-}
-
-// LoadingResolver is the optional per-agent effective-loading-mode backend
-// `tools.describe` consults when a request names an agent_id. The production
-// implementation composes the operator baseline and the acting user's
-// durable ConfigScopeUser choice. It is
-// `internal/runtime/agentcfg/projection.LoadingResolverAdapter`, wired at
-// the cmd/harbor + devstack boot boundary (the §4.4 seam keeps the
-// agent-config registry out of this package's import graph — the interface
-// is satisfied structurally). A nil resolver (WithLoadingResolver not
-// supplied) makes DescribeTool always report the boot-effective mode.
-type LoadingResolver interface {
-	// EffectiveLoading resolves the projected effective LoadingMode for
-	// tool t under agentID's operator and acting-user tool-exposure config,
-	// given boot as the fallback (the boot-effective mode already reflecting
-	// the driver default + boot config). Returns boot unchanged when there is
-	// no active revision, no tool-exposure section, or no relevant override.
-	EffectiveLoading(ctx context.Context, id identity.Identity, agentID string, t tools.Tool, boot tools.LoadingMode) (tools.LoadingMode, error)
-}
-
-// WithLoadingResolver wires the optional per-agent loading-mode resolver. A
-// nil resolver is treated as "WithLoadingResolver not supplied".
-func WithLoadingResolver(r LoadingResolver) CatalogProjectorOption {
-	return func(p *CatalogProjector) {
-		if r != nil {
-			p.loading = r
 		}
 	}
 }
@@ -420,8 +389,14 @@ func (p *CatalogProjector) catalogView(ctx context.Context, id identity.Identity
 		}
 		return view, nil
 	}
-	return tools.NewPlannerView(p.catalog, fullTripleFilter(id)), nil
+	// No resolver: fail closed. Listing the process catalog here would
+	// return every principal's tools.
+	return nil, ErrCatalogViewUnavailable
 }
+
+// ErrCatalogViewUnavailable is returned by every catalog read on a projector
+// assembled without a CatalogViewResolver.
+var ErrCatalogViewUnavailable = fmt.Errorf("%w: no CatalogViewResolver wired; refusing to list the unscoped process catalog", ErrMisconfigured)
 
 func effectiveAgentID(ctx context.Context) string {
 	agentID, _ := tools.EffectiveAgentConfigFrom(ctx)
@@ -443,11 +418,9 @@ func (p *CatalogProjector) GetTool(ctx context.Context, id identity.Identity, to
 	return p.projectRow(ctx, id, t), nil
 }
 
-// DescribeTool implements Projector.DescribeTool. agentID, when non-empty
-// and a LoadingResolver is wired (WithLoadingResolver), projects the
-// EFFECTIVE loading_mode through the agent's active tool-exposure config; an
-// empty agentID or no wired resolver reports the boot-effective mode,
-// byte-compatible with the surface before this projection existed.
+// DescribeTool implements Projector.DescribeTool. The tool is resolved
+// through the per-request CatalogViewResolver view for agentID, which
+// already carries the agent's EFFECTIVE loading mode.
 func (p *CatalogProjector) DescribeTool(ctx context.Context, id identity.Identity, toolID string, agentID string) (prototypes.ToolManifest, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.ToolManifest{}, err
@@ -468,13 +441,6 @@ func (p *CatalogProjector) describeDescriptor(ctx context.Context, id identity.I
 		examples = append(examples, ex.Description)
 	}
 	loading := loadingModeOf(t)
-	if p.view == nil && p.loading != nil && agentID != "" {
-		eff, err := p.loading.EffectiveLoading(ctx, id, agentID, t, tools.LoadingMode(loading))
-		if err != nil {
-			return prototypes.ToolManifest{}, err
-		}
-		loading = string(eff)
-	}
 	row := p.projectRow(ctx, id, t)
 	row.LoadingMode = loading
 	manifest := prototypes.ToolManifest{

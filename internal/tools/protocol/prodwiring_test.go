@@ -21,7 +21,7 @@ import (
 // proves a dropped WithAnnotator regresses to exactly this loud-reject, which
 // is why THAT test — not this one — is named by the projection contract.
 func TestCatalogProjector_AnnotatorUnwiredIsHonest(t *testing.T) {
-	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t))
+	proj, err := scopedTestProjector(newTestCatalog(t))
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestCatalogProjector_AnnotatorUnwiredIsHonest(t *testing.T) {
 func TestCatalogProjector_InMemoryOverride_IsSessionScoped(t *testing.T) {
 	// A BARE projector: no annotator wired, so SetApprovalPolicy records the
 	// in-memory fallback override (approvalPersists() == false).
-	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t))
+	proj, err := scopedTestProjector(newTestCatalog(t))
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)
 	}

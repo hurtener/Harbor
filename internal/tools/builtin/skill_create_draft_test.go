@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
@@ -118,7 +119,7 @@ func TestRegisterSkillCreateDraft_RegistersAndInvokes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := desc.Invoke(ctx, raw)
+	result, err := desc.Invoke(withRunView(ctx, cat), raw)
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -207,7 +208,7 @@ func TestRegisterSkillCreateDraft_UnavailableToolWarning(t *testing.T) {
 	ctx, _ := identity.WithRun(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, "run-1")
 
 	raw, _ := json.Marshal(SkillCreateDraftArgs{Intent: "i"})
-	result, err := desc.Invoke(ctx, raw)
+	result, err := desc.Invoke(withRunView(ctx, cat), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,5 +270,55 @@ func TestRegisterSkillCreateDraft_MissingIdentity(t *testing.T) {
 	_, err := desc.Invoke(context.Background(), raw)
 	if !errors.Is(err, ErrIdentityRequired) {
 		t.Fatalf("err = %v, want builtin.ErrIdentityRequired", err)
+	}
+}
+
+// countingClient counts model calls.
+type countingClient struct {
+	scriptedClient
+	calls *atomic.Int64
+}
+
+func (c countingClient) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	c.calls.Add(1)
+	return c.scriptedClient.Complete(ctx, req)
+}
+
+// countingStore counts artifact writes.
+type countingStore struct {
+	artifacts.ArtifactStore
+	puts *atomic.Int64
+}
+
+func (s countingStore) PutBytes(ctx context.Context, scope artifacts.ArtifactScope, data []byte, opts artifacts.PutOpts) (artifacts.ArtifactRef, error) {
+	s.puts.Add(1)
+	return s.ArtifactStore.PutBytes(ctx, scope, data, opts)
+}
+
+func (s countingStore) PutText(ctx context.Context, scope artifacts.ArtifactScope, text string, opts artifacts.PutOpts) (artifacts.ArtifactRef, error) {
+	s.puts.Add(1)
+	return s.ArtifactStore.PutText(ctx, scope, text, opts)
+}
+
+// TestSkillCreateDraft_MissingRunViewRejectsBeforeGeneration: without a run
+// view the draft tool fails closed BEFORE any model call or artifact write.
+func TestSkillCreateDraft_MissingRunViewRejectsBeforeGeneration(t *testing.T) {
+	cat := tools.NewCatalog()
+	base, _ := inmem.New(config.ArtifactsConfig{})
+	t.Cleanup(func() { _ = base.Close(context.Background()) })
+	var calls, puts atomic.Int64
+	store := countingStore{ArtifactStore: base, puts: &puts}
+	client := countingClient{scriptedClient: scriptedClient{content: draftContentWithRequiredTools("x.tool")}, calls: &calls}
+	if err := RegisterSkillCreateDraft(RegistryContext{Catalog: cat, ArtifactStore: store}, client); err != nil {
+		t.Fatal(err)
+	}
+	desc, _ := cat.Resolve(drafter.ToolName)
+	ctx, _ := identity.WithRun(context.Background(), identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, "run-1")
+	raw, _ := json.Marshal(SkillCreateDraftArgs{Intent: "i"})
+	if _, err := desc.Invoke(ctx, raw); !errors.Is(err, ErrRunToolViewRequired) {
+		t.Fatalf("err = %v, want ErrRunToolViewRequired", err)
+	}
+	if calls.Load() != 0 || puts.Load() != 0 {
+		t.Fatalf("rejected draft still ran: model calls=%d artifact writes=%d", calls.Load(), puts.Load())
 	}
 }

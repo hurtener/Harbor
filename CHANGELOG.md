@@ -17,6 +17,130 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.39.0] — 2026-11-07
+
+### Security
+
+- `tool_search`, `tool_get` and `declarative_action` now answer strictly
+  from the calling run's effective tool view — the same sealed view the
+  planner declares and the dispatcher resolves against (owner scoping,
+  paused/disabled exclusions, run allowlist, effective loading modes). They
+  previously consulted the process-wide catalog, so on a multi-tenant
+  runtime `tool_search`/`tool_get` could return another tenant's, user's or
+  session's tool names and descriptions, and `declarative_action` could
+  dispatch a tool outside the run's view. The dispatch entry point seats the
+  view on the invocation context; without one these tools fail closed
+  (`ErrRunToolViewRequired`, non-retryable). Deferred tools inside the run's
+  view remain discoverable.
+- The `skill_search` / `skill_get` / `skill_list` capability envelope, the
+  `skill_create_draft` missing-tool warnings and the run-once skills
+  directory derive their allowed tools from the run's view (deferred tools
+  included) instead of a process-catalog listing, so another principal's
+  tools neither widen skill visibility nor answer a presence probe. Without
+  a view these calls fail closed (`ErrRunToolViewRequired`).
+- The run-start owner-scoped projection denies an MCP tool whose source
+  owner is unknown (a connection detached after the catalog was read)
+  instead of treating it as shared.
+- A run dispatched without a view now seats an explicit empty view, so it
+  can no longer inherit a view carried by an outer context.
+
+### Fixed
+
+- Tool search applies the caller's visibility before the result limit and
+  orders full-text matches by bm25 relevance, so foreign or lower-ranked rows
+  can no longer crowd a run's own tools out of the first page; when the index
+  yields nothing visible, a bounded substring pass over the run's own tools
+  answers instead (also when no index is configured).
+- The tool search index is now a mirror of the catalog: rows are removed when
+  a source is detached, deregistered, republished without a tool, or rolled
+  back, and an on-disk index is emptied at open instead of carrying a prior
+  process's rows. Index migration 2 rebuilds the schema forward.
+
+- Failed search-index writes are retried (bounded retry set, and bounded by
+  the searching caller's context) instead of leaving silent gaps, and
+  `tool_search` tops up a short ranked page from the run's own tools. Ranked
+  and browse index queries read only names and tags (the substring fallback
+  also reads indexed text for matching; it never returns it), and a dispatch
+  decision scans its run view once for all of its meta-tool calls.
+- `skill_create_draft` rejects a missing run view before any model call or
+  artifact write, and the run's `<skills_context>` directory includes the
+  run's deferred tools, matching the `skill_*` tools.
+
+- Run-start reconciliation of an agent-tier signed OAuth MCP pair now prepares
+  the private connection as the pair's frozen owner instead of the end user
+  whose run triggered the pass, matching the initial registration. Previously
+  the credential exchange during preparation carried the end user as subject,
+  a governing broker refused it, the pair never attached and every run paid
+  for a failed retry. User-tier pairs keep the acting user, and live planner
+  tool calls keep the end user's identity and the existing refusal to
+  bound-operation retry.
+- One failing signed pair no longer aborts reconciliation of the remaining
+  pairs, the user tier, or the provider, connection and discovery-allowance
+  legs. Each per-pair failure is logged separately.
+- The generic run-start connection detach can no longer tear down a signed
+  pair whose publication succeeded while its activation fence is still
+  pending (the logical revision hides it in that window). Registrations
+  backed by a connection-owned private credential are omitted from the
+  generic reconcile view and refused by generic deregistration; the paired
+  catalog withdrawal now runs only after the registry admits the removal, and
+  orphaned-catalog cleanup checks for any live, staged or closing
+  registration atomically under the registry lock, so it can never strip a
+  concurrently published connection's tools.
+- Closing the runtime MCP connection attacher now refuses new attaches,
+  cancels and joins in-flight preparations and re-attaches, and refuses a
+  late activation, so no connection is published or left undrained after
+  close.
+
+### Changed
+
+- **Breaking (`sdk/tools`):** `ToolCatalog.Search` now takes a
+  `ToolSearchRequest{Query, Tags, Limit, Visible}`; a nil `Visible` admits
+  nothing, and results carry only `Name` and `Tags`. `ToolSearchCache` gains
+  `Remove(ctx, names)`. Custom catalogs and search caches must implement the
+  new shapes.
+- **Breaking (`sdk/tools`):** `VisibleNames` is removed — it listed the
+  process catalog, whose `CatalogFilter` identity fields never filtered by
+  principal. Use `DiscoveryNames(view)` over the run's projected view.
+  `CatalogFilter.HasFullTriple` is removed for the same reason.
+- **Breaking (`tools/protocol`):** a `CatalogProjector` without a
+  `CatalogViewResolver` now fails every read with
+  `ErrCatalogViewUnavailable` instead of listing the unscoped process
+  catalog; the runtime mux always wires the resolver (with or without agent
+  config). The unreachable `LoadingResolver` / `WithLoadingResolver` path
+  (effective loading already comes from the resolved view) is removed.
+
+- A signed pair whose private preparation fails is retried under a bounded
+  per-pair window (30 s doubling to 5 min, reset by any revision, receipt or
+  phase change; a successful preparation of another pair of the same owner
+  through the same broker heals only windows opened by a shared broker
+  outage, never a pair-specific refusal; user-tier windows are per acting
+  session; at most 1024 tracked pairs). Suppressed attempts make no credential exchange or durable write
+  and log at debug level. Expiry, fence commits and removals are never
+  suppressed.
+- Agent-tier preparation runs in a context carrying only the pair owner's
+  identity (no end-user verified identity or run), so its events, audit and
+  any consent park are attributed to the owner consistently.
+- Signed-capability reconciliation is serialized per owner slot (tenant and
+  agent, plus user for user-tier pairs) instead of runtime-wide, so runs for
+  different tenants or agents no longer queue behind each other. Gate entries
+  are released with their last waiter; agent-tier scan cursors are keyed by
+  (tenant, agent) rather than the triggering end user and capped at 4096.
+- The runtime MCP connection attacher serializes attaches per physical
+  connection name with a cancellable gate instead of one process-wide lock
+  held across network preparation, so a stalled downstream for one owner no
+  longer blocks other owners, and a waiter honours its own cancellation.
+- An already-attached published pair skips durable revalidation on run-start
+  reconcile (registration replay keeps the full re-check).
+
+### Added
+
+- MCP tools carry their server's self-declared display metadata
+  (`serverInfo.title`, else `serverInfo.name`, plus a bounded prefix of the
+  server's instructions), indexed for search so a server-name query matches.
+  `tool_search` and `tool_get` results include a `server` label. Model-visible
+  tool names are unchanged.
+
+
 ## [1.38.0] — 2026-11-07
 
 ### Added

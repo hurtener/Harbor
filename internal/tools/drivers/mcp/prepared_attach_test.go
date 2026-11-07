@@ -25,14 +25,24 @@ type recordingSearchCache struct {
 	tools map[string]tools.Tool
 }
 
-func (c *recordingSearchCache) Search(_ context.Context, _ string, _ []string, _ int) ([]tools.Tool, error) {
+func (c *recordingSearchCache) Search(_ context.Context, req tools.ToolSearchRequest) ([]tools.Tool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]tools.Tool, 0, len(c.tools))
 	for _, tool := range c.tools {
-		out = append(out, tool)
+		if req.Visible(tool.Name) {
+			out = append(out, tool)
+		}
 	}
 	return out, nil
+}
+func (c *recordingSearchCache) Remove(_ context.Context, names []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, name := range names {
+		delete(c.tools, name)
+	}
+	return nil
 }
 func (c *recordingSearchCache) Sync(_ context.Context, in []tools.Tool) error {
 	c.mu.Lock()
@@ -394,13 +404,13 @@ func TestPreparedAttachment_ActivatedToolsEnterSearchIndex(t *testing.T) {
 	cache := &recordingSearchCache{}
 	cat := tools.NewCatalog(tools.WithSearchCache(cache))
 	p := preparedFixture(t, "searchable", cat, NewRegistry(), auth.Owner{Tenant: "tenant", Agent: "agent"})
-	if got := cat.Search(context.Background(), "echo", nil, 10); len(got) != 0 {
+	if got := cat.Search(context.Background(), tools.ToolSearchRequest{Query: "echo", Limit: 10, Visible: func(string) bool { return true }}); len(got) != 0 {
 		t.Fatalf("prepared but unpublished tools entered search: %v", got)
 	}
 	if err := p.Activate(context.Background()); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
-	got := cat.Search(context.Background(), "echo", nil, 10)
+	got := cat.Search(context.Background(), tools.ToolSearchRequest{Query: "echo", Limit: 10, Visible: func(string) bool { return true }})
 	found := false
 	for _, tool := range got {
 		found = found || tool.Name == PhysicalServerName("searchable", auth.Owner{Tenant: "tenant", Agent: "agent"})+"_echo"

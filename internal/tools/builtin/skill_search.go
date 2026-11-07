@@ -36,10 +36,14 @@ func registerSkillSearch(rc RegistryContext) error {
 			if reader == nil {
 				return skilltools.SearchResult{}, fmt.Errorf("skill_search: backing SkillStore is nil and no SkillReader was supplied (operator misconfiguration)")
 			}
+			capability, err := runCapability(ctx, rc)
+			if err != nil {
+				return skilltools.SearchResult{}, err
+			}
 			return skilltools.SearchHandler(ctx, reader, rc.Bus, skilltools.SearchArgs{
 				Query:      args.Query,
 				Limit:      args.Limit,
-				Capability: runCapability(ctx, rc),
+				Capability: capability,
 			})
 		},
 		tools.WithDescription("Search the skill catalog by capability text. Returns ranked, capability-filtered, redacted skill candidates with name, title, trigger, and score."),

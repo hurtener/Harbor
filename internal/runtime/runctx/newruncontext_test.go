@@ -269,7 +269,7 @@ func TestNewRunContext_SkillsParity(t *testing.T) {
 		t.Fatalf("identity.With: %v", err)
 	}
 	views, err := dir.View(viewCtx, skills.DirectoryCapability{
-		AllowedTools: tools.VisibleNames(cat, filter),
+		AllowedTools: tools.DiscoveryNames(tools.NewPlannerView(cat, filter)),
 	})
 	if err != nil {
 		t.Fatalf("Directory.View: %v", err)

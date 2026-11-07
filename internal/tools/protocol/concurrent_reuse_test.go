@@ -148,7 +148,7 @@ func TestService_IdentityIsolation_CrossTenant(t *testing.T) {
 // action publishes an `audit.admin_scope_used` event when a bus is
 // wired — the admin path is never silent (CLAUDE.md §13).
 func TestService_AdminAudit_EmittedOnBus(t *testing.T) {
-	proj, err := toolsprotocol.NewCatalogProjector(newTestCatalog(t))
+	proj, err := scopedTestProjector(newTestCatalog(t))
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)
 	}

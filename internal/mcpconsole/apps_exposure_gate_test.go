@@ -13,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tools"
+	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
 const gateAgentID = "gate-agent"
@@ -64,8 +65,18 @@ func gateID() identity.Quadruple {
 
 func newGatedAccessor(t *testing.T, cat tools.ToolCatalog, reg agentcfg.Registry) *mcpconsole.AppsAccessor {
 	t.Helper()
+	// Both fixture servers are registered: an MCP source without a registry
+	// owner is never admitted by the projection (fail closed).
+	registry := newAppsRegistry(t, nil)
+	if err := registry.Register(context.Background(), mcp.ServerRegistration{
+		Provider:     &stubProvider{id: "srv-b"},
+		Transport:    "inmemory",
+		InitialState: mcp.ServerStateOnline,
+	}); err != nil {
+		t.Fatalf("Register srv-b: %v", err)
+	}
 	acc, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry:    newAppsRegistry(t, nil),
+		Registry:    registry,
 		Catalog:     cat,
 		Store:       newAppsStore(t),
 		Bus:         newAppsBus(t),

@@ -145,8 +145,21 @@ func newMPHarness(t *testing.T) *mpHarness {
 	if err != nil {
 		t.Fatalf("toolctx: %v", err)
 	}
+	// Every MCP source a projection admits must have a registry owner (an
+	// unknown MCP owner fails closed), so the fixture's servers are
+	// registered as boot sources.
+	mcpReg := mcp.NewRegistry()
+	for _, src := range []string{"srvA", "srvB"} {
+		if err := mcpReg.Register(context.Background(), mcp.ServerRegistration{
+			Provider:     daStubProvider{id: tools.ToolSourceID(src)},
+			Transport:    "inmemory",
+			InitialState: mcp.ServerStateOnline,
+		}); err != nil {
+			t.Fatalf("registry.Register(%s): %v", src, err)
+		}
+	}
 	apps, err := mcpconsole.NewAppsAccessor(mcpconsole.AppsDeps{
-		Registry:    mcp.NewRegistry(),
+		Registry:    mcpReg,
 		Catalog:     cat,
 		Store:       newMPArtifacts(t),
 		Bus:         bus,

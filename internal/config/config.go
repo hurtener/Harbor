@@ -1410,11 +1410,11 @@ type ToolsConfig struct {
 	GrantedScopes []string `yaml:"granted_scopes,omitempty"`
 
 	// SearchCacheDSN is the SQLite DSN backing the tool
-	// SearchCache (FTS5 + regex fallback). Empty means the dev binary
-	// uses an in-memory cache (the V1 default — discovery state lives
-	// for the process lifetime). Operators can point at an on-disk
-	// path (`file:./harbor-tools.db?_pragma=...`) to persist the
-	// cache across reboots. Restart-required.
+	// SearchCache (FTS5 + substring fallback). Empty means an in-memory
+	// index (the default). The index mirrors the process's own catalog
+	// and is emptied at open, so an on-disk path
+	// (`file:./harbor-tools.db?_pragma=...`) only moves its storage off
+	// the heap; it never carries rows across reboots. Restart-required.
 	SearchCacheDSN string `yaml:"search_cache_dsn,omitempty"`
 
 	// MCPAppHost configures the deployment-wide MCP App

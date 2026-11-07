@@ -18,8 +18,8 @@ import (
 )
 
 // discoveryCatalog registers tool_search + tool_get plus one fixture
-// tool. The in-memory catalog has no SearchCache attached, so Search
-// honestly returns empty — toolSearch's "discovery unavailable" shape.
+// tool. The in-memory catalog has no SearchCache attached, so tool_search
+// answers from its bounded in-memory pass over the run's own view.
 func discoveryCatalog(t *testing.T) tools.ToolCatalog {
 	t.Helper()
 	cat := tools.NewCatalog()
@@ -39,7 +39,7 @@ func discoveryCatalog(t *testing.T) tools.ToolCatalog {
 func TestToolGet_FoundAndMissing(t *testing.T) {
 	t.Parallel()
 	cat := discoveryCatalog(t)
-	ctx := skillTestCtx(t)
+	ctx := withRunView(skillTestCtx(t), cat)
 
 	out := invoke[ToolGetOut](t, cat, ctx, "tool_get", ToolGetArgs{Name: "kb_search"})
 	if !out.Found || out.Name != "kb_search" || out.Description == "" {
@@ -52,18 +52,36 @@ func TestToolGet_FoundAndMissing(t *testing.T) {
 	}
 }
 
-func TestToolSearch_NoCacheReturnsEmpty(t *testing.T) {
+func TestToolSearch_NoIndexAnswersFromRunView(t *testing.T) {
 	t.Parallel()
 	cat := discoveryCatalog(t)
-	ctx := skillTestCtx(t)
+	ctx := withRunView(skillTestCtx(t), cat)
 
 	out := invoke[ToolSearchOut](t, cat, ctx, "tool_search", ToolSearchArgs{Query: "knowledge"})
-	if out.Count != 0 || len(out.Tools) != 0 {
-		t.Errorf("tool_search without a SearchCache = %+v, want honest empty", out)
+	if out.Count != 1 || len(out.Tools) != 1 || out.Tools[0].Name != "kb_search" {
+		t.Errorf("tool_search without a SearchCache = %+v, want the run view's kb_search", out)
 	}
 	// Limit clamping branches.
-	if out := invoke[ToolSearchOut](t, cat, ctx, "tool_search", ToolSearchArgs{Query: "x", Limit: 999}); out.Count != 0 {
+	if out := invoke[ToolSearchOut](t, cat, ctx, "tool_search", ToolSearchArgs{Query: "no-such-capability", Limit: 999}); out.Count != 0 {
 		t.Errorf("tool_search clamp-high = %+v", out)
+	}
+}
+
+func TestDiscoveryMetaTools_RunViewMandatory(t *testing.T) {
+	t.Parallel()
+	cat := discoveryCatalog(t)
+	argsFor := map[string]any{
+		"tool_search": ToolSearchArgs{Query: "knowledge"},
+		"tool_get":    ToolGetArgs{Name: "kb_search"},
+	}
+	for name, args := range argsFor {
+		desc, _ := cat.Resolve(name)
+		raw, _ := json.Marshal(args)
+		// Identity alone is not enough: without the run's view the process
+		// catalog is never consulted.
+		if _, err := desc.Invoke(skillTestCtx(t), raw); !errors.Is(err, ErrRunToolViewRequired) {
+			t.Errorf("%s without a run view: err = %v, want ErrRunToolViewRequired", name, err)
+		}
 	}
 }
 

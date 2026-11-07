@@ -156,8 +156,8 @@ func (c *injectingCatalog) Resolve(name string) (tools.ToolDescriptor, bool) {
 }
 
 // Search delegates to the inner catalog (Phase 107c / D-167).
-func (c *injectingCatalog) Search(ctx context.Context, query string, tags []string, limit int) []tools.Tool {
-	return c.inj.inner.Search(ctx, query, tags, limit)
+func (c *injectingCatalog) Search(ctx context.Context, req tools.ToolSearchRequest) []tools.Tool {
+	return c.inj.inner.Search(ctx, req)
 }
 
 // StageSource forwards reversible source publication to the inner catalog.

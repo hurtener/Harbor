@@ -1,8 +1,13 @@
-// Package searchcache is Harbor's SQLite FTS5-backed tool search cache.
-// It mirrors the shape of
-// internal/skills/drivers/localdb — FTS5 search over indexed tool
-// name + description + tags, with a regex fallback for environments
-// without FTS5.
+// Package searchcache is Harbor's SQLite FTS5-backed tool search index.
+// FTS5 search over each tool's name, description and tags plus the providing
+// server's display title and description, ranked by bm25, with a substring
+// fallback. The index is process-wide: every Search carries the caller's
+// visibility predicate, applied BEFORE the limit, so one principal's rows
+// can neither be returned to another nor crowd its results out.
+//
+// The index is a mirror of the in-memory catalog (the catalog is its only
+// writer and reconciles it on every change), so it is emptied at open and
+// never outlives the process's own registrations.
 //
 // The driver self-registers under "searchcache" from its init().
 // The production binary picks it up via blank import in
@@ -58,6 +63,13 @@ func New(cfg Config) (SearchCache, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("searchcache: migrate: %w", err)
 	}
+	// The index mirrors THIS process's catalog, which registers every tool
+	// afresh at boot. Rows persisted by an earlier process (an on-disk DSN)
+	// describe sources this process may never attach, so they are dropped.
+	if _, err := db.ExecContext(ctx, `DELETE FROM tool_cache`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("searchcache: reset: %w", err)
+	}
 
 	ftsAvail := detectFTS5(ctx, db)
 
@@ -76,10 +88,13 @@ type Config struct {
 // this through the tools.Catalog and never construct a driver
 // directly.
 type SearchCache interface {
-	Search(ctx context.Context, query string, tags []string, limit int) ([]tools.Tool, error)
+	Search(ctx context.Context, req tools.ToolSearchRequest) ([]tools.Tool, error)
 	Sync(ctx context.Context, tools []tools.Tool) error
+	Remove(ctx context.Context, names []string) error
 	Close() error
 }
+
+var _ tools.ToolSearchCache = (*driver)(nil)
 
 type driver struct {
 	db           *sql.DB
@@ -87,58 +102,81 @@ type driver struct {
 	closed       atomic.Bool
 }
 
-// Search runs the FTS5 → regex → exact ladder (mirrors the skills
-// localdb search). Tags act as intersection filter: every token in
-// every tag must appear in the tool's cached tags blob.
-func (d *driver) Search(ctx context.Context, query string, tags []string, limit int) ([]tools.Tool, error) {
+// Search runs the FTS5 (bm25-ranked) → substring ladder. Only rows that
+// req.Visible admits and that carry every req.Tags entry count toward the
+// limit, so up to limit admitted matches are returned when they exist. A nil
+// Visible admits nothing.
+func (d *driver) Search(ctx context.Context, req tools.ToolSearchRequest) ([]tools.Tool, error) {
 	if d.closed.Load() {
 		return nil, errStoreClosed
 	}
-	query = strings.TrimSpace(query)
+	if req.Visible == nil {
+		return nil, nil
+	}
+	query := strings.TrimSpace(req.Query)
+	limit := req.Limit
 	if limit <= 0 || limit > maxSearchN {
 		limit = defaultSearchN
 	}
-
-	if query == "" && len(tags) == 0 {
-		return d.listAll(ctx, limit)
+	admit := func(t tools.Tool) bool {
+		return req.Visible(t.Name) && matchesTagsFilter(t.Tags, req.Tags)
 	}
-
-	var results []tools.Tool
-	var err error
-	if d.ftsAvailable && query != "" {
-		results, err = d.searchFTS5(ctx, query, tags, limit)
+	if query == "" {
+		return d.scan(ctx, limit, admit)
+	}
+	if d.ftsAvailable {
+		results, err := d.searchFTS5(ctx, query, limit, admit)
 		if err != nil {
 			return nil, err
 		}
 		if len(results) > 0 {
-			return trimLimit(results, limit), nil
+			return results, nil
 		}
 	}
-	if query != "" {
-		results, err = d.searchRegex(ctx, query, tags, limit)
-		if err != nil {
-			return nil, err
-		}
-		if len(results) > 0 {
-			return trimLimit(results, limit), nil
-		}
-	}
-	results, err = d.searchExact(ctx, query, tags, limit)
-	return trimLimit(results, limit), err
+	return d.searchSubstring(ctx, query, limit, admit)
 }
 
-// Sync upserts the tool set into the cache. A fingerprint
-// (hash of name+updated_at) guards against no-op syncs.
+// Sync upserts the tool set into the cache in one transaction.
 func (d *driver) Sync(ctx context.Context, toolList []tools.Tool) error {
 	if d.closed.Load() {
 		return errStoreClosed
 	}
+	if len(toolList) == 0 {
+		return nil
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("searchcache: begin sync: %w", err)
+	}
 	for _, t := range toolList {
-		if err := d.upsertTool(ctx, t); err != nil {
+		if err := upsertTool(ctx, tx, t); err != nil {
+			_ = tx.Rollback()
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
+}
+
+// Remove deletes the named rows in one transaction; absent names are
+// ignored. The delete trigger keeps the FTS5 index in step.
+func (d *driver) Remove(ctx context.Context, names []string) error {
+	if d.closed.Load() {
+		return errStoreClosed
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("searchcache: begin remove: %w", err)
+	}
+	for _, name := range names {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM tool_cache WHERE name = ?`, name); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("searchcache: remove: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // Close shuts down the underlying SQLite connection.
@@ -149,24 +187,32 @@ func (d *driver) Close() error {
 	return nil
 }
 
-func (d *driver) upsertTool(ctx context.Context, t tools.Tool) error {
+// Bounds on provider-supplied server metadata stored per row. The catalog
+// already bounds what the driver stamps; these keep the index bounded even
+// for a provider that does not.
+const (
+	maxServerTitleBytes       = 256
+	maxServerDescriptionBytes = 1024
+)
+
+func upsertTool(ctx context.Context, tx *sql.Tx, t tools.Tool) error {
 	tagsJSON := marshalStrings(t.Tags)
 	schemaJSON := string(t.ArgsSchema)
 	const q = `
-        INSERT INTO tool_cache(name, description, tags, args_schema, updated_at)
-        VALUES (?, ?, ?, ?, datetime('now'))
+        INSERT INTO tool_cache(name, description, tags, args_schema, source, server_title, server_description, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(name) DO UPDATE SET
-            description = excluded.description,
-            tags        = excluded.tags,
-            args_schema  = excluded.args_schema,
-            updated_at   = datetime('now')`
-	_, err := d.db.ExecContext(ctx, q, t.Name, t.Description, tagsJSON, schemaJSON)
-	return err
-}
-
-func trimLimit[T any](s []T, limit int) []T {
-	if len(s) <= limit {
-		return s
+            description        = excluded.description,
+            tags               = excluded.tags,
+            args_schema        = excluded.args_schema,
+            source             = excluded.source,
+            server_title       = excluded.server_title,
+            server_description = excluded.server_description,
+            updated_at         = datetime('now')`
+	_, err := tx.ExecContext(ctx, q, t.Name, t.Description, tagsJSON, schemaJSON, string(t.Source),
+		truncateUTF8(t.SourceTitle, maxServerTitleBytes), truncateUTF8(t.SourceDescription, maxServerDescriptionBytes))
+	if err != nil {
+		return fmt.Errorf("searchcache: upsert: %w", err)
 	}
-	return s[:limit]
+	return nil
 }

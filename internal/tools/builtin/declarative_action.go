@@ -162,6 +162,9 @@ type DeclarativeRepairOutcome struct {
 //  5. Validate the args against the tool's schema (when a Validate
 //     function is bound). A schema failure surfaces
 //     `repair_outcome.args_repaired=true`.
+//     Resolution goes through the calling run's tool view (seated on ctx
+//     by the run's dispatch entry point); without one the call fails with
+//     ErrRunToolViewRequired.
 //  6. Invoke the inner tool under the meta-tool's ctx (identity flows
 //     through naturally — every meta-tool checks `requireIdentity`).
 //     Invoke errors propagate as the meta-tool's Error field with no
@@ -172,12 +175,8 @@ type DeclarativeRepairOutcome struct {
 // session triple returns `ErrIdentityRequired` with NO repair outcome
 // (identity failures are policy violations, not LLM-output-format
 // failures the planner can repair).
-func declarativeAction(ctx context.Context, cat tools.ToolCatalog, args DeclarativeActionArgs) (DeclarativeActionOut, error) {
-	return declarativeActionWithScopes(ctx, cat, args, nil)
-}
-
 func declarativeActionWithScopes(ctx context.Context, cat tools.ToolCatalog, args DeclarativeActionArgs, grantedScopes []string) (DeclarativeActionOut, error) {
-	q, err := requireIdentity(ctx)
+	disc, err := discoveryForRun(ctx, grantedScopes)
 	if err != nil {
 		return DeclarativeActionOut{}, err
 	}
@@ -213,7 +212,10 @@ func declarativeActionWithScopes(ctx context.Context, cat tools.ToolCatalog, arg
 		}, nil
 	}
 
-	catalogName, ok := modelToolNames(cat, q, grantedScopes).ResolveDeclared(envelope.Tool)
+	// The inner tool resolves ONLY through the calling run's view — the same
+	// admission the dispatcher applies to a native call — so the escape hatch
+	// can never reach a tool the run could not call directly.
+	visible, ok := disc.resolveDeclared(envelope.Tool)
 	if !ok {
 		return DeclarativeActionOut{
 			Dispatched: false,
@@ -221,7 +223,7 @@ func declarativeActionWithScopes(ctx context.Context, cat tools.ToolCatalog, arg
 			Error:      fmt.Sprintf("tool %q not found in declared catalog", envelope.Tool),
 		}, nil
 	}
-	desc, ok := cat.Resolve(catalogName)
+	desc, ok := cat.Resolve(visible.Name)
 	if !ok {
 		return DeclarativeActionOut{
 			Dispatched: false,

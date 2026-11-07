@@ -240,8 +240,15 @@ func NewRunContext(
 	// drivers call.
 	var skillsCtx []any
 	if src.SkillsDirectory != nil {
+		// The capability set is the run view's own discovery set (both
+		// loading modes) — never a process-catalog listing. No catalog
+		// means no view and the default-deny empty set.
+		var allowed []string
+		if catalogView != nil {
+			allowed = tools.DiscoveryNames(catalogView)
+		}
 		views, err := src.SkillsDirectory.View(projCtx, skills.DirectoryCapability{
-			AllowedTools: tools.VisibleNames(src.Catalog, filter),
+			AllowedTools: allowed,
 		})
 		if err != nil {
 			return planner.RunContext{}, fmt.Errorf("runctx: skills projection: %w", err)

@@ -602,7 +602,9 @@ func invoke[T any](t *testing.T, cat tools.ToolCatalog, ctx context.Context, nam
 	if err != nil {
 		t.Fatalf("marshal args: %v", err)
 	}
-	res, err := desc.Invoke(ctx, raw)
+	// The dispatcher always seats the run's view; tests that do not choose
+	// one get the plain identity-filtered view over cat.
+	res, err := desc.Invoke(ensureRunView(ctx, cat), raw)
 	if err != nil {
 		t.Fatalf("Invoke(%q): %v", name, err)
 	}
@@ -747,7 +749,7 @@ func TestSkillSearch_Delegation_ParityWithRichHandler(t *testing.T) {
 	got := invoke[skilltools.SearchResult](t, cat, ctx, "skill_search", SkillSearchArgs{Query: "parity"})
 	want, err := skilltools.SearchHandler(ctx, rc.SkillStore, rc.Bus, skilltools.SearchArgs{
 		Query:      "parity",
-		Capability: runCapability(ctx, rc),
+		Capability: mustCapability(t, ensureRunView(ctx, cat), rc),
 	})
 	if err != nil {
 		t.Fatalf("direct SearchHandler: %v", err)
@@ -853,7 +855,7 @@ func TestSkillGet_Delegation_RunsBudgeter(t *testing.T) {
 	// Impossible budget → loud ErrSkillTooLarge (no silent trim).
 	desc, _ := cat.Resolve("skill_get")
 	raw, _ := json.Marshal(SkillGetArgs{Names: []string{"budget-skill"}, MaxTokens: 1})
-	if _, err := desc.Invoke(ctx, raw); err == nil || !strings.Contains(err.Error(), "max_tokens") {
+	if _, err := desc.Invoke(withRunView(ctx, cat), raw); err == nil || !strings.Contains(err.Error(), "max_tokens") {
 		t.Errorf("impossible budget err = %v, want the ladder's fail-loud error", err)
 	}
 }
@@ -1009,6 +1011,7 @@ func TestSkillBuiltins_ConcurrentReuse(t *testing.T) {
 				errCh <- err
 				return
 			}
+			ctx = withRunView(ctx, cat)
 			rawS, _ := json.Marshal(SkillSearchArgs{Query: "shared"})
 			res, err := searchDesc.Invoke(ctx, rawS)
 			if err != nil {

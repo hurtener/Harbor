@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -917,7 +918,62 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 		return nil, err
 	}
 
+	// Stamp the server's self-declared display metadata on every descriptor
+	// so discovery can match a server-name query and label results.
+	// Classification only — never a naming, dispatch, or isolation input.
+	title, description := serverDisplayMetadata(session.InitializeResult())
+	for i := range out {
+		out[i].Tool.SourceTitle = title
+		out[i].Tool.SourceDescription = description
+	}
+
 	return out, nil
+}
+
+// Bounds on the server-declared display metadata stamped on descriptors.
+// The values are untrusted server text carried per tool, so they are capped
+// to keep catalog and index memory bounded.
+const (
+	maxServerTitleBytes       = 128
+	maxServerDescriptionBytes = 512
+)
+
+// serverDisplayMetadata projects the initialize result onto a short label
+// (serverInfo.title, else serverInfo.name) and a bounded description (a
+// prefix of the server's instructions). Both are empty when absent.
+func serverDisplayMetadata(init *mcpsdk.InitializeResult) (string, string) {
+	if init == nil {
+		return "", ""
+	}
+	var title string
+	if init.ServerInfo != nil {
+		title = strings.TrimSpace(init.ServerInfo.Title)
+		if title == "" {
+			title = strings.TrimSpace(init.ServerInfo.Name)
+		}
+	}
+	// Truncate before collapsing whitespace so an oversized server string is
+	// never fully copied.
+	title = truncateUTF8(oneLine(truncateUTF8(title, 2*maxServerTitleBytes)), maxServerTitleBytes)
+	description := truncateUTF8(oneLine(truncateUTF8(init.Instructions, 2*maxServerDescriptionBytes)), maxServerDescriptionBytes)
+	return title, description
+}
+
+// oneLine collapses runs of whitespace (including newlines) to one space.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// truncateUTF8 cuts s to at most n bytes on a rune boundary.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // isJSONRPCMethodNotFound recognizes only the canonical JSON-RPC optional

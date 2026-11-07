@@ -3,172 +3,130 @@ package searchcache
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
 var ftsTokenRE = regexp.MustCompile(`[A-Za-z0-9]+`)
 
-func (d *driver) searchFTS5(ctx context.Context, query string, filterTags []string, limit int) ([]tools.Tool, error) {
+// bm25 column weights, in tool_cache_fts column order: name, description,
+// tags, server_title, server_description. A hit on the tool's own name or
+// its server's title outranks a passing mention in a description.
+const ftsRankExpr = `bm25(tool_cache_fts, 4.0, 1.0, 1.0, 3.0, 0.5)`
+
+// keyColumns are all a ranked (FTS5) or browse query reads: the name (the
+// result identity the caller materializes from its own authoritative view)
+// and the tags (the tag filter). Those paths never decode descriptions,
+// server metadata or schemas.
+const keyColumns = `c.name, c.tags`
+
+// textColumns add the indexed text the substring fallback must match
+// against. That fallback scans process-wide rows and reads their
+// description and server metadata BEFORE the visibility predicate runs —
+// in-process only, for matching; a row's text is dropped at once and never
+// returned (results still carry only Name and Tags, admitted rows only).
+// Argument schemas are never read.
+const textColumns = `c.name, c.tags, c.description, c.server_title, c.server_description`
+
+func (d *driver) searchFTS5(ctx context.Context, query string, limit int, admit func(tools.Tool) bool) ([]tools.Tool, error) {
 	tokens := ftsTokenRE.FindAllString(strings.ToLower(query), -1)
 	if len(tokens) == 0 {
 		return nil, nil
 	}
-
-	hits, err := d.tryFTSQuery(ctx, buildANDExpr(tokens), limit)
-	if err != nil {
-		return nil, err
+	hits, err := d.rankedFTS(ctx, buildANDExpr(tokens), limit, admit)
+	if err != nil || len(hits) > 0 || len(tokens) == 1 {
+		return hits, err
 	}
-	if len(hits) == 0 && len(tokens) > 1 {
-		hits, err = d.tryFTSQuery(ctx, buildORExpr(tokens), limit)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if len(hits) == 0 {
-		return nil, nil
-	}
-	return d.materializeRows(ctx, hits, filterTags)
+	return d.rankedFTS(ctx, buildORExpr(tokens), limit, admit)
 }
 
-func (d *driver) tryFTSQuery(ctx context.Context, matchExpr string, limit int) ([]int64, error) {
-	const sel = `SELECT rowid FROM tool_cache_fts WHERE tool_cache_fts MATCH ? LIMIT ?`
-	rows, err := d.db.QueryContext(ctx, sel, matchExpr, limit)
+// rankedFTS streams matches in relevance order and keeps the first limit
+// admitted rows. The visibility predicate runs before the limit, so foreign
+// rows never consume result slots; memory stays bounded by limit.
+func (d *driver) rankedFTS(ctx context.Context, matchExpr string, limit int, admit func(tools.Tool) bool) ([]tools.Tool, error) {
+	const sel = `SELECT ` + keyColumns + `
+        FROM tool_cache_fts JOIN tool_cache c ON c.rowid = tool_cache_fts.rowid
+        WHERE tool_cache_fts MATCH ?
+        ORDER BY ` + ftsRankExpr + `, c.name`
+	rows, err := d.db.QueryContext(ctx, sel, matchExpr)
 	if err != nil {
 		return nil, fmt.Errorf("searchcache: fts5 query: %w", err)
 	}
 	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var rid int64
-		if err := rows.Scan(&rid); err != nil {
-			return nil, err
-		}
-		ids = append(ids, rid)
-	}
-	return ids, rows.Err()
+	return collect(rows, limit, false, nil, admit)
 }
 
-func (d *driver) materializeRows(ctx context.Context, rowIDs []int64, filterTags []string) ([]tools.Tool, error) {
-	ids := make([]any, len(rowIDs))
-	placeholders := make([]string, len(rowIDs))
-	for i, rid := range rowIDs {
-		ids[i] = rid
-		placeholders[i] = "?"
-	}
-	// gosec G202: the `placeholders` slice is constructed from a fixed
-	// `?` token per rowID; the row IDs themselves are bound via
-	// parameter substitution (ids...). There is no caller-controlled
-	// string ever concatenated into the SQL.
-	sel := `SELECT name, description, tags, args_schema FROM tool_cache WHERE rowid IN (` + strings.Join(placeholders, ",") + `)` //nolint:gosec // see comment above; placeholders are literal `?` tokens, values bind through ids...
-	rows, err := d.db.QueryContext(ctx, sel, ids...)
+// searchSubstring is the fallback when FTS5 is unavailable or yields no
+// admitted row: a case-insensitive substring match over every indexed field.
+func (d *driver) searchSubstring(ctx context.Context, query string, limit int, admit func(tools.Tool) bool) ([]tools.Tool, error) {
+	needle := strings.ToLower(query)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+textColumns+` FROM tool_cache c ORDER BY c.name`)
 	if err != nil {
-		return nil, fmt.Errorf("searchcache: materialize: %w", err)
+		return nil, fmt.Errorf("searchcache: substring scan: %w", err)
 	}
 	defer rows.Close()
-	return scanTools(rows, filterTags)
+	return collect(rows, limit, true, func(t tools.Tool) bool { return matchesSubstring(t, needle) }, admit)
 }
 
-func (d *driver) searchRegex(ctx context.Context, query string, filterTags []string, limit int) ([]tools.Tool, error) {
-	re, err := regexp.Compile("(?i)" + regexp.QuoteMeta(query))
+// scan returns admitted rows in name order (an empty query: tag-only or
+// browse).
+func (d *driver) scan(ctx context.Context, limit int, admit func(tools.Tool) bool) ([]tools.Tool, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT `+keyColumns+` FROM tool_cache c ORDER BY c.name`)
 	if err != nil {
-		return nil, nil
-	}
-	rows, err := d.db.QueryContext(ctx, `SELECT name, description, tags, args_schema FROM tool_cache ORDER BY updated_at DESC, name ASC`)
-	if err != nil {
-		return nil, fmt.Errorf("searchcache: regex scan: %w", err)
+		return nil, fmt.Errorf("searchcache: scan: %w", err)
 	}
 	defer rows.Close()
+	return collect(rows, limit, false, nil, admit)
+}
 
-	toolList, err := scanTools(rows, filterTags)
-	if err != nil {
-		return nil, err
-	}
-	var out []tools.Tool
-	for _, t := range toolList {
-		if re.MatchString(t.Name) || re.MatchString(t.Description) || re.MatchString(strings.Join(t.Tags, " ")) {
-			out = append(out, t)
-			if len(out) >= limit {
-				break
-			}
+func matchesSubstring(t tools.Tool, needle string) bool {
+	for _, field := range []string{t.Name, t.Description, strings.Join(t.Tags, " "), t.SourceTitle, t.SourceDescription} {
+		if strings.Contains(strings.ToLower(field), needle) {
+			return true
 		}
 	}
-	return out, nil
+	return false
 }
 
-func (d *driver) searchExact(ctx context.Context, query string, filterTags []string, limit int) ([]tools.Tool, error) {
-	lower := strings.ToLower(query)
-	rows, err := d.db.QueryContext(ctx, `SELECT name, description, tags, args_schema FROM tool_cache WHERE LOWER(name) = ? LIMIT ?`, lower, limit)
-	if err != nil {
-		return nil, fmt.Errorf("searchcache: exact: %w", err)
-	}
-	defer rows.Close()
-	exact, err := scanTools(rows, filterTags)
-	if err != nil {
-		return nil, err
-	}
-	if len(exact) > 0 {
-		return exact, nil
-	}
-	// Fallthrough: scan all
-	rows2, err := d.db.QueryContext(ctx, `SELECT name, description, tags, args_schema FROM tool_cache`)
-	if err != nil {
-		return nil, fmt.Errorf("searchcache: exact fallback: %w", err)
-	}
-	defer rows2.Close()
-	all, err := scanTools(rows2, filterTags)
-	if err != nil {
-		return nil, err
-	}
-	var out []tools.Tool
-	for _, t := range all {
-		if strings.Contains(strings.ToLower(t.Name), lower) ||
-			strings.Contains(strings.ToLower(t.Description), lower) ||
-			strings.Contains(strings.ToLower(strings.Join(t.Tags, " ")), lower) {
-			out = append(out, t)
-			if len(out) >= limit {
-				break
-			}
-		}
-	}
-	return out, nil
-}
-
-func (d *driver) listAll(ctx context.Context, limit int) ([]tools.Tool, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT name, description, tags, args_schema FROM tool_cache ORDER BY updated_at DESC, name ASC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTools(rows, nil)
-}
-
-func scanTools(rows *sql.Rows, filterTags []string) ([]tools.Tool, error) {
+// collect streams rows, keeping the first limit that match and are
+// admitted. Returned Tools carry only Name and Tags: callers materialize
+// everything else from their own authoritative source. withText selects the
+// textColumns layout (used for matching only, then dropped).
+func collect(rows *sql.Rows, limit int, withText bool, match func(tools.Tool) bool, admit func(tools.Tool) bool) ([]tools.Tool, error) {
 	var out []tools.Tool
 	for rows.Next() {
-		var name, desc, tagsJSON, schemaJSON string
-		if err := rows.Scan(&name, &desc, &tagsJSON, &schemaJSON); err != nil {
+		var t tools.Tool
+		var tagsJSON string
+		if withText {
+			if err := rows.Scan(&t.Name, &tagsJSON, &t.Description, &t.SourceTitle, &t.SourceDescription); err != nil {
+				return nil, err
+			}
+		} else if err := rows.Scan(&t.Name, &tagsJSON); err != nil {
 			return nil, err
 		}
-		tags := unmarshalStrings(tagsJSON)
-		if len(filterTags) > 0 && !matchesTagsFilter(tags, filterTags) {
+		t.Tags = unmarshalStrings(tagsJSON)
+		if match != nil && !match(t) {
 			continue
 		}
-		out = append(out, tools.Tool{
-			Name:        name,
-			Description: desc,
-			Tags:        tags,
-			ArgsSchema:  json.RawMessage(schemaJSON),
-		})
+		if !admit(t) {
+			continue
+		}
+		out = append(out, tools.Tool{Name: t.Name, Tags: t.Tags})
+		if len(out) >= limit {
+			break
+		}
 	}
 	return out, rows.Err()
 }
 
 func matchesTagsFilter(toolTags []string, filterTags []string) bool {
+	if len(filterTags) == 0 {
+		return true
+	}
 	set := make(map[string]bool, len(toolTags))
 	for _, t := range toolTags {
 		set[strings.ToLower(t)] = true
@@ -179,4 +137,16 @@ func matchesTagsFilter(toolTags []string, filterTags []string) bool {
 		}
 	}
 	return true
+}
+
+// truncateUTF8 cuts s to at most n bytes on a rune boundary.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

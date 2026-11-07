@@ -15,7 +15,7 @@ func registerToolGet(rc RegistryContext) error {
 		func(ctx context.Context, args ToolGetArgs) (ToolGetOut, error) {
 			return toolGetWithScopes(ctx, rc.Catalog, args, grantedScopes)
 		},
-		tools.WithDescription("Fetch the full description + args schema for a named tool."),
+		tools.WithDescription("Fetch the full description + args schema for a named tool available to this run."),
 		tools.WithSideEffect(tools.SideEffectPure),
 		tools.WithLoading(tools.LoadingAlways),
 		tools.WithTags("builtin", "meta", "discovery"),
@@ -30,31 +30,29 @@ type ToolGetOut struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	ArgsSchema  string `json:"args_schema,omitempty"`
-	Found       bool   `json:"found"`
-	Error       string `json:"error,omitempty"`
+	// Server is the providing server's human-readable label, when known.
+	Server string `json:"server,omitempty"`
+	Found  bool   `json:"found"`
+	Error  string `json:"error,omitempty"`
 }
 
-func toolGet(ctx context.Context, cat tools.ToolCatalog, args ToolGetArgs) (ToolGetOut, error) {
-	return toolGetWithScopes(ctx, cat, args, nil)
-}
-
-func toolGetWithScopes(ctx context.Context, cat tools.ToolCatalog, args ToolGetArgs, grantedScopes []string) (ToolGetOut, error) {
-	q, err := requireIdentity(ctx)
+// toolGetWithScopes describes only a tool the calling run's view admits. A
+// name outside the view — another principal's tool, an excluded or
+// non-allowlisted tool — is indistinguishable from an unknown name.
+func toolGetWithScopes(ctx context.Context, _ tools.ToolCatalog, args ToolGetArgs, grantedScopes []string) (ToolGetOut, error) {
+	disc, err := discoveryForRun(ctx, grantedScopes)
 	if err != nil {
 		return ToolGetOut{}, err
 	}
-	catalogName, ok := modelToolNames(cat, q, grantedScopes).ResolveDeclared(args.Name)
-	if !ok {
-		return ToolGetOut{Name: args.Name, Found: false, Error: fmt.Sprintf("tool %q not found", args.Name)}, nil
-	}
-	d, ok := cat.Resolve(catalogName)
+	t, ok := disc.resolveDeclared(args.Name)
 	if !ok {
 		return ToolGetOut{Name: args.Name, Found: false, Error: fmt.Sprintf("tool %q not found", args.Name)}, nil
 	}
 	return ToolGetOut{
 		Name:        args.Name,
-		Description: d.Tool.Description,
-		ArgsSchema:  string(d.Tool.ArgsSchema),
+		Description: t.Description,
+		ArgsSchema:  string(t.ArgsSchema),
+		Server:      t.SourceTitle,
 		Found:       true,
 	}, nil
 }

@@ -2300,15 +2300,17 @@ tools:
 
 ### tools.search_cache_dsn
 
-SQLite DSN backing the Phase 107c / D-167 tool **SearchCache** (FTS5 +
-regex fallback). The discovery meta-tools (`tool_search`, `tool_get`)
-delegate to this index; an empty value selects the in-memory default,
-which is suitable for development (discovery state lives for the
-process lifetime).
+SQLite DSN backing the Phase 107c / D-167 tool **SearchCache** (FTS5 with
+bm25 ranking + substring fallback). `tool_search` ranks matches through this
+index, always filtered to the calling run's own tool view before the result
+limit. The index mirrors the process's catalog — rows are removed when a
+source is detached or its tools change — and an empty value selects the
+in-memory default.
 
-Operators that want the cache to persist across reboots set a `file:`
-URI; the driver layers `journal_mode(WAL)` + `busy_timeout(5000)`
-automatically when the URI does not already declare them.
+A `file:` URI only moves the index off the heap: it is emptied at open, so
+it never carries a prior process's rows across reboots. The driver layers
+`journal_mode(WAL)` + `busy_timeout(5000)` automatically when the URI does
+not already declare them.
 
 Default: empty (in-memory cache). Restart-required.
 

@@ -128,7 +128,7 @@ func TestE2E_ToolsAnnotator_RealDrivers(t *testing.T) {
 		t.Fatalf("NewAnnotator: %v", err)
 	}
 
-	proj, err := toolsprotocol.NewCatalogProjector(cat, toolsprotocol.WithAnnotator(annotator))
+	proj, err := scopedTestProjector(cat, toolsprotocol.WithAnnotator(annotator))
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)
 	}

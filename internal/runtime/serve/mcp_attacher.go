@@ -191,13 +191,22 @@ type MCPConnectionAttacher struct {
 	// tests are deterministic rather than sleeping. Set once at construction.
 	now func() time.Time
 
+	// gates serializes attach work per physical connection name (see
+	// attachGates). The zero value is ready to use.
+	gates attachGates
+	// lifecycle tracks in-flight attach work so Close cancels and joins it
+	// before draining closers. The zero value is ready to use.
+	lifecycle attachLifecycle
+
+	// mu guards closers and reattachBackoff only. It is never held across
+	// network preparation, so one owner's stalled dial cannot block another.
 	mu      sync.Mutex
 	closers []func(context.Context) error
 	// reattachBackoff is the per-(owner, name) retry window the run-start attach
 	// leg holds so a permanently-unreachable or permanently-refused declared
 	// server is not re-dialled — and not re-reported — at every run start.
-	// INTERNALLY SYNCHRONISED: guarded by mu, the same lock that serialises the
-	// whole attach. It is deliberately process-local and NOT persisted: a
+	// INTERNALLY SYNCHRONISED: guarded by mu; the per-name attach gate
+	// serialises the attempts of one key. It is deliberately process-local and NOT persisted: a
 	// crash-looping deployment re-dials once per boot, which is bounded by the
 	// boot rate rather than the run rate, and reconcile-attempt scheduling
 	// metadata does not belong in the state store.
@@ -380,17 +389,29 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		ms.Policy = &config.ToolPolicyConfig{TimeoutMS: req.RequestTimeoutMS}
 	}
 
-	// Serialise adds: the per-add closer slice is merged into the master
-	// chain under the lock, and serialising the whole attach keeps two
-	// concurrent adds of the same name from racing in the catalog / registry.
-	// Adds are infrequent admin actions, so the coarse lock is acceptable.
-	a.mu.Lock()
+	// Serialise attaches of the SAME physical name through activation so two
+	// concurrent adds of one name never race in the catalog / registry. The
+	// gate is per name and cancellable: other names and owners proceed while
+	// this one dials, and a caller whose ctx ends stops waiting.
+	workCtx, workDone, err := a.lifecycle.begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mcp connection %q: %w", req.Name, err)
+	}
+	releaseGate, err := a.gates.acquire(workCtx, mcpdrv.PhysicalServerName(req.Name, owner))
+	if err != nil {
+		workDone()
+		return nil, fmt.Errorf("mcp connection %q: wait for attach gate: %w", req.Name, err)
+	}
+	release := func() {
+		releaseGate()
+		workDone()
+	}
 
 	var local []func(context.Context) error
-	prepareCtx := ctx
+	prepareCtx := workCtx
 	var cancel context.CancelFunc
 	if req.ConnectTimeoutMS > 0 {
-		prepareCtx, cancel = context.WithTimeout(ctx, time.Duration(req.ConnectTimeoutMS)*time.Millisecond)
+		prepareCtx, cancel = context.WithTimeout(workCtx, time.Duration(req.ConnectTimeoutMS)*time.Millisecond)
 		defer cancel()
 	}
 	descriptorFingerprint := req.DescriptorFingerprint
@@ -430,7 +451,7 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		ArtifactEgressMaxBytes: a.artifactEgressMaxBytes,
 	})
 	if err != nil {
-		a.mu.Unlock()
+		release()
 		var providerAuth *toolauth.ErrAuthRequired
 		var challengeAuth *mcpdrv.PreparationAuthRequiredError
 		if errors.As(err, &providerAuth) || errors.As(err, &challengeAuth) {
@@ -438,7 +459,7 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		}
 		return nil, err
 	}
-	return &preparedMCPConnection{owner: a, inner: prepared}, nil
+	return &preparedMCPConnection{owner: a, inner: prepared, releaseGate: release}, nil
 }
 
 // ConnectionMatches reports whether the exact desired descriptor is already
@@ -450,40 +471,60 @@ func (a *MCPConnectionAttacher) ConnectionMatches(owner toolauth.Owner, name, fi
 }
 
 type preparedMCPConnection struct {
-	owner   *MCPConnectionAttacher
-	inner   *mcpdrv.PreparedAttachment
-	release sync.Once
+	owner       *MCPConnectionAttacher
+	inner       *mcpdrv.PreparedAttachment
+	releaseGate func()
+	release     sync.Once
 }
 
 var _ agentcfgprotocol.AuthorityBoundPreparedConnection = (*preparedMCPConnection)(nil)
 
-func (p *preparedMCPConnection) unlock() { p.release.Do(p.owner.mu.Unlock) }
+func (p *preparedMCPConnection) unlock() { p.release.Do(p.releaseGate) }
 
-func (p *preparedMCPConnection) Activate(ctx context.Context) error {
-	err := p.inner.Activate(ctx)
+// admitActivation refuses publication once the attacher has closed, closing
+// the private preparation instead. An activation that passes this check is
+// still in flight for Close, which waits for it before draining closers.
+func (p *preparedMCPConnection) admitActivation(ctx context.Context) error {
+	if !p.owner.lifecycle.isClosed() {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	err := errors.Join(ErrAttacherClosed, p.inner.Close(cleanupCtx))
+	p.unlock()
+	return err
+}
+
+// activated records the live connection's closer under the short closer lock.
+func (p *preparedMCPConnection) activated(err error) error {
 	if err == nil {
+		p.owner.mu.Lock()
 		p.owner.closers = append(p.owner.closers, p.inner.Close)
+		p.owner.mu.Unlock()
 	}
 	p.unlock()
 	return err
+}
+
+func (p *preparedMCPConnection) Activate(ctx context.Context) error {
+	if err := p.admitActivation(ctx); err != nil {
+		return err
+	}
+	return p.activated(p.inner.Activate(ctx))
 }
 
 func (p *preparedMCPConnection) ActivateIf(ctx context.Context, prove func(context.Context) error) error {
-	err := p.inner.ActivateIf(ctx, prove)
-	if err == nil {
-		p.owner.closers = append(p.owner.closers, p.inner.Close)
+	if err := p.admitActivation(ctx); err != nil {
+		return err
 	}
-	p.unlock()
-	return err
+	return p.activated(p.inner.ActivateIf(ctx, prove))
 }
 
 func (p *preparedMCPConnection) ActivateUnder(ctx context.Context, admit func(context.Context, func() error) error) error {
-	err := p.inner.ActivateUnder(ctx, admit)
-	if err == nil {
-		p.owner.closers = append(p.owner.closers, p.inner.Close)
+	if err := p.admitActivation(ctx); err != nil {
+		return err
 	}
-	p.unlock()
-	return err
+	return p.activated(p.inner.ActivateUnder(ctx, admit))
 }
 
 func (p *preparedMCPConnection) Close(ctx context.Context) error {
@@ -618,6 +659,9 @@ func (a *MCPConnectionAttacher) BeginExactConnectionTeardownForOwner(owner toola
 // into the boot closer chain so a runtime-added subprocess does not outlive
 // the stack.
 func (a *MCPConnectionAttacher) Close(ctx context.Context) error {
+	// Refuse new attaches, cancel in-flight ones and join them first, so no
+	// preparation can publish (and append a closer) after the drain below.
+	joinErr := a.lifecycle.shutdown(ctx)
 	a.mu.Lock()
 	closers := a.closers
 	a.closers = nil
@@ -627,6 +671,9 @@ func (a *MCPConnectionAttacher) Close(ctx context.Context) error {
 		if err := closers[i](ctx); err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+	if joinErr != nil {
+		return errors.Join(joinErr, firstErr)
 	}
 	return firstErr
 }

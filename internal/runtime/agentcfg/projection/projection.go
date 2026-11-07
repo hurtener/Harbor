@@ -224,7 +224,15 @@ type userScopedMCPView struct {
 
 func (v userScopedMCPView) allows(tool tools.Tool) bool {
 	owner, ok := v.resolver.OwnerOfSource(tool.Source)
-	if !ok || owner.Scope() == auth.ScopeBootGlobal {
+	if !ok {
+		// Every MCP source is registered with an owner (boot sources as
+		// boot-global). An MCP tool whose owner cannot be found is one whose
+		// connection was detached after this view snapshotted the catalog —
+		// fail closed rather than treating it as shared. Non-MCP sources
+		// (in-process, HTTP manifests, ...) carry no registry ownership.
+		return tool.Transport != tools.TransportMCP
+	}
+	if owner.Scope() == auth.ScopeBootGlobal {
 		return true
 	}
 	if owner.Agent != v.owner.Agent || !owner.AllowsPrincipal(v.owner.Tenant, v.owner.User) {
@@ -537,8 +545,13 @@ func ReconcileConnections(ctx context.Context, reg agentcfg.Registry, agentID st
 	// the attach pass needs everything the generic attach lifecycle re-validates
 	// (transport, url/command, the provider NAME binding, the injection mapping,
 	// the annotation set, the discovery allowance). The detach keep-set is wider:
-	// it also includes the immutable signed OAuth MCP pair, whose dedicated
-	// reconciler owns reattachment and authority validation.
+	// it also includes the immutable signed OAuth MCP pairs visible in this
+	// revision. That is defense in depth only: the logical Active read can lag a
+	// signed pair's lifecycle (it returns the prior revision while the pair's
+	// activation fence is pending), so the owner view excludes exact-publisher
+	// registrations and the registry refuses their generic teardown. Their
+	// dedicated reconciler owns reattachment, authority validation and exact
+	// teardown.
 	declared := make(map[string]agentcfg.MCPConnectionDescriptor)
 	keep := make(map[string]struct{})
 	if ok {

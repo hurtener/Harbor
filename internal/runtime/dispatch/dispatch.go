@@ -367,6 +367,19 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 	agent, _ := tools.EffectiveAgentConfigFrom(ctx)
 	ctx = appoperation.WithAgentInvocation(ctx, agent)
 	ctx = e.withArtifactResolver(ctx, rc)
+	// Seat the run's sealed tool view, once, for every shape below. Tools
+	// that surface or dispatch catalog tools on the run's behalf
+	// (`tool_search`, `tool_get`, `declarative_action`) answer from this
+	// exact view — the one the planner declared and resolveForRun admits —
+	// never from the process-wide catalog.
+	//
+	// Always seated, even when nil: a nil seat masks any view an outer ctx
+	// carried, so a run without a view can never inherit another's.
+	var runView tools.PlannerCatalogView
+	if rc.Catalog != nil {
+		runView = rc.Catalog
+	}
+	ctx = tools.WithRunToolView(ctx, runView)
 	switch d := decision.(type) {
 	case planner.CallTool:
 		return e.callTool(ctx, rc, d)

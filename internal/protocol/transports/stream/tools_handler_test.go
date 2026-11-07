@@ -48,7 +48,7 @@ func newToolsHandler(t *testing.T, extra ...stream.ToolsOption) *stream.ToolsHan
 			t.Fatalf("register %q: %v", spec.name, err)
 		}
 	}
-	proj, err := toolsprotocol.NewCatalogProjector(cat)
+	proj, err := scopedTestProjector(cat)
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)
 	}
@@ -81,7 +81,7 @@ func newToolsHandlerWithoutAgentResolver(t *testing.T) *stream.ToolsHandler {
 	}); err != nil {
 		t.Fatalf("register catalog tool: %v", err)
 	}
-	proj, err := toolsprotocol.NewCatalogProjector(cat)
+	proj, err := scopedTestProjector(cat)
 	if err != nil {
 		t.Fatalf("NewCatalogProjector: %v", err)
 	}
@@ -423,4 +423,21 @@ func TestToolsHandler_GetMethod_405(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET /v1/tools/list status = %d, want 405", rec.Code)
 	}
+}
+
+// scopedTestProjector builds a CatalogProjector over cat with the plain
+// identity-filtered view resolver a single-principal fixture needs: the
+// projector refuses to list the unscoped catalog without one.
+func scopedTestProjector(cat tools.ToolCatalog, opts ...toolsprotocol.CatalogProjectorOption) (*toolsprotocol.CatalogProjector, error) {
+	opts = append([]toolsprotocol.CatalogProjectorOption{toolsprotocol.WithCatalogViewResolver(plainTestViewResolver{cat: cat})}, opts...)
+	return toolsprotocol.NewCatalogProjector(cat, opts...)
+}
+
+type plainTestViewResolver struct{ cat tools.ToolCatalog }
+
+func (r plainTestViewResolver) CatalogView(_ context.Context, id identity.Identity, _ string) (tools.PlannerCatalogView, error) {
+	return tools.NewPlannerView(r.cat, tools.CatalogFilter{
+		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
+		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
+	}), nil
 }

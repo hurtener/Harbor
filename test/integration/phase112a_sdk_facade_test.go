@@ -738,7 +738,7 @@ var _ = []any{
 	sdktools.NewCatalog,
 	sdktools.NewPlannerView,
 	sdktools.DefaultPolicy,
-	sdktools.VisibleNames,
+	sdktools.DiscoveryNames,
 	sdktools.WithCatalog,
 	sdktools.Catalog,
 	sdktools.MustCatalog,
