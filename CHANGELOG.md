@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.40.0] — 2026-11-07
+
 ### Fixed
 
 - **Conversation turns no longer lose the user's message during a
