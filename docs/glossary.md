@@ -2044,6 +2044,10 @@ NOT a v1.28 method or acceptance — if the Protocol response ceiling ever
 forces the exact attachment contract, a future named fallback is recorded as
 a deferred follow-up. D-425.
 
+**Turns materializer lease** — the single-writer lease row (`turn_materializer`) that lets exactly one runtime instance sharing a durable turns projection materialize at a time; expiry is evaluated on the store clock (the database clock on Postgres), the holder renews every third of the 30 s TTL and releases it on shutdown, and a standby takes over from the persisted resume cursor. See D-494.
+
+**Turns resume cursor** — the lease-fenced, monotonic event-source position the turns materializer persists so a restart or takeover pages only the events after it; it is held back to just before the oldest still-open turn within a 10,000-event lookback, and an older open turn adopts its durable row on its next event. See D-494.
+
 **Turn-page cursor** — the opaque exclusive older-page cursor on
 `sessions.turns.list`, snapshot/keyset anchored with an immutable task/turn
 tie-breaker so appending a turn while paging older history produces neither

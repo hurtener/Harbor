@@ -43,6 +43,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -623,6 +624,30 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 		cp.VirtualAgent = binding
 	}
 	return &cp, nil
+}
+
+// GetPersisted implements tasks.TaskRegistry: Get, falling back to the
+// backend's persisted record when the task is not in this instance's
+// memory. The fallback runs outside the engine lock, re-checks the
+// record's id and identity visibility, and returns the freshly decoded
+// record (never aliased, never adopted into this engine's state).
+func (e *Engine) GetPersisted(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) {
+	t, err := e.Get(ctx, id)
+	if err == nil || !errors.Is(err, tasks.ErrNotFound) {
+		return t, err
+	}
+	ident, identErr := identityFromCtx(ctx)
+	if identErr != nil {
+		return nil, identErr
+	}
+	rec, found, loadErr := e.backend.LoadTask(ctx, ident, id)
+	if loadErr != nil {
+		return nil, fmt.Errorf("tasks: load persisted task %q: %w", id, loadErr)
+	}
+	if !found || rec == nil || rec.ID != id || !identityVisible(ident, rec.Identity) {
+		return nil, err
+	}
+	return rec, nil
 }
 
 // List implements tasks.TaskRegistry. Filters by session and the

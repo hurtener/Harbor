@@ -277,10 +277,45 @@ func (m *Materializer) applyEvent(ctx context.Context, ev events.Event) (applied
 	return applied, !applied, nil
 }
 
+// routeKind names how an event routes to its turn (see routeOf).
+type routeKind int
+
+const (
+	routeNone routeKind = iota
+	routeTask
+	routeRun
+)
+
+// routeOf returns the routing key of a recognized non-spawn event: the
+// payload task id of a task lifecycle / input-disposition event, or the
+// envelope run id of a run-scoped event. task.spawned routes itself.
+func routeOf(ev events.Event, payload map[string]any) (routeKind, string) {
+	switch ev.Type {
+	case tasks.EventTypeTaskSpawned:
+		return routeNone, ""
+	case tasks.EventTypeTaskStarted, tasks.EventTypeTaskResumed, tasks.EventTypeTaskCompleted,
+		tasks.EventTypeTaskFailed, tasks.EventTypeTaskCancelled, tasks.EventTypeTaskPaused:
+		return routeTask, fieldString(payload, "TaskID")
+	case runctx.EventTypeInputDispositionResolved:
+		return routeTask, fieldString(payload, "task_id")
+	}
+	return routeRun, runIDFromIdentity(ev.Identity)
+}
+
 // applyToSession routes one recognized event to the owning turn and
 // derives the projector observation. Returns applied=false for a
 // deliberate skip (routing miss, sealed turn, unclassifiable step).
 func (m *Materializer) applyToSession(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
+	if kind, key := routeOf(ev, payload); kind != routeNone {
+		ts, err := m.preRoute(ctx, sess, kind, key)
+		if err != nil {
+			return false, err
+		}
+		if ts != nil && ev.Sequence <= ts.adoptedThrough {
+			// The adopted durable row already reflects this event.
+			return true, nil
+		}
+	}
 	switch ev.Type {
 	case tasks.EventTypeTaskSpawned:
 		return m.applyTaskSpawned(ctx, sess, ev, payload)
@@ -383,10 +418,23 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 	// later disposition update never replaces the row's inputs without
 	// them (restart convergence). A nil reader / missing record leaves
 	// the components honestly unavailable.
-	snap, err := m.readTaskSnapshot(ctx, sess.id, taskID)
+	snap, found, err := m.readTaskSnapshotFound(ctx, sess.id, taskID)
 	if err != nil {
 		return false, err
 	}
+	if !found && m.snap != nil && ev.Sequence > sess.checkpoint {
+		if _, exists := sess.turns[turns.TurnID(taskID)]; !exists && m.deferSpawnLocked(sess.id, taskID) {
+			// A LIVE root spawn whose task record is not readable yet
+			// (another instance published the event and has not
+			// persisted the record where this one reads it). Appending
+			// now would persist the turn without the user's query and
+			// agent; defer — bounded by attempts AND a grace window —
+			// and retry the same event. After the bound the row is
+			// appended honestly unavailable and flagged for repair.
+			return false, errSpawnDeferred
+		}
+	}
+	m.clearSpawnMissLocked(sess.id, taskID)
 	// Run binding at the turn's birth: the event envelope's run id and
 	// the record's run id must agree when both are present; the record
 	// may FILL the run only when the event genuinely lacks one. The
@@ -442,7 +490,7 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 			appendAgentName = snap.AgentName
 			appendBinding = snap.AgentBindingSource
 		}
-		if _, err := m.proj.Append(ctx, sess.id, turns.Append{
+		row, err := m.proj.Append(ctx, sess.id, turns.Append{
 			TurnID:             turns.TurnID(taskID),
 			TaskID:             taskID, // the event's canonical task id — a snapshot can never replace it
 			RunID:              runID,
@@ -455,13 +503,33 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 			Status:             turns.StatusPending,
 			StartedAt:          ev.OccurredAt,
 			EventSeq:           ev.Sequence,
-		}); err != nil {
+		})
+		if err != nil {
 			return false, fmt.Errorf("materializer: append turn %s: %w", taskID, err)
+		}
+		// The append is idempotent: a row another writer appended first
+		// (an older instance during a rolling deploy) may lack the query
+		// / agent this snapshot carries — fill them once.
+		if err := m.fillIdentityIfMissing(ctx, sess.id, taskID, row, snap, found); err != nil {
+			return false, err
+		}
+	} else if found && (snap.QueryPresent || snap.AgentPresent) && m.coord != nil {
+		// Replay of a spawn a previous lifetime appended: repair a row
+		// persisted without the query / agent the record carries.
+		row, err := m.proj.Get(ctx, sess.id, turns.TurnID(taskID))
+		if err != nil && !errors.Is(err, turns.ErrTurnNotFound) {
+			return false, err
+		}
+		if err == nil {
+			if err := m.fillIdentityIfMissing(ctx, sess.id, taskID, row, snap, found); err != nil {
+				return false, err
+			}
 		}
 	}
 
 	sess.commitTaskRoute(taskID, parent, runID, derivedRunID)
 	ts := &turnState{taskID: taskID, runID: runID}
+	m.open = append(m.open, openRef{ts: ts, spawnSeq: ev.Sequence})
 	if snap.InputsPresent {
 		// Seed the in-memory input accumulator with the record's input
 		// metadata (deep-copied) so a later disposition event for the
@@ -867,6 +935,9 @@ func (m *Materializer) applyPlannerDecision(ctx context.Context, sess *sessionSt
 	if !ok || ts.terminal() {
 		return false, nil
 	}
+	if ts.reasoningFrozen {
+		return true, nil
+	}
 	kind, ok := reasoningKindFor(fieldString(payload, "DecisionKind"))
 	if !ok {
 		return false, nil
@@ -916,6 +987,9 @@ func (m *Materializer) applyToolInvoked(ctx context.Context, sess *sessionState,
 	if !ok || ts.terminal() {
 		return false, nil
 	}
+	if ts.activityFrozen {
+		return true, nil
+	}
 	toolName := fieldString(payload, "ToolName")
 	if toolName == "" {
 		return false, nil
@@ -961,6 +1035,9 @@ func (m *Materializer) applyToolCompleted(ctx context.Context, sess *sessionStat
 	if !ok || ts.terminal() {
 		return false, nil
 	}
+	if ts.activityFrozen {
+		return true, nil
+	}
 	toolName := fieldString(payload, "ToolName")
 	idx := findInFlight(ts.activity, toolName)
 	if idx < 0 {
@@ -997,6 +1074,9 @@ func (m *Materializer) applyToolFailed(ctx context.Context, sess *sessionState, 
 	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
+	}
+	if ts.activityFrozen {
+		return true, nil
 	}
 	toolName := fieldString(payload, "ToolName")
 	idx := findInFlight(ts.activity, toolName)
@@ -1038,6 +1118,9 @@ func (m *Materializer) applyToolPolicyExhausted(ctx context.Context, sess *sessi
 	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
+	}
+	if ts.activityFrozen {
+		return true, nil
 	}
 	toolName := fieldString(payload, "ToolName")
 	idx := findInFlight(ts.activity, toolName)

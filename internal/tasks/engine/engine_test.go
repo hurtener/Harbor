@@ -31,6 +31,24 @@ type memBackend struct {
 	mu           sync.Mutex
 	savedTasks   int
 	deletedTasks []tasks.TaskID
+	// persisted simulates records another instance sharing the store
+	// wrote (served by LoadTask only, never hydrated).
+	persisted map[tasks.TaskID]*tasks.Task
+	loadErr   error
+}
+
+func (m *memBackend) LoadTask(_ context.Context, _ identity.Identity, id tasks.TaskID) (*tasks.Task, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.loadErr != nil {
+		return nil, false, m.loadErr
+	}
+	t, ok := m.persisted[id]
+	if !ok {
+		return nil, false, nil
+	}
+	cp := *t
+	return &cp, true, nil
 }
 
 func (m *memBackend) SaveTask(_ context.Context, _ engine.TaskRecord) error {

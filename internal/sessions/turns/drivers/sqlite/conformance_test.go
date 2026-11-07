@@ -35,3 +35,17 @@ func TestConformance_Run(t *testing.T) {
 		return s, func() { _ = s.Close(context.Background()) }
 	})
 }
+
+// TestMaterializerStoreConformance_Run runs the materializer
+// coordination suite (lease, cursor, identity repair) against a
+// file-backed store.
+func TestMaterializerStoreConformance_Run(t *testing.T) {
+	conformancetest.RunMaterializerStore(t, func() (turns.Store, func()) {
+		dsn := filepath.Join(t.TempDir(), "turns.sqlite")
+		s, err := sqlite.New(sqlite.Config{DSN: dsn})
+		if err != nil {
+			t.Fatalf("sqlite.New: %v", err)
+		}
+		return s, func() { _ = s.Close(context.Background()) }
+	})
+}

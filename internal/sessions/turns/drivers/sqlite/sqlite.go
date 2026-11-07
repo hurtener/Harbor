@@ -124,6 +124,10 @@ type Config struct {
 	// retention eviction is never silent (AGENTS.md §13). <= 0 means
 	// the documented projection default (turns.MaxRetainedTurns).
 	Retention int
+	// Clock is the clock the single-writer materializer lease expiry
+	// is evaluated against; nil means time.Now. Tests inject it to
+	// expire a lease deterministically.
+	Clock func() time.Time
 }
 
 // New constructs a SQLite-backed `turns.Store` against cfg.DSN.
@@ -185,10 +189,15 @@ func New(cfg Config) (turns.Store, error) {
 	if retention <= 0 {
 		retention = turns.MaxRetainedTurns
 	}
+	clock := cfg.Clock
+	if clock == nil {
+		clock = time.Now
+	}
 	return &driver{
 		db:      db,
 		retain:  retention,
 		durable: !isMemoryDSN(cfg.DSN),
+		clock:   clock,
 	}, nil
 }
 
@@ -323,6 +332,7 @@ type driver struct {
 	closed  atomic.Bool
 	retain  int
 	durable bool
+	clock   func() time.Time
 }
 
 // Compile-time assertion that driver satisfies turns.Store.
@@ -407,6 +417,13 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 	row.Version = 1
 	if err := writeRowAndChildren(ctx, tx, id, row); err != nil {
 		return turns.TurnRow{}, err
+	}
+	if turns.NeedsIdentityRepair(row) {
+		// Flag the row for the materializer's identity repair pass (its
+		// query / agent was unavailable at append).
+		if _, err := tx.ExecContext(ctx, flagIdentityRepairSQL, id.TenantID, id.UserID, id.SessionID, string(row.TurnID)); err != nil {
+			return turns.TurnRow{}, fmt.Errorf("sessions/turns/sqlite: flag identity repair: %w", err)
+		}
 	}
 
 	// 5. Retention: evict the session's oldest rows past the bound;

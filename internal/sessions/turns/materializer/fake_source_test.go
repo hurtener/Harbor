@@ -39,6 +39,7 @@ type fakeSource struct {
 	unavailable bool // no retained substrate
 	skip        func(events.Event) bool
 	pageCalls   int
+	pageAfters  []uint64      // the cursor of every Page call, in order
 	wake        chan<- uint64 // the registered wake sink (Run loop tests)
 	// unsubscribed records that the last Watch handle's Unsubscribe ran
 	// — the Run-loop cancellation test asserts the watcher is stopped.
@@ -65,6 +66,7 @@ func (f *fakeSource) Page(_ context.Context, after uint64, limit int) (events.Pr
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pageCalls++
+	f.pageAfters = append(f.pageAfters, after)
 	if f.unavailable {
 		return events.ProjectionPage{Next: after, Quality: events.ProjectionUnavailable}, nil
 	}

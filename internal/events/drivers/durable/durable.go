@@ -754,6 +754,9 @@ type bus struct {
 	// that pause a reader between index and body reads. Nil in production.
 	hookBeforeBodyLoad func(id identity.Quadruple, seq uint64)
 	hookAfterChunkLoad func(id identity.Quadruple, chunk uint64)
+	// chunkSpans caches verified chunk spans for the projection read path
+	// (see chunkspans.go). Zero value is ready; bounded.
+	chunkSpans chunkSpanCache
 	// legacyIndexWrites makes the publish path write the v1.36 head format
 	// and never migrate inline. Test seam that simulates a pre-v2 writer.
 	legacyIndexWrites bool

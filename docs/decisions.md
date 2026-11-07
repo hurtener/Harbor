@@ -16501,3 +16501,43 @@ reports its history as possibly incomplete permanently, even though only
 retention horizon can now move later; it is recomputed from the headers after a
 complete pass. Harbor's default stays off; operators opt in per runtime.
 **Cross-references:** RFC §6.13; D-492.
+
+## D-494 — Single-writer turns materializer with a persisted resume cursor
+
+**Date:** 2026-11-07. **Scope:** `sessions.turns` materializer, its three
+store drivers (migration `0002`), the task registry's persisted read, and the
+durable projection read path. No config keys.
+
+Several runtime instances can share one durable projection (a rolling deploy
+overlaps the old and the new instance). The turns materializer now coordinates
+through a store-level `turns.MaterializerStore`: a lease row whose expiry is
+evaluated on the store clock (the database clock for Postgres — no session
+advisory lock, so transaction-pooling proxies work), renewed every TTL/3
+(TTL 30 s) and released on shutdown; only the holder pages and writes, a
+standby takes over from the persisted cursor. A restart never re-reads the
+whole event log: the holder persists a lease-fenced, monotonic resume cursor,
+held back to just before the oldest non-terminal turn spawned within a
+10,000-event lookback (so that turn's accumulators rebuild by replay); an
+older open turn adopts its durable row on its next event (an overflowed
+activity / reasoning window is frozen at its stored exact totals rather than
+recomputed from a partial feed). A deferred complete seal older than the
+lookback is not reconstructed after a restart — the accepted trade-off of
+bounding restart cost. Migration `0002` seeds the cursor from the highest
+per-session checkpoint minus the lookback (the previous materializer applied
+events in global order).
+
+The task-record read used while projecting falls back to the persisted record
+(`TaskRegistry.GetPersisted` → `engine.Backend.LoadTask`); a live root spawn
+whose record is still unreadable defers within a bound instead of appending a
+turn without the user's query. Query and agent are the only components a
+sealed row may still receive, exactly once, while `unavailable`
+(`RepairTurnIdentity`, the shared `turns.ApplyIdentityFill` rule); rows are
+flagged at append and existing rows are backfilled by the migration.
+
+The durable projection page caches verified chunk spans per session (bounded)
+and loads forward only the chunks holding the rows it returns; chunks remain
+authenticated by digest, and any mismatch falls back to the verifying walk.
+The per-page scan of every session header is unchanged (a session-activity
+index is a possible follow-up). The rollups projector worker already resumes
+from its durable checkpoint.
+**Cross-references:** D-492.

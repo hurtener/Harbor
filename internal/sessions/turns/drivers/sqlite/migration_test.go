@@ -34,8 +34,8 @@ func TestMigrate_CleanDB_StartsClean(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	versions := loadSchemaMigrations(t, db)
-	if len(versions) != 1 || versions[0] != 1 {
-		t.Fatalf("schema_migrations=%v, want [1]", versions)
+	if len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
+		t.Fatalf("schema_migrations=%v, want [1 2]", versions)
 	}
 }
 
@@ -59,8 +59,8 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if versions := loadSchemaMigrations(t, db); len(versions) != 1 || versions[0] != 1 {
-		t.Fatalf("schema_migrations after re-open=%v, want [1]", versions)
+	if versions := loadSchemaMigrations(t, db); len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
+		t.Fatalf("schema_migrations after re-open=%v, want [1 2]", versions)
 	}
 }
 

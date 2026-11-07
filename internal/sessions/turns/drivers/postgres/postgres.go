@@ -289,12 +289,13 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 	res, err := tx.ExecContext(ctx, `
         INSERT INTO turn_rows
             (tenant_id, user_id, session_id, turn_id, effective_agent_id,
-             sequence, sealed, version, last_applied_event_seq, row_json)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             sequence, sealed, version, last_applied_event_seq, row_json,
+             identity_repair)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (tenant_id, user_id, session_id, turn_id) DO NOTHING`,
 		id.TenantID, id.UserID, id.SessionID, string(row.TurnID), row.Agent.ID,
 		int64(next.Sequence), next.Sealed, next.Version, dbSeq(next.LastAppliedEventSeq),
-		string(jsonBytes),
+		string(jsonBytes), turns.NeedsIdentityRepair(next),
 	)
 	if err != nil {
 		return turns.TurnRow{}, fmt.Errorf("turns/postgres: insert row: %w", err)

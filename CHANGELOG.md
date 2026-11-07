@@ -17,6 +17,50 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- **Conversation turns no longer lose the user's message during a
+  rolling deploy, and a restart no longer re-reads the whole event log.**
+  While two instances shared one database, the old instance's turns
+  materializer projected the new instance's `task.spawned` events, looked
+  the task up only in its own memory, treated the miss as "no record" and
+  appended the turn with an empty query and agent — permanently, since the
+  query was only ever written at append. Fixes:
+  - The materializer's task-record read falls back to the persisted record
+    (`TaskRegistry.GetPersisted`, backed by a single-record
+    `Backend.LoadTask` in both task drivers) when the task is not in this
+    instance's memory.
+  - A live root spawn whose record is still unreadable is deferred
+    (bounded: 5 attempts and a 10 s grace window) instead of appended
+    without its query; after the bound it is appended honestly unavailable.
+  - Rows with an unavailable query/agent are flagged (`identity_repair`)
+    and repaired once from the task record — including sealed rows and rows
+    written before this release (the migration backfills the flag). A
+    complete component is never overwritten. An idempotent append that
+    finds a peer's incomplete row fills it inline.
+  - A single-writer lease (`turn_materializer` row, expiry on the database
+    clock, works through transaction pooling) lets only one instance
+    materialize; the other stands by and takes over when the holder
+    releases the lease on shutdown or stops renewing it (30 s TTL).
+  - The materializer persists its resume cursor (lease-fenced, monotonic)
+    and resumes from it, held back to just before the oldest still-open
+    turn within a 10,000-event lookback; older open turns adopt their
+    durable row on their next event. The migration seeds the cursor from
+    the existing per-session checkpoints, so the first boot after upgrading
+    does not replay the log either. Catch-up progress is logged at Info at
+    most every 15 s.
+  - Migrations: `sessions.turns` Postgres and SQLite `0002` (new
+    `turn_materializer` table, `turn_rows.identity_repair` + partial index,
+    flag backfill, cursor seed). Forward-only; no config changes.
+- **Projection pages no longer reload every index chunk above a far-behind
+  cursor.** Since the chunked v2 event index (v1.37.0), each projection
+  page walked and loaded every chunk between a session's tail and the
+  reader's cursor, so a cold catch-up cost O(history) chunk loads per
+  page. Verified chunk spans are now cached per session (bounded, ~3 MiB
+  max) and pages load forward only the chunks holding the rows they
+  return; each loaded chunk is still authenticated by its digest, and any
+  mismatch falls back to the verifying walk.
+
 ## [1.39.0] — 2026-11-07
 
 ### Security

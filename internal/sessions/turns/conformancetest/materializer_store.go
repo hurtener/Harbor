@@ -1,0 +1,277 @@
+package conformancetest
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/sessions/turns"
+)
+
+// RunMaterializerStore executes the turns.MaterializerStore suite (the
+// single-writer lease, the fenced monotonic resume cursor, and the
+// identity repair queue). The factory's store MUST also implement
+// turns.MaterializerStore.
+//
+// subtests:
+//
+//   - Lease_Exclusive_RenewAndRelease
+//   - Lease_ExpiryTakeover_FencesOldHolder
+//   - Cursor_LeaseFenced_Monotonic
+//   - Repair_FlagListFillSettle
+//   - Repair_KeysetPaging_AcrossSessions
+//   - Repair_Fenced_And_NotFound
+func RunMaterializerStore(t *testing.T, factory Factory) {
+	t.Helper()
+	open := func(t *testing.T) (turns.Store, turns.MaterializerStore) {
+		t.Helper()
+		s, cleanup := factory()
+		t.Cleanup(cleanup)
+		ms, ok := s.(turns.MaterializerStore)
+		if !ok {
+			t.Fatalf("store %T does not implement turns.MaterializerStore", s)
+		}
+		return s, ms
+	}
+	ctx := func(t *testing.T) context.Context {
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		t.Cleanup(cancel)
+		return c
+	}
+
+	t.Run("Lease_Exclusive_RenewAndRelease", func(t *testing.T) {
+		_, ms := open(t)
+		c := ctx(t)
+		a, err := ms.AcquireMaterializerLease(c, "holder-a", time.Minute)
+		if err != nil || !a.Held || a.Holder != "holder-a" {
+			t.Fatalf("A acquire = %+v, %v; want held by A", a, err)
+		}
+		b, err := ms.AcquireMaterializerLease(c, "holder-b", time.Minute)
+		if err != nil || b.Held || b.Holder != "holder-a" {
+			t.Fatalf("B acquire while A holds = %+v, %v; want not held, holder A", b, err)
+		}
+		if r, err := ms.AcquireMaterializerLease(c, "holder-a", time.Minute); err != nil || !r.Held {
+			t.Fatalf("A renew = %+v, %v; want held", r, err)
+		}
+		// Releasing someone else's lease is a no-op.
+		if err := ms.ReleaseMaterializerLease(c, "holder-b"); err != nil {
+			t.Fatalf("B release: %v", err)
+		}
+		if b, _ := ms.AcquireMaterializerLease(c, "holder-b", time.Minute); b.Held {
+			t.Fatalf("B took the lease after releasing a lease it never held")
+		}
+		if err := ms.ReleaseMaterializerLease(c, "holder-a"); err != nil {
+			t.Fatalf("A release: %v", err)
+		}
+		if b, err := ms.AcquireMaterializerLease(c, "holder-b", time.Minute); err != nil || !b.Held {
+			t.Fatalf("B acquire after A released = %+v, %v; want held", b, err)
+		}
+		if _, err := ms.AcquireMaterializerLease(c, "", time.Minute); !errors.Is(err, turns.ErrInvalidInput) {
+			t.Fatalf("empty holder: %v; want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("Lease_ExpiryTakeover_FencesOldHolder", func(t *testing.T) {
+		_, ms := open(t)
+		c := ctx(t)
+		if a, err := ms.AcquireMaterializerLease(c, "holder-a", time.Millisecond); err != nil || !a.Held {
+			t.Fatalf("A acquire = %+v, %v", a, err)
+		}
+		// A stops renewing (a crashed instance). B polls until the
+		// lease expires on the store clock — a bounded condition poll,
+		// not a sleep-for-synchronization.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			b, err := ms.AcquireMaterializerLease(c, "holder-b", time.Minute)
+			if err != nil {
+				t.Fatalf("B acquire: %v", err)
+			}
+			if b.Held {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("B never took over the expired lease (holder %q)", b.Holder)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if err := ms.SaveMaterializerCursor(c, "holder-a", 7); !errors.Is(err, turns.ErrLeaseNotHeld) {
+			t.Fatalf("old holder cursor save: %v; want ErrLeaseNotHeld", err)
+		}
+		if a, _ := ms.AcquireMaterializerLease(c, "holder-a", time.Minute); a.Held {
+			t.Fatalf("old holder re-took a live lease")
+		}
+	})
+
+	t.Run("Cursor_LeaseFenced_Monotonic", func(t *testing.T) {
+		_, ms := open(t)
+		c := ctx(t)
+		if l, err := ms.AcquireMaterializerLease(c, "holder-a", time.Minute); err != nil || l.Cursor != 0 {
+			t.Fatalf("fresh acquire = %+v, %v; want cursor 0", l, err)
+		}
+		if err := ms.SaveMaterializerCursor(c, "holder-b", 5); !errors.Is(err, turns.ErrLeaseNotHeld) {
+			t.Fatalf("non-holder save: %v; want ErrLeaseNotHeld", err)
+		}
+		if err := ms.SaveMaterializerCursor(c, "holder-a", 10); err != nil {
+			t.Fatalf("save 10: %v", err)
+		}
+		if err := ms.SaveMaterializerCursor(c, "holder-a", 4); err != nil {
+			t.Fatalf("save 4 (no-op): %v", err)
+		}
+		if err := ms.ReleaseMaterializerLease(c, "holder-a"); err != nil {
+			t.Fatalf("release: %v", err)
+		}
+		l, err := ms.AcquireMaterializerLease(c, "holder-b", time.Minute)
+		if err != nil || !l.Held || l.Cursor != 10 {
+			t.Fatalf("takeover acquire = %+v, %v; want held with cursor 10 (kept across release, never regressed)", l, err)
+		}
+	})
+
+	t.Run("Repair_FlagListFillSettle", func(t *testing.T) {
+		s, ms := open(t)
+		c := ctx(t)
+		id := triple("t-rep", "u-rep", "s-rep")
+		broken := repairRow("broken", id)
+		if _, err := s.AppendTurnIf(c, id, broken); err != nil {
+			t.Fatalf("append broken: %v", err)
+		}
+		complete := repairRow("complete", id)
+		complete.Query = turns.Query{Text: "hello", Complete: turns.CompletenessComplete}
+		complete.Agent = turns.Agent{ID: "agent", BindingSource: turns.AgentBindingExplicit, Complete: turns.CompletenessComplete}
+		if _, err := s.AppendTurnIf(c, id, complete); err != nil {
+			t.Fatalf("append complete: %v", err)
+		}
+		keys, err := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10)
+		if err != nil || len(keys) != 1 || keys[0].TurnID != "broken" || keys[0].Identity != id {
+			t.Fatalf("candidates = %+v, %v; want only the broken row", keys, err)
+		}
+		// Seal the broken row: the repair must still fill it.
+		cur, err := s.GetTurn(c, id, "broken")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		sealed := cur
+		sealed.Status = turns.StatusComplete
+		sealed.Answer = turns.Answer{State: turns.AnswerStateInline, Inline: "a", Complete: turns.CompletenessComplete}
+		if _, err := s.SealTurnIf(c, id, "broken", cur.Version, sealed); err != nil {
+			t.Fatalf("seal: %v", err)
+		}
+		cur, _ = s.GetTurn(c, id, "broken")
+
+		// Query only: the agent stays unavailable, so the flag stays.
+		row, changed, err := ms.RepairTurnIdentity(c, id, "broken", turns.IdentityFill{QueryPresent: true, Query: "what is up"})
+		if err != nil || !changed {
+			t.Fatalf("repair query = %v changed=%v", err, changed)
+		}
+		if row.Query.Text != "what is up" || row.Query.Complete != turns.CompletenessComplete || !row.Sealed || row.Version != cur.Version+1 {
+			t.Fatalf("repaired row = %+v; want filled query, still sealed, version+1", row)
+		}
+		if got, _ := s.GetTurn(c, id, "broken"); got.Query.Text != "what is up" || got.Answer.Inline != "a" || got.Status != turns.StatusComplete {
+			t.Fatalf("stored row after repair = %+v; want query filled, seal content intact", got)
+		}
+		if keys, _ := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10); len(keys) != 1 {
+			t.Fatalf("candidates after partial repair = %+v; want still flagged (agent unavailable)", keys)
+		}
+		// A complete component is never overwritten.
+		row, changed, err = ms.RepairTurnIdentity(c, id, "broken", turns.IdentityFill{QueryPresent: true, Query: "other"})
+		if err != nil || changed || row.Query.Text != "what is up" {
+			t.Fatalf("overwrite attempt = %+v changed=%v err=%v; want unchanged", row.Query, changed, err)
+		}
+		// Agent fill clears the flag.
+		row, changed, err = ms.RepairTurnIdentity(c, id, "broken", turns.IdentityFill{AgentPresent: true, AgentID: "agent-x", AgentName: "agent-x"})
+		if err != nil || !changed || row.Agent.ID != "agent-x" || row.Agent.BindingSource != turns.AgentBindingExplicit {
+			t.Fatalf("agent repair = %+v changed=%v err=%v", row.Agent, changed, err)
+		}
+		if keys, _ := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10); len(keys) != 0 {
+			t.Fatalf("candidates after full repair = %+v; want none", keys)
+		}
+
+		// Settle: nothing to fill, the flag is cleared without a write.
+		empty := repairRow("empty", id)
+		if _, err := s.AppendTurnIf(c, id, empty); err != nil {
+			t.Fatalf("append empty: %v", err)
+		}
+		before, _ := s.GetTurn(c, id, "empty")
+		row, changed, err = ms.RepairTurnIdentity(c, id, "empty", turns.IdentityFill{Settle: true})
+		if err != nil || changed || row.Version != before.Version {
+			t.Fatalf("settle = %+v changed=%v err=%v; want no write", row, changed, err)
+		}
+		if keys, _ := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10); len(keys) != 0 {
+			t.Fatalf("candidates after settle = %+v; want none", keys)
+		}
+		if _, _, err := ms.RepairTurnIdentity(c, id, "complete", turns.IdentityFill{QueryPresent: true, Query: strings.Repeat("x", turns.MaxQueryRunes+1)}); err != nil {
+			t.Fatalf("repair of a complete row must be a no-op even with an over-bound fill (nothing to fill): %v", err)
+		}
+		if _, _, err := ms.RepairTurnIdentity(c, id, "empty", turns.IdentityFill{QueryPresent: true, Query: strings.Repeat("x", turns.MaxQueryRunes+1)}); !errors.Is(err, turns.ErrInvalidInput) {
+			t.Fatalf("over-bound fill: %v; want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("Repair_KeysetPaging_AcrossSessions", func(t *testing.T) {
+		s, ms := open(t)
+		c := ctx(t)
+		want := map[turns.IdentityRepairKey]bool{}
+		for _, sess := range []string{"s-a", "s-b", "s-c"} {
+			id := triple("t-page", "u-page", sess)
+			for _, turn := range []string{"t1", "t2"} {
+				if _, err := s.AppendTurnIf(c, id, repairRow(turn, id)); err != nil {
+					t.Fatalf("append: %v", err)
+				}
+				want[turns.IdentityRepairKey{Identity: id, TurnID: turns.TurnID(turn)}] = true
+			}
+		}
+		var after turns.IdentityRepairKey
+		seen := map[turns.IdentityRepairKey]bool{}
+		for range 10 {
+			keys, err := ms.ListIdentityRepairCandidates(c, after, 4)
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if len(keys) == 0 {
+				break
+			}
+			for _, k := range keys {
+				if seen[k] {
+					t.Fatalf("duplicate candidate %+v", k)
+				}
+				seen[k] = true
+			}
+			after = keys[len(keys)-1]
+		}
+		if len(seen) != len(want) {
+			t.Fatalf("paged %d candidates, want %d", len(seen), len(want))
+		}
+	})
+
+	t.Run("Repair_Fenced_And_NotFound", func(t *testing.T) {
+		s, ms := open(t)
+		c := ctx(t)
+		id := triple("t-fence", "u-fence", "s-fence")
+		if _, err := s.AppendTurnIf(c, id, repairRow("r", id)); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		if _, _, err := ms.RepairTurnIdentity(c, id, "missing", turns.IdentityFill{QueryPresent: true, Query: "q"}); !errors.Is(err, turns.ErrTurnNotFound) {
+			t.Fatalf("missing row: %v; want ErrTurnNotFound", err)
+		}
+		if _, _, err := ms.RepairTurnIdentity(c, identity.Identity{TenantID: "t"}, "r", turns.IdentityFill{}); !errors.Is(err, turns.ErrIdentityRequired) {
+			t.Fatalf("partial identity: %v; want ErrIdentityRequired", err)
+		}
+		if err := s.FenceSession(c, id); err != nil {
+			t.Fatalf("fence: %v", err)
+		}
+		if _, _, err := ms.RepairTurnIdentity(c, id, "r", turns.IdentityFill{QueryPresent: true, Query: "q"}); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Fatalf("fenced repair: %v; want ErrErasureFenced", err)
+		}
+	})
+}
+
+// repairRow builds a mutable row whose query and agent are unavailable
+// (the shape a spawn projected without its task record produces).
+func repairRow(turnID string, id identity.Identity) turns.TurnRow {
+	r := freshRow(turnID, id)
+	r.Query = turns.Query{Complete: turns.CompletenessUnavailable}
+	r.Agent = turns.Agent{BindingSource: turns.AgentBindingUnknown, Complete: turns.CompletenessUnavailable}
+	return r
+}

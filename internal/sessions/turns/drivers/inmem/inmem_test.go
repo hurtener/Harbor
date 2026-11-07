@@ -327,3 +327,15 @@ func TestInMem_CancelledContext_FailsLoud_AndStoreSurvives(t *testing.T) {
 		t.Errorf("healthy get after cancelled calls = (%v, %v), want (r, nil)", got.TurnID, err)
 	}
 }
+
+// TestInMem_MaterializerStoreConformance runs the materializer
+// coordination suite (lease, cursor, identity repair).
+func TestInMem_MaterializerStoreConformance(t *testing.T) {
+	conformancetest.RunMaterializerStore(t, func() (turns.Store, func()) {
+		s, err := inmem.New()
+		if err != nil {
+			t.Fatalf("inmem.New: %v", err)
+		}
+		return s, func() { _ = s.Close(context.Background()) }
+	})
+}

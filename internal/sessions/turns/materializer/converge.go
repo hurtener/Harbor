@@ -155,10 +155,18 @@ func (m *Materializer) convergePending(ctx context.Context, res *Result) error {
 func (m *Materializer) convergeQueued(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.pending) == 0 {
-		return nil
+	if m.coord != nil && !m.held {
+		return nil // standby: the lease holder owns the projection
 	}
-	return m.convergePending(ctx, &Result{})
+	if len(m.pending) > 0 {
+		if err := m.convergePending(ctx, &Result{}); err != nil {
+			return err
+		}
+	}
+	// The idle tick also serves the bounded identity repair queue, so
+	// rows flagged before this boot are repaired without new events.
+	m.repairPassLocked(ctx)
+	return nil
 }
 
 // completeSealProjection rereads the exact turn and its task snapshot

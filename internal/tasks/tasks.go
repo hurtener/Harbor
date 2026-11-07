@@ -833,6 +833,14 @@ type TaskRegistry interface {
 	// identity (cross-tenant / cross-session reads are rejected).
 	Get(ctx context.Context, id TaskID) (*Task, error)
 
+	// GetPersisted is Get with a fallback to the PERSISTED task record
+	// when this registry instance does not hold the task in memory —
+	// the record another runtime instance sharing the same store wrote
+	// (e.g. during a rolling-deploy overlap). Same identity rule and
+	// ErrNotFound semantics as Get. Read-only: the fallback never
+	// adopts the record into this instance's lifecycle state.
+	GetPersisted(ctx context.Context, id TaskID) (*Task, error)
+
 	// List returns task summaries for the given session matching `f`.
 	// Empty pointer fields in `f` are wildcards.
 	List(ctx context.Context, sessionID identity.Identity, f TaskFilter) ([]TaskSummary, error)

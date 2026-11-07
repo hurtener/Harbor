@@ -339,3 +339,19 @@ func freshRow(turnID string) turns.TurnRow {
 		Query:      turns.Query{Text: "q", Complete: turns.CompletenessComplete},
 	}
 }
+
+// TestPostgres_MaterializerStoreConformance runs the materializer
+// coordination suite (lease on the database clock, fenced cursor,
+// identity repair) against a real Postgres.
+func TestPostgres_MaterializerStoreConformance(t *testing.T) {
+	baseDSN := requireDSN(t)
+	dsn := freshSchema(t, baseDSN)
+	conformancetest.RunMaterializerStore(t, func() (turns.Store, func()) {
+		s, err := postgres.New(postgres.Config{DSN: dsn})
+		if err != nil {
+			t.Fatalf("postgres.New: %v", err)
+		}
+		truncateTurns(t, dsn)
+		return s, func() { _ = s.Close(context.Background()) }
+	})
+}

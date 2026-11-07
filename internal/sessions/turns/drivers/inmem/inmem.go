@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/sessions/turns"
@@ -54,6 +55,7 @@ type Option func(*options)
 
 type options struct {
 	retention int
+	clock     func() time.Time
 }
 
 // WithRetention bounds how many of the newest turn rows a session
@@ -68,7 +70,7 @@ func WithRetention(n int) Option {
 // New constructs a fresh, empty in-memory turns.Store with the
 // documented default retention bound unless configured otherwise.
 func New(opts ...Option) (turns.Store, error) {
-	o := options{retention: turns.MaxRetainedTurns}
+	o := options{retention: turns.MaxRetainedTurns, clock: time.Now}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&o)
@@ -77,9 +79,14 @@ func New(opts ...Option) (turns.Store, error) {
 	if o.retention <= 0 {
 		o.retention = turns.MaxRetainedTurns
 	}
+	if o.clock == nil {
+		o.clock = time.Now
+	}
 	return &driver{
 		retain: o.retention,
+		clock:  o.clock,
 		rows:   map[rowKey]turns.TurnRow{},
+		repair: map[rowKey]bool{},
 		states: map[sessionKey]*sessionState{},
 	}, nil
 }
@@ -156,8 +163,14 @@ type sessionState struct {
 type driver struct {
 	mu     sync.RWMutex
 	retain int
+	clock  func() time.Time
 	rows   map[rowKey]turns.TurnRow
+	// repair flags rows appended with an unavailable query / agent
+	// (the identity repair queue); removed with the row.
+	repair map[rowKey]bool
 	states map[sessionKey]*sessionState
+	// lease is the single-writer materializer lease + resume cursor.
+	lease  leaseState
 	closed atomic.Bool
 }
 
@@ -246,12 +259,16 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 	// Deep-copy on the write boundary: caller memory never becomes
 	// durable state.
 	d.rows[k] = cloneRow(row)
+	if turns.NeedsIdentityRepair(row) {
+		d.repair[k] = true
+	}
 	st.tail = append(st.tail, row.TurnID)
 	// Retention: evict the oldest rows past the bound; the eviction is
 	// surfaced as the session's explicit truncation flag.
 	if over := len(st.tail) - d.retain; over > 0 {
 		for _, tid := range st.tail[:over] {
 			delete(d.rows, rowKeyOf(id, tid))
+			delete(d.repair, rowKeyOf(id, tid))
 		}
 		st.tail = append([]turns.TurnID(nil), st.tail[over:]...)
 		st.truncated = true
@@ -590,6 +607,7 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 	deleted := 0
 	for _, tid := range st.tail {
 		delete(d.rows, rowKeyOf(id, tid))
+		delete(d.repair, rowKeyOf(id, tid))
 		deleted++
 	}
 	st.tail = nil

@@ -154,12 +154,26 @@
 // source cursor through an excluded watermark range after all
 // returned events have been applied; no per-session checkpoint is
 // fabricated for those excluded records. After a process restart the
-// materializer's in-memory state is empty, so the first pass re-pages
-// the source from sequence zero: row mutations at or below the
-// checkpoint are no-ops (cheap
-// reads), the in-memory accumulators rebuild deterministically from
-// the events, and the pass continues past the checkpoint — restart
-// catch-up is idempotent and converging. Within one instance the
+// materializer's in-memory state is empty. A coordinated materializer
+// (WithCoordination — the serve wiring) resumes from its PERSISTED
+// cursor, which is held back to just before the oldest still-open turn
+// within a bounded lookback: replayed row mutations at or below the
+// checkpoint are no-ops, the open turns' accumulators rebuild from the
+// replayed events, and a turn opened before the cursor adopts its
+// durable row on its next event — restart cost is proportional to the
+// events after the cursor, never the whole log. An uncoordinated
+// materializer re-pages from sequence zero with the same idempotent,
+// converging semantics.
+//
+// # Single writer
+//
+// Instances sharing one durable projection (a rolling-deploy overlap)
+// coordinate through a lease row: only the holder pages and writes; a
+// standby takes over from the persisted cursor when the holder releases
+// the lease or stops renewing it. A live root spawn whose task record
+// is not readable yet is deferred (bounded) instead of appended without
+// the user's query, and rows that were appended without their query /
+// agent are repaired once from the task record by a bounded pass. Within one instance the
 // session state also tracks the sequence of the last event fully
 // incorporated into its accumulators, so a page retry after a
 // mid-page failure never re-derives already-applied events (event
@@ -188,6 +202,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -258,9 +273,10 @@ type Materializer struct {
 	// after a ProjectionCurrent page, the source watermark examined by
 	// that page. The latter can include excluded internal/fenced
 	// sequences, which are safe to skip only after the page is applied.
-	// A fresh instance starts at 0 and re-pages the retained log from
-	// the beginning (restart catch-up is idempotent; the projector's
-	// monotonic guards make re-application a no-op).
+	// A fresh uncoordinated instance starts at 0; a coordinated one
+	// starts at the persisted resume cursor when it takes the lease
+	// (catch-up is idempotent either way; the projector's monotonic
+	// guards make re-application a no-op).
 	cursor uint64
 	// sessions holds the per-session working state, keyed by the
 	// isolation triple.
@@ -277,6 +293,39 @@ type Materializer struct {
 	// Materialize pass (guarded by mu, which Materialize holds for the
 	// whole pass).
 	passTouched int
+
+	// Coordination (WithCoordination); every field below is guarded by
+	// mu. coord nil = uncoordinated (always active, cursor from zero).
+	coord          turns.MaterializerStore
+	holder         string
+	leaseTTL       time.Duration
+	resumeLookback uint64
+	held           bool
+	lastRenew      time.Time
+	lastAttempt    time.Time
+	// resumeFloor is the persisted cursor this instance resumed from:
+	// events at or below it were never observed by this instance, so an
+	// open turn spawned there is ADOPTED from its row (0 = resumed from
+	// the beginning; nothing to adopt).
+	resumeFloor uint64
+	// savedCursor is the last resume cursor persisted.
+	savedCursor uint64
+	// open lists turns that may pin the resume cursor (compacted lazily).
+	open []openRef
+
+	spawnMisses        map[spawnKey]*spawnMiss
+	spawnDeferAttempts int
+	spawnDeferGrace    time.Duration
+
+	repairBudget    int
+	repairRescan    time.Duration
+	repairAfter     turns.IdentityRepairKey
+	repairIdleUntil time.Time
+	repaired        int
+
+	logger      *slog.Logger
+	lastProgLog time.Time
+	now         func() time.Time
 }
 
 // Option configures New.
@@ -348,14 +397,25 @@ func New(src events.ProjectionSource, proj *turns.Projector, opts ...Option) (*M
 		return nil, fmt.Errorf("materializer: New requires a non-nil *turns.Projector")
 	}
 	m := &Materializer{
-		src:               src,
-		proj:              proj,
-		pageLimit:         defaultPageLimit,
-		convergenceBudget: defaultConvergenceBudget,
-		sessions:          map[identity.Identity]*sessionState{},
+		src:                src,
+		proj:               proj,
+		pageLimit:          defaultPageLimit,
+		convergenceBudget:  defaultConvergenceBudget,
+		sessions:           map[identity.Identity]*sessionState{},
+		leaseTTL:           defaultLeaseTTL,
+		resumeLookback:     defaultResumeLookback,
+		spawnMisses:        map[spawnKey]*spawnMiss{},
+		spawnDeferAttempts: defaultSpawnDeferAttempts,
+		spawnDeferGrace:    defaultSpawnDeferGrace,
+		repairBudget:       defaultRepairBudget,
+		repairRescan:       defaultRepairRescan,
+		now:                time.Now,
 	}
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.holder == "" {
+		m.holder = newHolderID()
 	}
 	return m, nil
 }
@@ -394,6 +454,15 @@ type Result struct {
 	// wrapped ring). A projector must treat its history as potentially
 	// incomplete, never as a silent gap-free stream.
 	RetentionGap bool
+	// Standby reports that this instance does not hold the
+	// single-writer lease: nothing was paged or written.
+	Standby bool
+	// SpawnDeferred reports that the pass stopped at a live root spawn
+	// whose task record is not readable yet; the next pass resumes at
+	// the same event.
+	SpawnDeferred bool
+	// Pages is the number of source pages read by the pass.
+	Pages int
 }
 
 // Materialize runs one forward catch-up pass: page the source from the
@@ -424,8 +493,29 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return res, err
 	}
+	held, err := m.ensureLeaseLocked(ctx)
+	if err != nil {
+		return res, err
+	}
+	if !held {
+		res.Standby = true
+		res.Cursor = m.cursor
+		return res, nil
+	}
+	passStart := m.now()
 
 	for {
+		if res.Pages > 0 {
+			// Renew between pages so a long catch-up never outlives the
+			// lease; a lost lease ends the pass in standby.
+			if held, err := m.ensureLeaseLocked(ctx); err != nil {
+				return res, err
+			} else if !held {
+				res.Standby = true
+				res.Cursor = m.cursor
+				return res, nil
+			}
+		}
 		page, err := m.src.Page(ctx, m.cursor, m.pageLimit)
 		if err != nil {
 			if errors.Is(err, events.ErrProjectionUnavailable) {
@@ -447,6 +537,12 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 				return res, err
 			}
 			applied, skipped, err := m.applyEvent(ctx, ev)
+			if errors.Is(err, errSpawnDeferred) {
+				res.SpawnDeferred = true
+				res.PendingComplete = len(m.pending)
+				res.Cursor = m.cursor
+				return res, nil
+			}
 			if err != nil {
 				return res, err
 			}
@@ -469,6 +565,20 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 			nextCursor = page.Watermark
 		}
 		m.cursor = nextCursor
+		res.Pages++
+		if lost, err := m.persistCursorLocked(ctx); err != nil {
+			return res, err
+		} else if lost {
+			res.Standby = true
+			res.Cursor = m.cursor
+			return res, nil
+		}
+		if now := m.now(); now.Sub(m.lastProgLog) >= progressLogEvery && page.Quality != events.ProjectionCurrent {
+			m.lastProgLog = now
+			m.log(ctx, slog.LevelInfo, "turns materializer catching up",
+				slog.Uint64("cursor", m.cursor), slog.Uint64("watermark", page.Watermark),
+				slog.Int("pages", res.Pages), slog.Int("events_applied", res.EventsApplied))
+		}
 
 		if len(page.Events) > 0 {
 			res.SessionsTouched = m.passTouched
@@ -499,6 +609,13 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 	// round-robin order.
 	if err := m.convergePending(ctx, &res); err != nil {
 		return res, err
+	}
+	m.repairPassLocked(ctx)
+	if res.Pages > 1 {
+		m.log(ctx, slog.LevelInfo, "turns materializer caught up",
+			slog.Uint64("cursor", m.cursor), slog.Uint64("watermark", res.Watermark),
+			slog.Int("pages", res.Pages), slog.Int("events_applied", res.EventsApplied),
+			slog.Duration("took", m.now().Sub(passStart)))
 	}
 	res.PendingComplete = len(m.pending)
 	res.Cursor = m.cursor
@@ -552,9 +669,33 @@ func (m *Materializer) Run(ctx context.Context) error {
 	// cancellation. A genuine pass failure (a store failure, a source
 	// anomaly) is reported even when cancellation lands concurrently:
 	// the real error path is never suppressed.
+	// The single-writer lease cadence (coordinated only): renew, or in
+	// standby try to take over, without paging the source. The lease is
+	// released on every exit path so a standby takes over at once.
+	var leaseC <-chan time.Time
+	if m.coord != nil {
+		lease := time.NewTicker(m.renewInterval())
+		leaseC = lease.C
+		defer lease.Stop()
+		defer m.releaseLease()
+	}
+	// The bounded retry of a deferred live spawn (its task record was
+	// not readable yet). A nil channel never fires.
+	var retry *time.Timer
+	var retryC <-chan time.Time
+	defer func() {
+		if retry != nil {
+			retry.Stop()
+		}
+	}()
+
 	catchUp := func() error {
-		_, err := m.Materialize(ctx)
+		res, err := m.Materialize(ctx)
 		if err == nil || (ctx.Err() != nil && errors.Is(err, ctx.Err())) {
+			if err == nil && res.SpawnDeferred && retryC == nil {
+				retry = time.NewTimer(spawnDeferRetry)
+				retryC = retry.C
+			}
 			return nil
 		}
 		return err
@@ -567,6 +708,24 @@ func (m *Materializer) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-retryC:
+			retryC = nil
+			if err := catchUp(); err != nil {
+				return err
+			}
+		case <-leaseC:
+			acquired, err := m.leaseTick(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
+			if acquired {
+				if err := catchUp(); err != nil {
+					return err
+				}
+			}
 		case wm := <-wake:
 			m.mu.Lock()
 			behind := wm > m.cursor

@@ -91,6 +91,7 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		meta events.EventMetadata
 	}
 	var cands []candidate
+	var streams []*pageStream
 	retentionGap := false
 	skippedCorrupt := false
 	for _, rec := range recs {
@@ -127,37 +128,39 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		if view.hdr.Trimmed.Count > 0 && after < view.hdr.Trimmed.ThroughSeq {
 			retentionGap = true
 		}
-		// O(1) skip of a session with nothing after the cursor; otherwise
-		// walk back only to the first chunk holding a row after it, keeping
-		// at most limit+1 candidates per session.
-		rows, err := b.collectAbove(ctx, &view, after, limit+1, func(r indexRow) bool { return !r.Internal })
-		if err != nil {
-			through, classifyErr := b.classifyMissThrough(ctx, err)
-			if errors.Is(classifyErr, ErrIndexIntegrity) {
-				b.skipCorruptSession(ctx, rec.Identity, "projection page")
-				retentionGap = true
+		// O(1) skip of a session with nothing after the cursor. Otherwise
+		// the session joins the page merge as a LAZY row stream: rows in
+		// the header tail are free, and a sealed chunk is loaded only when
+		// the merge actually reaches its sequence range (verified spans
+		// are cached), so a page loads the chunks holding the rows it
+		// returns — not every chunk between the tail and a far-behind
+		// cursor, and not limit+1 rows from every session.
+		if view.hdr.RetainedCount == 0 || view.hdr.LastSeq <= after {
+			continue
+		}
+		st, ok := b.newPageStream(ctx, view, after)
+		if !ok {
+			rows, gap, corrupt, err := b.eagerSessionRows(ctx, &view, after, limit+1)
+			if err != nil {
+				return events.ProjectionPage{}, err
+			}
+			retentionGap = retentionGap || gap
+			if corrupt {
 				skippedCorrupt = true
 				continue
 			}
-			if classifyErr != nil {
-				return events.ProjectionPage{}, fmt.Errorf("durable: projection page: %w", classifyErr)
-			}
-			// A trim deleted a chunk below the rows already collected. Those
-			// rows are every retained row above the cut, so they stay
-			// candidates (dropping them would let a Current page's watermark
-			// skip retained events); only the trimmed range is gone.
-			retentionGap = true
-			kept := rows[:0]
-			for _, r := range rows {
-				if r.Seq > through {
-					kept = append(kept, r)
-				}
-			}
-			rows = kept
+			st = &pageStream{view: view, rows: rows}
 		}
-		for _, r := range rows {
-			cands = append(cands, candidate{id: rec.Identity, meta: r.metadata(rec.Identity)})
-		}
+		streams = append(streams, st)
+	}
+	merged, gap, corrupt, err := b.mergePageStreams(ctx, streams, after, limit+1)
+	if err != nil {
+		return events.ProjectionPage{}, err
+	}
+	retentionGap = retentionGap || gap
+	skippedCorrupt = skippedCorrupt || corrupt
+	for _, r := range merged {
+		cands = append(cands, candidate{id: r.id, meta: r.row.metadata(r.id)})
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].meta.Sequence < cands[j].meta.Sequence })
 

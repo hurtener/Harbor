@@ -20,10 +20,11 @@ var migrationsFS embed.FS
 func runMigrations(ctx context.Context, db *sql.DB, dsn string, mode sqlmigrate.Mode) error {
 	return sqlmigrate.RunPostgresNamed(ctx, db, migrationsFS, sqlmigrate.PostgresMigrationSpec{
 		Subsystem:      "sessions.turns",
-		RequiredTables: []string{"turn_rows", "turn_sessions"},
+		RequiredTables: []string{"turn_rows", "turn_sessions", "turn_materializer"},
 		RequiredColumns: map[string][]string{
-			"turn_rows":     {"tenant_id", "user_id", "session_id", "turn_id", "effective_agent_id", "sequence", "sealed", "version", "last_applied_event_seq", "row_json"},
-			"turn_sessions": {"tenant_id", "user_id", "session_id", "next_seq", "checkpoint", "snapshot", "truncated", "fenced"},
+			"turn_rows":         {"tenant_id", "user_id", "session_id", "turn_id", "effective_agent_id", "sequence", "sealed", "version", "last_applied_event_seq", "row_json", "identity_repair"},
+			"turn_sessions":     {"tenant_id", "user_id", "session_id", "next_seq", "checkpoint", "snapshot", "truncated", "fenced"},
+			"turn_materializer": {"name", "holder", "lease_expires", "cursor"},
 		},
 	}, "turns/postgres", "harbor-turns-migrations", dsn, mode)
 }
