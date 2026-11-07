@@ -1603,6 +1603,13 @@ endpoints). Default: `false`.
 
 ## Events
 
+Observed retention is separate from configuration: `runtime.health` exposes only
+the cached events horizon, at runtime scope, and performs no stored reads or
+audit publication for any caller. To inspect runtime-wide events, tasks and
+sessions horizons, explicitly call `runtime.retention` with a verified `admin`
+scope. `console:fleet` and trust-mode calls are refused; a successful read emits
+one `audit.admin_scope_used` and fails closed if auditing fails (D-490).
+
 ### events.driver
 
 EventBus driver. Default: `inmem`. Validation: `inmem` or `durable`
@@ -2271,6 +2278,33 @@ Example:
 ```yaml
 tools:
   search_cache_dsn: file:./harbor-tools.db
+```
+
+### tools.catalog_cache
+
+Bounds the runtime's in-memory structural cache of admitted configuration-view
+tool inventories (`tools.list` / `tools.describe` with `view: configuration`,
+D-491). The cache holds structure only — never annotations or authorization —
+and every bound has a small default sized for memory-constrained containers
+(512 MB is common). Sizes are conservative estimates dominated by tool input
+and output schema bytes.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_bytes` | `8388608` (8 MiB) | Total estimated size of all cached inventories. |
+| `max_entry_bytes` | `2097152` (2 MiB) | Largest single inventory that is cached; a larger one is served uncached (rebuilt per request). Must not exceed `max_bytes`; it is clamped to a smaller `max_bytes` when omitted. |
+| `max_entries` | `64` | Cached principals (tenant, user, agent, and session when it has an overlay). |
+| `idle_ttl` | `15m` | An entry not read for this long is dropped; the next read costs one build. |
+| `disabled` | `false` | Turns the cache off. Revisions and conditional (`if_revision`) reads keep working. |
+
+Zero or omitted fields take the default; negative values fail validation.
+Restart-required.
+
+```yaml
+tools:
+  catalog_cache:
+    max_bytes: 4194304
+    idle_ttl: 10m
 ```
 
 ### tools.mcp_app_host

@@ -45,6 +45,10 @@ func compile(ctx context.Context) error {
 	clone := c.WithSession("other")
 	_, _ = clone.RuntimeInfo(ctx)
 	_, _ = clone.RuntimeHealth(ctx)
+	var _ client.RuntimeRetention
+	if retention, ok := clone.(client.RetentionClient); ok {
+		_, _ = retention.RuntimeRetention(ctx)
+	}
 	_, _ = clone.Start(ctx, client.StartRequest{Query: "hello"})
 	_, _ = clone.TasksList(ctx, client.TaskListRequest{})
 	_, _ = clone.TasksGet(ctx, client.TaskGetRequest{ID: "task"})

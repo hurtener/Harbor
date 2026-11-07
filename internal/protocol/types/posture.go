@@ -231,9 +231,8 @@ type RetentionHorizon struct {
 	// degrades honestly (marks a fleet window's completeness unverifiable)
 	// rather than silently trusting a shorter or absent horizon as
 	// runtime-wide truth. The `events` horizon is always "runtime"; the
-	// `tasks` / `sessions` horizons are "session" / "tenant" for an
-	// ordinary caller and widen to "runtime" for a verified admin /
-	// console:fleet fleet-observe caller. Omitted (empty) for an
+	// `tasks` / `sessions` horizons are exposed only by the admin-only
+	// runtime.retention method, at "runtime" scope. Omitted (empty) for an
 	// older/headless wiring that does not stamp a scope.
 	Scope string `json:"scope,omitempty"`
 	// OldestRetainedAt is the RFC-3339 wall-clock time of the oldest row
@@ -266,16 +265,22 @@ const (
 	RetentionScopeSession = "session"
 )
 
+// RuntimeRetention is the admin-only runtime.retention response.
+type RuntimeRetention struct {
+	// Retention contains observed runtime-wide horizons for wired surfaces.
+	Retention []RetentionHorizon `json:"retention"`
+}
+
 // RuntimeHealth is the runtime.health response: a per-subsystem
 // readiness rollup across the runtime's registered subsystems, plus the
-// observed per-surface retention horizons.
+// cached events retention horizon.
 type RuntimeHealth struct {
 	// Subsystems is the per-subsystem readiness slice — one entry per
 	// subsystem the runtime knows about.
 	Subsystems []SubsystemHealth `json:"subsystems"`
-	// Retention is the observed retention horizon per durable surface —
-	// the oldest-retained timestamp for "events", "tasks", and
-	// "sessions". Additive: an older client that does not read it is
+	// Retention contains only the cached runtime-wide "events" horizon.
+	// Tasks and sessions are read through admin-only runtime.retention.
+	// Additive: an older client that does not read it is
 	// unaffected. A surface with no rows yet, or a runtime that wired no
 	// retention seam for it, simply omits its entry (the whole slice is
 	// omitted when empty). Values are OBSERVED, never configured claims —

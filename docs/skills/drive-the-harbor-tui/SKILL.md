@@ -242,6 +242,11 @@ fleet or simultaneous-session panes:
 + `F9`: the one action matrix for task, intervention, tool, artifact, and
   session controls.
 
+Retention inspection uses `runtime.retention` only when the token has verified
+`admin` authority. Other callers, including the trust-mode dev TUI, show only
+the events horizon from `runtime.health`; `console:fleet` alone does not grant
+runtime-wide task/session retention reads (D-490).
+
 On list routes, `Up` / `Down` or `Ctrl+P` / `Ctrl+N` selects the exact row,
 `PageUp` / `PageDown` changes the bounded page, and `/` edits the route filter.
 The selected canonical ID or `PauseToken` is frozen into the confirmation; a

@@ -19,6 +19,12 @@ import (
 // internal/tools/annotate.
 type probeAnnotator struct{}
 
+func (a probeAnnotator) Batch(_ context.Context, id identity.Identity) (AnnotationBatch, error) {
+	return func(ctx context.Context, toolID string) ToolAnnotations {
+		return ToolAnnotations{OAuthStatus: a.OAuthStatus(ctx, id, toolID), ApprovalPolicy: a.ApprovalPolicy(ctx, id, toolID), LastUsedAt: a.LastUsedAt(ctx, id, toolID)}
+	}, nil
+}
+
 func (probeAnnotator) OAuthStatus(context.Context, identity.Identity, string) prototypes.ToolOAuthStatus {
 	return prototypes.ToolOAuthRequired
 }

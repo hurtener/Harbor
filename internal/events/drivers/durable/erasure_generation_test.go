@@ -2,7 +2,9 @@ package durable
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -339,5 +341,14 @@ func TestFenceGeneration_DurableMultiReplicaDropsQueuedEventAfterUnfence(t *test
 	}
 	if got[1].Sequence != 2 {
 		t.Fatalf("fresh event sequence=%d, want 2 (stale queued event must not consume a sequence)", got[1].Sequence)
+	}
+}
+
+func TestRequiredPublication_StaleGenerationFails(t *testing.T) {
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	b := &bus{erasureGeneration: map[string]uint64{fenceKey(id): 1}, logger: slog.Default()}
+	ev := events.Event{Type: events.EventTypeAdminScopeUsed, Identity: identity.Quadruple{Identity: id}, Payload: events.AdminScopeUsedPayload{Method: "required-read"}}
+	if err := b.commitBatch(t.Context(), []events.Event{ev}, 0, ""); !errors.Is(err, events.ErrPublicationFenced) {
+		t.Fatalf("stale required commit=%v", err)
 	}
 }

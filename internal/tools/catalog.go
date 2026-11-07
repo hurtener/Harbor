@@ -2,10 +2,13 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
@@ -20,6 +23,11 @@ type catalog struct {
 	mu                sync.RWMutex
 	byName            map[string]ToolDescriptor
 	sourceGenerations map[ToolSourceID]uint64
+	// epoch is minted once at construction; generation is bumped under mu
+	// (write) wherever sourceGenerations moves. Both back the optional
+	// CatalogGenerationReporter surface.
+	epoch      string
+	generation atomic.Uint64
 
 	// searchCache is the optional FTS5-backed
 	// search index. nil means Search returns empty (honest "discovery
@@ -91,6 +99,7 @@ func NewCatalog(opts ...CatalogOption) ToolCatalog {
 	return &catalog{
 		byName:            make(map[string]ToolDescriptor),
 		sourceGenerations: make(map[ToolSourceID]uint64),
+		epoch:             newCatalogEpoch(),
 		searchCache:       cfg.searchCache,
 		bus:               cfg.bus,
 	}
@@ -126,6 +135,7 @@ func (c *catalog) Register(d ToolDescriptor) error {
 	}
 	c.byName[d.Tool.Name] = d
 	c.sourceGenerations[d.Tool.Source]++
+	c.generation.Add(1)
 	sc := c.searchCache
 	c.mu.Unlock()
 
@@ -144,6 +154,25 @@ func (c *catalog) Register(d ToolDescriptor) error {
 		}
 	}
 	return nil
+}
+
+// Epoch implements CatalogGenerationReporter.
+func (c *catalog) Epoch() string { return c.epoch }
+
+// Generation implements CatalogGenerationReporter. The counter is bumped
+// while the write lock is held, so a reader that observes a mutated byName
+// set and then reads Generation sees the bumped value.
+func (c *catalog) Generation() uint64 { return c.generation.Load() }
+
+// newCatalogEpoch mints a random instance identifier. crypto/rand failure is
+// not recoverable for a process that must not reuse identifiers, so it panics
+// at construction (the same posture as identity minting).
+func newCatalogEpoch() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("tools: catalog epoch: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func (c *catalog) Resolve(name string) (ToolDescriptor, bool) {
@@ -204,6 +233,9 @@ func (c *catalog) Replace(wrapped []ToolDescriptor) error {
 			c.sourceGenerations[d.Tool.Source]++
 		}
 	}
+	if len(wrapped) > 0 {
+		c.generation.Add(1)
+	}
 	return nil
 }
 
@@ -236,6 +268,7 @@ func (c *catalog) DeregisterSource(source ToolSourceID) int {
 	}
 	if removed > 0 {
 		c.sourceGenerations[source]++
+		c.generation.Add(1)
 	}
 	return removed
 }
@@ -291,6 +324,7 @@ func (c *catalog) StageSource(source ToolSourceID, replacements []ToolDescriptor
 		c.byName[d.Tool.Name] = d
 	}
 	c.sourceGenerations[source]++
+	c.generation.Add(1)
 	return &catalogSourceSwap{catalog: c, source: source, prior: priorSet, replacements: staged, generation: c.sourceGenerations[source]}, nil
 }
 
@@ -349,6 +383,7 @@ func (s *catalogSourceSwap) Rollback() error {
 		s.catalog.byName[d.Tool.Name] = d
 	}
 	s.catalog.sourceGenerations[s.source]++
+	s.catalog.generation.Add(1)
 	s.done = true
 	return nil
 }
@@ -379,3 +414,5 @@ func (c *catalog) Search(ctx context.Context, query string, tags []string, limit
 	}
 	return results
 }
+
+var _ CatalogGenerationReporter = (*catalog)(nil)

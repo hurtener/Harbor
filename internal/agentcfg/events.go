@@ -1,6 +1,7 @@
 package agentcfg
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"time"
@@ -149,9 +150,20 @@ const (
 	// none on the descriptor). Emitted as one fail-closed unit with the
 	// mutation (CLAUDE.md §7).
 	EventTypeLLMProviderInstalled events.EventType = "agent_config.llm_provider.installed"
-	EventTypeRetirementStarted    events.EventType = "agent_config.retirement.started"
-	EventTypeRetirementProgress   events.EventType = "agent_config.retirement.progress"
-	EventTypeRetirementCompleted  events.EventType = "agent_config.retirement.completed"
+	// EventTypeToolsCatalogChanged — a best-effort HINT that an agent's tool
+	// catalog projection may have changed: a config pointer moved (revision,
+	// rollback, deactivation, retirement), a signed-capability activation fence
+	// transitioned, a runtime-added MCP connection was published or withdrawn,
+	// or a discovery refresh changed a server's descriptor generation. It
+	// carries no tool data and no revision — correctness never depends on it;
+	// the input-addressed `tools.list` revision is authoritative. Consumers use
+	// it only to drop short-lived local caches early. Payload:
+	// ToolsCatalogChangedPayload.
+	EventTypeToolsCatalogChanged events.EventType = "tools.catalog.changed"
+
+	EventTypeRetirementStarted   events.EventType = "agent_config.retirement.started"
+	EventTypeRetirementProgress  events.EventType = "agent_config.retirement.progress"
+	EventTypeRetirementCompleted events.EventType = "agent_config.retirement.completed"
 )
 
 func init() {
@@ -172,6 +184,7 @@ func init() {
 		EventTypeOAuthProviderRemoved,
 		EventTypeLLMProviderInstalled,
 		EventTypeRetirementStarted, EventTypeRetirementProgress, EventTypeRetirementCompleted,
+		EventTypeToolsCatalogChanged,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -462,4 +475,70 @@ type MCPConnectionLifecyclePayload struct {
 	Reason string
 	// OccurredAt is the lifecycle-transition instant.
 	OccurredAt time.Time
+}
+
+// Catalog-change hint scopes (ToolsCatalogChangedPayload.Scope).
+const (
+	// CatalogChangeScopeAgent marks a change to agent-tier inputs.
+	CatalogChangeScopeAgent = "agent"
+	// CatalogChangeScopeUser marks a change to one user's tier inputs.
+	CatalogChangeScopeUser = "user"
+)
+
+// Catalog-change hint reasons (ToolsCatalogChangedPayload.Reason), a closed
+// set.
+const (
+	CatalogChangeReasonConfigRevision = "config_revision"
+	CatalogChangeReasonOAuthFence     = "oauth_fence"
+	CatalogChangeReasonConnection     = "connection"
+	CatalogChangeReasonDiscovery      = "discovery"
+	CatalogChangeReasonLifecycle      = "lifecycle"
+)
+
+// ToolsCatalogChangedPayload is the typed payload for
+// EventTypeToolsCatalogChanged. SafePayload — an agent id and two closed
+// enum values; no tool names, descriptors, revisions or config content. The
+// wire keys are the documented snake_case `agent_id`, `scope`, `reason`.
+type ToolsCatalogChangedPayload struct {
+	events.SafeSealed
+	// AgentID is the agent whose catalog projection may have changed (a
+	// registration identity, NOT an isolation principal).
+	AgentID string `json:"agent_id"`
+	// Scope is CatalogChangeScopeAgent or CatalogChangeScopeUser.
+	Scope string `json:"scope"`
+	// Reason is one of the CatalogChangeReason* values.
+	Reason string `json:"reason"`
+}
+
+// CatalogChangeNotifier is the optional Registry surface that publishes the
+// tools.catalog.changed hint for a durable input change made outside the
+// Registry's own pointer writes (activation-fence transitions). It never
+// fails the caller: publication is best-effort.
+type CatalogChangeNotifier interface {
+	NotifyCatalogChanged(ctx context.Context, writer identity.Quadruple, tenantID, agentID, scope, reason string)
+}
+
+// CatalogChangedEvent builds the tools.catalog.changed hint. The event
+// identity is the writer's quadruple when it is complete and in the same
+// tenant; otherwise the agent's control-plane scope
+// {tenant, ReservedAgentConfigUser, agent}. ok=false when (tenant, agent)
+// cannot be resolved — the caller skips emission rather than publish an
+// invalid identity.
+func CatalogChangedEvent(writer identity.Quadruple, tenantID, agentID, scope, reason string, at time.Time) (events.Event, bool) {
+	if tenantID == "" || agentID == "" {
+		return events.Event{}, false
+	}
+	id := writer
+	if writer.TenantID != tenantID || identity.Validate(writer.Identity) != nil {
+		id = identity.Quadruple{Identity: identity.Identity{TenantID: tenantID, UserID: ReservedAgentConfigUser, SessionID: agentID}}
+	}
+	if identity.Validate(id.Identity) != nil {
+		return events.Event{}, false
+	}
+	return events.Event{
+		Type:       EventTypeToolsCatalogChanged,
+		Identity:   id,
+		OccurredAt: at.UTC(),
+		Payload:    ToolsCatalogChangedPayload{AgentID: agentID, Scope: scope, Reason: reason},
+	}, true
 }

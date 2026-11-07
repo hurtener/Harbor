@@ -164,7 +164,7 @@ func TestE2E_Phase163_FlowRunsWindow_CrossTenantRefusal(t *testing.T) {
 }
 
 // TestE2E_Phase163_EventsRetentionHorizon_BothDrivers reads the observed
-// events retention horizon through RetentionProvider over BOTH real event
+// events retention horizon through EventsHorizonProvider over BOTH real event
 // bus drivers and asserts it matches the actual oldest retained event.
 func TestE2E_Phase163_EventsRetentionHorizon_BothDrivers(t *testing.T) {
 	cfg := config.EventsConfig{
@@ -225,7 +225,7 @@ func TestE2E_Phase163_EventsRetentionHorizon_BothDrivers(t *testing.T) {
 				}
 			}
 
-			horizons := runtimeposture.RetentionProvider(bus, nil, nil)(t.Context(), id, false)
+			horizons := runtimeposture.EventsHorizonProvider(bus)(t.Context())
 			var got *time.Time
 			var scope string
 			var found bool

@@ -2,11 +2,14 @@ package approval_test
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/tools/approval"
 )
@@ -94,5 +97,82 @@ func TestStatePolicyStore_Validation(t *testing.T) {
 	}
 	if _, err := ps.Policy(context.Background(), bad, "alpha"); err == nil {
 		t.Fatal("incomplete identity should fail closed on read")
+	}
+}
+
+func TestStatePolicyStore_Policies_IsolatedAndDetached(t *testing.T) {
+	ps := mkPolicyStore(t)
+	ctx := context.Background()
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	want := map[string]prototypes.ToolApprovalPolicy{"alpha": prototypes.ToolApprovalGated, "beta": prototypes.ToolApprovalDenied}
+	for tool, policy := range want {
+		if err := ps.SetPolicy(ctx, id, tool, policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := ps.Policies(ctx, id)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Policies = %v, %v; want %v", got, err, want)
+	}
+	got["alpha"] = prototypes.ToolApprovalDenied
+	if policy, err := ps.Policy(ctx, id, "alpha"); err != nil || policy != prototypes.ToolApprovalGated {
+		t.Fatalf("mutating policies changed storage: %s, %v", policy, err)
+	}
+	for _, foreign := range []identity.Identity{
+		{TenantID: "other", UserID: "u", SessionID: "s"},
+		{TenantID: "t", UserID: "other", SessionID: "s"},
+		{TenantID: "t", UserID: "u", SessionID: "other"},
+	} {
+		if got, err := ps.Policies(ctx, foreign); err != nil || len(got) != 0 {
+			t.Fatalf("foreign policies = %v, %v", got, err)
+		}
+	}
+}
+
+func TestStatePolicyStore_Policies_InvalidAndCancelled_FailClosed(t *testing.T) {
+	ps := mkPolicyStore(t)
+	if _, err := ps.Policies(context.Background(), identity.Identity{TenantID: "t"}); err == nil {
+		t.Fatal("incomplete identity accepted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ps.Policies(ctx, identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled policies error = %v", err)
+	}
+}
+
+func TestStatePolicyStore_Policies_CorruptOverrideSkipped(t *testing.T) {
+	for _, data := range []string{`{`, `{"policy":"invalid"}`} {
+		t.Run(data, func(t *testing.T) {
+			st, err := stateinmem.New(config.StateConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close(context.Background()) })
+			ps, err := approval.NewStatePolicyStore(st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+			if err := st.Save(context.Background(), state.StateRecord{
+				ID: state.NewEventID(), Identity: identity.Quadruple{Identity: id},
+				Kind: "tools.approval.policy.alpha", Bytes: []byte(data),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := ps.SetPolicy(context.Background(), id, "beta", prototypes.ToolApprovalGated); err != nil {
+				t.Fatal(err)
+			}
+			policies, err := ps.Policies(context.Background(), id)
+			if err != nil {
+				t.Fatalf("one corrupt override failed the whole read: %v", err)
+			}
+			if _, ok := policies["alpha"]; ok || policies["beta"] != prototypes.ToolApprovalGated || len(policies) != 1 {
+				t.Fatalf("policies = %v, want only beta=gated (corrupt alpha skipped)", policies)
+			}
+			if single, err := ps.Policy(context.Background(), id, "alpha"); err == nil {
+				t.Fatalf("single-tool read of the corrupt record = %v, want an error the annotator maps to auto", single)
+			}
+		})
 	}
 }

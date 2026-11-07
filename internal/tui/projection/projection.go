@@ -44,6 +44,8 @@ type SnapshotBundle struct {
 	Session                 *types.SessionsInspectResponse
 	Pauses                  types.PauseListResponse
 	Health                  *types.RuntimeHealth
+	RuntimeRetention        *types.RuntimeRetention
+	RetentionUnavailable    bool
 	AggregateTruncated      bool
 	ToolsAggregatesPartial  bool
 	UnavailableCapabilities []string
@@ -72,6 +74,7 @@ type Projection struct {
 	ToolsAggregatesPartial  bool             `json:"tools_aggregates_partial,omitempty"`
 	ToolAnalyticsBounded    bool             `json:"tool_analytics_bounded,omitempty"`
 	Retention               []Retention      `json:"retention,omitempty"`
+	RetentionUnavailable    bool             `json:"retention_unavailable,omitempty"`
 	UnavailableCapabilities []string         `json:"unavailable_capabilities,omitempty"`
 	Blocks                  []Block          `json:"blocks"`
 	ReconciliationRequired  bool             `json:"reconciliation_required,omitempty"`
@@ -224,9 +227,17 @@ func (r *Reducer) projectSnapshot(bundle SnapshotBundle) (Projection, error) {
 	next.ToolsAggregatesPartial = bundle.ToolsAggregatesPartial
 	next.ToolAnalyticsBounded = bundle.ToolAnalyticsBounded
 	next.UnavailableCapabilities = sortedUnique(bundle.UnavailableCapabilities)
+	next.RetentionUnavailable = bundle.RetentionUnavailable
+	var horizons []types.RetentionHorizon
 	if bundle.Health != nil {
-		next.Retention = make([]Retention, 0, len(bundle.Health.Retention))
-		for _, horizon := range bundle.Health.Retention {
+		horizons = bundle.Health.Retention
+	}
+	if bundle.RuntimeRetention != nil {
+		horizons = bundle.RuntimeRetention.Retention
+	}
+	if len(horizons) > 0 {
+		next.Retention = make([]Retention, 0, len(horizons))
+		for _, horizon := range horizons {
 			next.Retention = append(next.Retention, Retention{Surface: horizon.Surface, Scope: horizon.Scope, Oldest: horizon.OldestRetainedAt})
 		}
 		sort.Slice(next.Retention, func(i, j int) bool { return next.Retention[i].Surface < next.Retention[j].Surface })
@@ -570,9 +581,11 @@ func HydrateClient(ctx context.Context, c client.Client, generation, capturedSeq
 // HydrateOptions controls read page sizes. Zero values use Protocol maxima.
 type HydrateOptions struct {
 	MaxHistoryPages int
-	HistoryPageSize int
-	TaskPageSize    int
-	PausePageSize   int
+	// IncludeRuntimeRetention requests audited diagnostics for an admin token.
+	IncludeRuntimeRetention bool
+	HistoryPageSize         int
+	TaskPageSize            int
+	PausePageSize           int
 }
 
 // HydrateClientWithOptions performs the complete paginated snapshot join.
@@ -613,6 +626,16 @@ func HydrateClientWithOptions(ctx context.Context, c client.Client, generation, 
 		return SnapshotBundle{}, fmt.Errorf("projection: runtime health: %w", err)
 	}
 	bundle.Health = &health
+	if options.IncludeRuntimeRetention {
+		reader, ok := c.(client.RetentionClient)
+		if !ok {
+			bundle.RetentionUnavailable = true
+		} else if retention, err := reader.RuntimeRetention(ctx); err != nil {
+			bundle.RetentionUnavailable = true
+		} else {
+			bundle.RuntimeRetention = &retention
+		}
+	}
 	before := uint64(0)
 	pages := make([][]types.StateEvent, 0, maxPages)
 	for range maxPages {

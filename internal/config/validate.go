@@ -2000,6 +2000,24 @@ func (c *Config) validateTools() error {
 			fmt.Sprintf("must be > 0 when set (got %d); omit the key to take the %d-byte default",
 				c.Tools.MCPArtifactEgressMaxBytes, DefaultMCPArtifactEgressMaxBytes))
 	}
+	// Structural catalog cache bounds. Zero takes the default; a negative
+	// value is a mistake, not "unbounded", and the per-entry cap may not
+	// exceed the total budget.
+	if cc := c.Tools.CatalogCache; cc != nil {
+		switch {
+		case cc.MaxBytes < 0:
+			return fieldError("tools.catalog_cache.max_bytes", fmt.Sprintf("must be >= 0 (got %d); omit for the %d-byte default", cc.MaxBytes, DefaultCatalogCacheMaxBytes))
+		case cc.MaxEntryBytes < 0:
+			return fieldError("tools.catalog_cache.max_entry_bytes", fmt.Sprintf("must be >= 0 (got %d); omit for the default", cc.MaxEntryBytes))
+		case cc.MaxEntries < 0:
+			return fieldError("tools.catalog_cache.max_entries", fmt.Sprintf("must be >= 0 (got %d); omit for the %d default", cc.MaxEntries, DefaultCatalogCacheMaxEntries))
+		case cc.IdleTTL < 0:
+			return fieldError("tools.catalog_cache.idle_ttl", fmt.Sprintf("must be >= 0 (got %s); omit for the %s default", cc.IdleTTL, DefaultCatalogCacheIdleTTL))
+		}
+		if eff := c.Tools.EffectiveCatalogCache(); eff.MaxEntryBytes > eff.MaxBytes {
+			return fieldError("tools.catalog_cache.max_entry_bytes", fmt.Sprintf("must not exceed max_bytes (%d > %d)", eff.MaxEntryBytes, eff.MaxBytes))
+		}
+	}
 	// MCP App host capability. Optional; nil resolves to the inline-only
 	// baseline. When set, each declared display mode must be in the closed
 	// set (inline / fullscreen / pip) and unique — a typo fails at config

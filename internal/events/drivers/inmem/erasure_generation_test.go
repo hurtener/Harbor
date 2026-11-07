@@ -2,6 +2,7 @@ package inmem
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -112,5 +113,16 @@ func waitForSequence(t *testing.T, b *bus, want uint64) {
 		case <-deadline.C:
 			t.Fatalf("sequence did not reach %d (got %d)", want, got)
 		}
+	}
+}
+
+// Admission can precede Fence->Unfence while commit follows it. A mandatory
+// admin audit must fail that stale generation rather than report a silent drop.
+func TestRequiredPublication_StaleGenerationFails(t *testing.T) {
+	id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	b := &bus{erasureGeneration: map[string]uint64{fenceKey(id): 1}}
+	ev := events.Event{Type: events.EventTypeAdminScopeUsed, Identity: identity.Quadruple{Identity: id}, Payload: events.AdminScopeUsedPayload{Method: "required-read"}}
+	if err := b.commitBatch(t.Context(), []events.Event{ev}, 0, ""); !errors.Is(err, events.ErrPublicationFenced) {
+		t.Fatalf("stale required commit=%v", err)
 	}
 }

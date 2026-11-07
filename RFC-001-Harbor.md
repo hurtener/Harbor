@@ -226,6 +226,27 @@ Reject-on-sight violations:
 | **Artifacts** | `artifacts.list`, `artifacts.get`, `artifacts.get_ref`, `artifacts.delete` — all scope-checked. Heavy bytes always go by `ArtifactRef`, never inline. |
 | **Traces / metrics** | `traceparent` propagation; OTel traces and metrics derived from the same event bus. |
 
+**Runtime health and retention (D-490).** `runtime.health` is a liveness
+read for every caller, including verified `admin` and `console:fleet` callers.
+It returns subsystem readiness and only the cached events retention horizon at
+`scope:"runtime"`, when wired. It performs no stored reads, no elevation, and
+no audit publication. Durable events horizon reads do not wait for the publish
+lock or storage I/O; readiness is an in-memory projection.
+
+`runtime.retention` is the explicit administrative read for observed events,
+tasks, and sessions horizons, all at `scope:"runtime"`. It takes
+`RuntimeInfoRequest` and returns `RuntimeRetention{retention: [...]}`. Only a
+verified `admin` scope authorizes it; `console:fleet`, ordinary and trust-mode
+callers receive `scope_mismatch`. A successful read emits exactly one
+`audit.admin_scope_used` attributed to the verified actor, and audit failure
+fails the request closed with a runtime error. Missing readers contribute no
+entry; an entry with runtime scope and no timestamp means trustworthy empty.
+Clients needing task/session window completeness migrate to this method with
+admin authority. The additive method and narrowed health semantics retain
+Protocol `0.1.0`; `RuntimeHealth.retention` remains optional with its existing
+type. D-490 supersedes D-296/D-310 only for health retention placement and
+widening.
+
 ### 5.3 Versioning
 
 The Protocol version is pinned in `internal/protocol/types/version.go`. Bumping the version is an RFC change. Breaking changes require a deprecation window so third-party Consoles aren't whipsawed. The deprecation-window obligation extends to **embedder binaries** that mount the Protocol surface via the promoted serve constructor / `sdk/server` (§5.6, D-291): a self-hosted binary serving the surface is a Protocol server like any other, and a breaking wire change whipsaws its clients identically.
@@ -655,6 +676,8 @@ separately in PR #779.
 
 The planner reasons about exactly one concept: a `Tool`. The catalog hides whether the tool is in-process Go, MCP, A2A, or HTTP.
 
+A catalog instance reports a random per-instance epoch and a monotonic structural generation, bumped under its write lock on every source publication, replacement or withdrawal; the MCP registry reports the same pair for its live-entry, owner and logical-name maps. These process-local generations are inputs of the input-addressed catalog revision that conditional configuration reads use (§6.16, D-491).
+
 ```go
 type Tool struct {
     Name        string
@@ -716,6 +739,19 @@ type ToolProvider interface {
 - `CatalogFilter` keys on the full identity triple plus `GrantedScopes`. The predecessor filters by tenant only; Harbor goes further from t=0.
 - Argument validation runs at the catalog edge; failures are typed `tool.invalid_args` events (not tool errors) so the planner can reformulate via LLM retry feedback.
 - Result normalization is a layered pipeline (explicit field-extraction → typed-content blocks → heuristic binary detection → size-based safety net). The size-based safety net **mandates** routing through the `ArtifactStore`; there is no inline-large-payload escape.
+
+**Catalog list annotations (Settled — D-491).** After source admission, a
+non-empty tool list prepares one request-local annotation batch: one approval
+policy prefix scan scoped by the complete identity triple, one bounded tool
+lifecycle history window folded by tool name, and OAuth status memoized by
+runtime source within that identity's request. The batch never survives the
+request or caches authority. Missing overrides retain the `auto` default; an
+approval scan failure rejects the list, while an individually corrupt override
+is skipped and logged so that tool projects `auto`, as the single-tool read
+does. Single-tool get/describe
+reads only that tool's annotations. Batching changes no wire shape and the
+Protocol version is unchanged. The structural configuration cache (§6.16,
+D-491) applies these annotations per request and never stores them.
 
 **Reliability shell wraps EVERY tool invocation, regardless of transport (Settled — D-024).** The minimum-expression tool — a plain Go function registered via `tools.RegisterFunc(name, fn, opts...)` — gets the same reliability shell as a Flow tool: per-call timeout, exponential-backoff retry, validation, identity-aware cancellation. The runtime's Dispatcher (§6.4 trio) wraps every tool invocation in the `ToolPolicy` shell once, regardless of `Transport`. **The shell is identical to `NodePolicy` for runtime nodes (§6.1)** — same backoff math, same retry classes, same validation modes — so a developer who learned NodePolicy already knows ToolPolicy. Defaults fire when `ToolPolicy` is zero-valued so the most common case ("`@tool`-decorate this function") needs zero ceremony to be production-resilient.
 
@@ -2655,6 +2691,45 @@ Clients negotiate `tools_configuration_view_v1` before sending the configuration
 view selector. It is advertised only when the owned-source configuration backend
 is wired. An older runtime receives no selector; clients do not retry a refused
 configuration request by downgrading its view.
+
+**Catalog revision and conditional configuration reads (D-491).** A
+configuration-view `tools.list` response, and a configuration `tools.describe`
+manifest, carry an opaque input-addressed `revision`. It is a SHA-256 over
+every input the admitted inventory reads: the principal (tenant, user, agent,
+and the session when a session overlay exists); the agent active pointer
+(also the lifecycle slot), every signed-capability activation-fence record and
+the acting user's active pointer as durable write identities; an agent-scoped
+deletion-generation record that every writer rewrites before deleting a
+stamped slot, so absent → present → absent cycles still move the revision; the
+session overlay record; and the process-local tool-catalog and MCP-registry epoch and
+generation. Epochs are random per instance, so a restart or another replica
+never repeats a revision, and replicas sharing a store observe each other's
+durable writes without any event. The revision covers every structural row
+field, including the list-row `side_effect` and `loading_mode`, and excludes the
+per-request annotations `oauth_status`, `approval_policy`, `last_used_at` and
+describe's `display_modes`.
+
+`if_revision` on page 1 of a configuration list answers
+`{revision, not_modified: true}` with no rows when it matches, after only the
+revision reads (eight small StateStore reads). It is ignored on later pages; a
+client compares each page's `revision` with page 1's and restarts on a
+mismatch. Any other view rejects `if_revision`, as does a filter on the
+annotation facets `oauth_statuses` or `approval_policies`; `not_modified`
+speaks only for the structural rows of the identical query and carries no
+aggregates. Admission — verified admin, signed agent reach and effective-agent
+resolution — runs before any revision read, and the revision read itself
+refuses an erased session or inactive agent lifecycle exactly as an uncached
+read does, so neither a cache hit nor `not_modified` bypasses them. The
+runtime keeps a bounded structural cache of admitted descriptors, one entry per
+principal holding its latest stable revision; concurrent misses share one
+build detached from caller cancellation and bounded in time, while each caller
+waits only within its own deadline. It holds no annotations and no authorization
+decision, and a miss re-reads the revision after building and caches only when
+it is unchanged. A discovery refresh whose deterministic descriptor generation
+is unchanged — or that stays known-empty — commits nothing, so convergence
+sweeps and no-op run-start reconciles leave revisions intact. The best-effort `tools.catalog.changed`
+event is a hint for dropping short-lived client caches; it carries no tool data
+or revision, and correctness never depends on it.
 
 ### 6.17 Run-completion hook
 

@@ -33,9 +33,9 @@ func newProviderOperationID() string {
 }
 
 // PostureSurface is the transport-agnostic Harbor Protocol posture
-// handler. It owns the seven read-only posture methods:
+// handler. It owns the read-only posture methods:
 //
-//   - runtime.info, runtime.health, runtime.counters, runtime.drivers,
+//   - runtime.info, runtime.health, runtime.retention, runtime.counters, runtime.drivers,
 //     metrics.snapshot — the runtime-posture cluster.
 //   - governance.posture, llm.posture — the config-
 //     posture pair (the governance `IdentityTiers` view and the
@@ -70,9 +70,9 @@ func newProviderOperationID() string {
 // emits a `*.posture_read_admin` audit event through the wired Redactor
 // + Bus — the same posture the admin-scope path takes. An
 // own-tenant read does NOT emit (matches the sessions.inspect
-// convention). The five `runtime.*` / `metrics.*` reads never emit
-// audit. A failed audit emit fails loudly (CodeRuntimeError) — the read
-// already succeeded, so the operator MUST see the audit drift.
+// convention). Health never emits audit. Runtime retention requires verified
+// admin authority and emits exactly one admin-scope audit. A failed audit emit
+// fails loudly (CodeRuntimeError) — no successful diagnostic escapes its audit.
 //
 // # The Console never reads internal Runtime objects (CLAUDE.md §8/§13)
 //
@@ -85,7 +85,8 @@ type PostureSurface struct {
 	build                  types.RuntimeInfo
 	clock                  func() time.Time
 	health                 func(ctx context.Context) []types.SubsystemHealth
-	retention              func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
+	eventsHorizon          func(context.Context) []types.RetentionHorizon
+	runtimeRetention       func(context.Context) ([]types.RetentionHorizon, error)
 	counters               func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
 	drivers                func() []types.SubsystemDriver
 	metrics                func(ctx context.Context) types.MetricsSnapshot
@@ -142,24 +143,12 @@ type PostureDeps struct {
 	BootedAt time.Time
 	// Health returns the per-subsystem readiness rollup. Mandatory.
 	Health func(ctx context.Context) []types.SubsystemHealth
-	// Retention returns the OBSERVED per-surface retention horizons (the
-	// oldest-retained timestamp for the durable surfaces) that
-	// `runtime.health` carries alongside the readiness rollup. Optional:
-	// a nil seam omits the retention block (an older / headless wiring
-	// that surfaces no horizons), so existing callers are unaffected. The
-	// production mux wires it; the events horizon it carries is the fleet
-	// consumer's window-edge honesty signal.
-	//
-	// The `widened` argument is the SERVER-DERIVED elevation decision the
-	// surface computes from the caller's verified `auth.ScopeAdmin` /
-	// `auth.ScopeConsoleFleet` scope — NEVER a request-body value. When
-	// true, the seam reports the `tasks` / `sessions` horizons at
-	// RUNTIME-WIDE scope (the identity-free scope the events horizon
-	// already uses); when false, the ordinary per-session / per-tenant
-	// fold. Each returned entry carries a `scope` marker so a no-timestamp
-	// entry is distinguishable between "runtime retains nothing" and "not
-	// observable at your scope".
-	Retention func(ctx context.Context, ident identity.Identity, widened bool) []types.RetentionHorizon
+	// EventsHorizon returns only the cached, runtime-wide events horizon. It must
+	// perform no stored reads or publishes. Optional; nil omits retention on health.
+	EventsHorizon func(context.Context) []types.RetentionHorizon
+	// RuntimeRetention reads runtime-wide events, tasks, and sessions horizons.
+	// Only verified admin callers can invoke it. Read failures fail the method.
+	RuntimeRetention func(context.Context) ([]types.RetentionHorizon, error)
 	// Counters returns the low-cardinality live counters for the
 	// caller's identity scope. Mandatory.
 	Counters func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
@@ -313,7 +302,8 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		build:                  deps.Build,
 		clock:                  deps.Clock,
 		health:                 deps.Health,
-		retention:              deps.Retention,
+		eventsHorizon:          deps.EventsHorizon,
+		runtimeRetention:       deps.RuntimeRetention,
 		counters:               deps.Counters,
 		drivers:                deps.Drivers,
 		metrics:                deps.Metrics,
@@ -459,15 +449,6 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 		}
 	}
 
-	// Fleet widening — SERVER-DERIVED from the verified scope set on ctx,
-	// NEVER from the request body. A caller carrying a
-	// verified `admin` OR `console:fleet` claim reads the runtime-wide
-	// `tasks` / `sessions` retention horizons on `runtime.health`. When no
-	// auth middleware ran (trust-based dev posture) there is no verified
-	// scope on ctx and `widened` is false — the ordinary per-session /
-	// per-tenant fold, a fail-closed control with no downgrade knob.
-	widened := auth.HasScope(ctx, auth.ScopeAdmin) || auth.HasScope(ctx, auth.ScopeConsoleFleet)
-
 	switch method {
 	case methods.MethodRuntimeInfo:
 		if pr.EffectiveAgentID == "" {
@@ -488,7 +469,17 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 		info.EffectiveRunCompletion = &hook
 		return info, nil
 	case methods.MethodRuntimeHealth:
-		return s.handleHealth(ctx, method, id, actor, widened)
+		return s.handleHealth(ctx), nil
+	case methods.MethodRuntimeRetention:
+		verified, ok := identity.FromVerified(ctx)
+		if !ok || !auth.HasScope(ctx, auth.ScopeAdmin) {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch, "runtime retention requires a verified admin scope claim")
+		}
+		out, err := s.handleRetention(ctx, method, verified)
+		if err != nil {
+			return nil, err
+		}
+		return out, nil
 	case methods.MethodRuntimeCounters:
 		return s.handleCounters(ctx, id), nil
 	case methods.MethodRuntimeDrivers:
@@ -540,49 +531,40 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	return &out
 }
 
-// handleHealth builds the runtime.health response from the Health seam
-// plus the optional Retention seam. A nil Health return is normalised to
-// an empty slice so the wire shape is stable. The retention block is
-// additive: a nil Retention seam (or an empty return) simply omits it.
-//
-// `widened` is the server-derived fleet-elevation decision — when true,
-// the Retention seam reports the `tasks` / `sessions` horizons at
-// runtime-wide scope, a fan-in that crosses the tenant boundary, so the
-// path emits EXACTLY ONE `audit.admin_scope_used` event (the
-// widened-fan-in pattern — distinct from the `posture_read_admin` shape
-// the governance/llm cross-tenant CONFIG reads use). The redactor pass
-// precedes the publish; an emit failure FAILS LOUD (CodeRuntimeError) —
-// the read already crossed the tenant boundary, so the operator MUST see
-// the audit. A non-widened read emits none.
-func (s *PostureSurface) handleHealth(
-	ctx context.Context,
-	method methods.Method,
-	id identity.Identity,
-	actor identity.Identity,
-	widened bool,
-) (*types.RuntimeHealth, error) {
+// handleHealth reads in-memory readiness and the events horizon for every caller.
+func (s *PostureSurface) handleHealth(ctx context.Context) *types.RuntimeHealth {
 	subs := s.health(ctx)
 	if subs == nil {
 		subs = []types.SubsystemHealth{}
 	}
 	out := &types.RuntimeHealth{Subsystems: subs}
-	if s.retention != nil {
-		if horizons := s.retention(ctx, id, widened); len(horizons) > 0 {
-			out.Retention = horizons
-		}
+	if s.eventsHorizon != nil {
+		out.Retention = s.eventsHorizon(ctx)
 	}
-	if widened {
-		if emitErr := s.emitAdminScopeUsed(ctx, method, actor); emitErr != nil {
-			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
-				"method %q: runtime-wide retention fan-in succeeded but audit emit failed: %v",
-				string(method), emitErr)
-		}
+	return out
+}
+
+// handleRetention returns an audited runtime-wide snapshot. A failed read or
+// audit returns no response body, so unavailable data never resembles an empty log.
+func (s *PostureSurface) handleRetention(ctx context.Context, method methods.Method, actor identity.Identity) (*types.RuntimeRetention, error) {
+	if s.runtimeRetention == nil {
+		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError, "runtime retention is unavailable")
 	}
-	return out, nil
+	horizons, err := s.runtimeRetention(ctx)
+	if err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError, "runtime retention read failed: %v", err)
+	}
+	if err := s.emitAdminScopeUsed(ctx, method, actor); err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError, "runtime retention audit failed: %v", err)
+	}
+	if horizons == nil {
+		horizons = []types.RetentionHorizon{}
+	}
+	return &types.RuntimeRetention{Retention: horizons}, nil
 }
 
 // emitAdminScopeUsed publishes the `audit.admin_scope_used` event onto
-// the wired bus for a widened `runtime.health` retention fan-in. This is
+// the wired bus for an admin `runtime.retention` read. This is
 // the events-widened-read audit shape — a runtime-wide horizon fan-in is
 // a widened READ across tenants, NOT a cross-tenant
 // CONFIG read (which the governance/llm reads audit as
@@ -616,6 +598,7 @@ func (s *PostureSurface) emitAdminScopeUsed(
 			Tenant:  actor.TenantID,
 			User:    actor.UserID,
 			Session: actor.SessionID,
+			Method:  string(method),
 		},
 	}
 	if err := s.bus.Publish(ctx, ev); err != nil {

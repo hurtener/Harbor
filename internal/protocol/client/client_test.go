@@ -587,3 +587,29 @@ func TestClient_RequestAndErrorFailureBranches(t *testing.T) {
 		}
 	}
 }
+
+func TestClient_RuntimeRetention_UsesIdentityAndCanonicalMethod(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/control/"+string(methods.MethodRuntimeRetention) {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		var req types.RuntimeInfoRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		if req.Identity.Tenant != "tenant" || req.Identity.User != "user" || req.Identity.Session != "session" {
+			t.Errorf("identity=%+v", req.Identity)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(types.RuntimeRetention{Retention: []types.RetentionHorizon{{Surface: "events", Scope: types.RetentionScopeRuntime}}})
+	}))
+	defer server.Close()
+	reader, ok := testClient(t, server).(RetentionClient)
+	if !ok {
+		t.Fatal("concrete client does not implement RetentionClient")
+	}
+	got, err := reader.RuntimeRetention(t.Context())
+	if err != nil || len(got.Retention) != 1 {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}

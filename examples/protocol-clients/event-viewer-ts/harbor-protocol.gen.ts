@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:42b2d61c6778484ca66028e25a0ffc5837d1e6e4332657fff518a84e3c1a4ef0";
+export const WIRE_SURFACE_DIGEST = "sha256:a2bb1b392d6de76359325e326b0e1858ac0813195428b115f16f682d340c7e71";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -139,6 +139,7 @@ export type HarborMethod =
   | "runtime.drivers"
   | "runtime.health"
   | "runtime.info"
+  | "runtime.retention"
   | "search.artifacts"
   | "search.events"
   | "search.query"
@@ -365,6 +366,7 @@ export type HarborEventType =
   | "tool.provider_credential_fetch_failed"
   | "tool.provider_credential_fetched"
   | "tool.rejected"
+  | "tools.catalog.changed"
   | "topology.changed"
   | "trajectory.compressed"
   | "trajectory.compression_failed";
@@ -2861,6 +2863,10 @@ export interface RuntimeInfoRequest {
   provider_agent_id?: string;
 }
 
+export interface RuntimeRetention {
+  retention: RetentionHorizon[];
+}
+
 export interface SearchArtifactRef {
   id: string;
   mime_type?: string;
@@ -3671,6 +3677,8 @@ export interface Tool {
   reliability_tier: string;
   owner: string;
   last_used_at: string;
+  side_effect?: string;
+  loading_mode?: string;
 }
 
 export interface ToolAggregates {
@@ -3745,6 +3753,7 @@ export interface ToolListRequest {
   filter: ToolFilter;
   page?: number;
   page_size?: number;
+  if_revision?: string;
 }
 
 export interface ToolListResponse {
@@ -3755,6 +3764,8 @@ export interface ToolListResponse {
   total_rows: number;
   aggregates: ToolAggregates;
   aggregates_partial?: boolean;
+  revision?: string;
+  not_modified?: boolean;
 }
 
 export interface ToolManifest {
@@ -3769,6 +3780,7 @@ export interface ToolManifest {
   timeout_ms: number;
   loading_mode: string;
   display_modes: Record<string, string>;
+  revision?: string;
 }
 
 export interface ToolMetrics {

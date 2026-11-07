@@ -50,6 +50,10 @@ export interface Tool {
   /** Logical configured source/owner name; runtime-local physical MCP keys are not exposed here. */
   owner: string;
   last_used_at: string;
+  /** Declared side-effect class (same value as the manifest's); structural. */
+  side_effect?: string;
+  /** Prompt-time loading mode (effective for the configuration view); structural. */
+  loading_mode?: string;
 }
 
 /** Server-enforced facet filter on `tools.list`. */
@@ -72,6 +76,11 @@ export interface ToolListRequest {
   filter: ToolFilter;
   page?: number;
   page_size?: number;
+  /**
+   * Configuration view only: page 1 answers `{revision, not_modified: true}`
+   * with no rows when this equals the current revision. Ignored on later pages.
+   */
+  if_revision?: string;
 }
 
 /** The four catalog counters over the filtered view. */
@@ -98,6 +107,14 @@ export interface ToolListResponse {
    * "unavailable," never a real-looking 0 (D-313).
    */
   aggregates_partial?: boolean;
+  /**
+   * Configuration view only: the inventory's input-addressed revision. Covers
+   * structural row fields (incl. side_effect / loading_mode); excludes
+   * oauth_status, approval_policy, last_used_at and display_modes.
+   */
+  revision?: string;
+  /** The request's `if_revision` matched `revision`; no rows were returned. */
+  not_modified?: boolean;
 }
 
 /** The full descriptor projection `tools.describe` returns. When the request
@@ -116,6 +133,8 @@ export interface ToolManifest {
   timeout_ms: number;
   loading_mode: string;
   display_modes: Record<string, string>;
+  /** Configuration view only: the inventory revision this manifest came from. */
+  revision?: string;
 }
 
 /** The `tools.metrics` reply. */

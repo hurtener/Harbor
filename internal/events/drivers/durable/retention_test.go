@@ -2,6 +2,7 @@ package durable_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -132,5 +133,61 @@ func TestDurable_OldestRetainedAt_RecoveredAcrossRestart(t *testing.T) {
 	}
 	if !oldest.Equal(base) {
 		t.Fatalf("post-restart horizon = %v, want recovered head %v", oldest, base)
+	}
+}
+
+// A stalled durable write owns publishMu. Horizon readers must still finish
+// before that write is released, and report the last committed horizon.
+func TestDurable_OldestRetainedAt_StalledPublishDoesNotBlockReaders(t *testing.T) {
+	store := &blockingBatchStore{StateStore: newInmemStore(t), entered: make(chan struct{}), release: make(chan struct{})}
+	bus, _ := newDurableBus(t, store)
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	id := quad("t", "u", "s")
+	publishAt(t, bus, id, base)
+	store.armed.Store(true)
+	published := make(chan error, 1)
+	go func() {
+		published <- bus.Publish(t.Context(), events.Event{Type: events.EventTypeRuntimeWarning, Identity: id, OccurredAt: base.Add(time.Hour), Payload: runtimeWarn("stalled")})
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(time.Second):
+		close(store.release)
+		t.Fatal("write did not reach store")
+	}
+	defer close(store.release)
+	reporter := bus.(events.RetentionReporter)
+	results := make(chan error, 100)
+	for range 100 {
+		go func() {
+			at, present, err := reporter.OldestRetainedAt(t.Context())
+			if err == nil && (!present || !at.Equal(base)) {
+				err = fmt.Errorf("horizon %v present=%v", at, present)
+			}
+			results <- err
+		}()
+	}
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for range 100 {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-deadline.C:
+			t.Fatal("horizon waited for durable publish lock")
+		}
+	}
+}
+
+func TestDurable_OldestRetainedAt_UnixEpochIsPresent(t *testing.T) {
+	store := newInmemStore(t)
+	bus, _ := newDurableBus(t, store)
+	at := time.Unix(0, 0).UTC()
+	publishAt(t, bus, quad("t", "u", "epoch"), at)
+	got, present, err := bus.(events.RetentionReporter).OldestRetainedAt(t.Context())
+	if err != nil || !present || !got.Equal(at) {
+		t.Fatalf("horizon=%v present=%v err=%v", got, present, err)
 	}
 }

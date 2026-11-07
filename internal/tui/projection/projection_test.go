@@ -957,3 +957,47 @@ func TestReducer_MultiStepStreamSegmentsMessagesInOrder(t *testing.T) {
 		t.Fatalf("step-1 message block wrong: %#v", p.Blocks)
 	}
 }
+
+func (f *pagedClient) RuntimeRetention(context.Context) (types.RuntimeRetention, error) {
+	if f.fail == "retention" {
+		return types.RuntimeRetention{}, errors.New("retention unavailable")
+	}
+	return types.RuntimeRetention{Retention: []types.RetentionHorizon{{Surface: "tasks", Scope: types.RetentionScopeRuntime}}}, nil
+}
+
+func TestHydrateClient_AdminRetentionIsSeparateFromHealth(t *testing.T) {
+	f := newPagedClient(testIdentity("retention"))
+	bundle, err := HydrateClientWithOptions(t.Context(), f, 1, 0, HydrateOptions{IncludeRuntimeRetention: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.RuntimeRetention == nil || bundle.Health == nil || len(bundle.Health.Retention) != 1 || bundle.Health.Retention[0].Surface != "events" {
+		t.Fatalf("bundle=%+v", bundle)
+	}
+	got, err := (&Reducer{}).Hydrate(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Retention) != 1 || got.Retention[0].Surface != "tasks" {
+		t.Fatalf("retention=%+v", got.Retention)
+	}
+}
+
+func TestHydrateClient_UnavailableRetentionPreservesConversation(t *testing.T) {
+	f := newPagedClient(testIdentity("retention-error"))
+	f.fail = "retention"
+	bundle, err := HydrateClientWithOptions(t.Context(), f, 1, 0, HydrateOptions{IncludeRuntimeRetention: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bundle.RetentionUnavailable || bundle.RuntimeRetention != nil || bundle.Health == nil {
+		t.Fatalf("bundle=%+v", bundle)
+	}
+	got, err := (&Reducer{}).Hydrate(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.RetentionUnavailable || len(got.Retention) != 1 || got.Retention[0].Surface != "events" {
+		t.Fatalf("projection=%+v", got)
+	}
+}

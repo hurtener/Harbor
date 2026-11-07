@@ -159,7 +159,7 @@ type SearchSurface interface {
 }
 
 // PostureSurface is the narrow contract the control transport calls
-// into for the seven posture Protocol methods — the five `runtime.*` /
+// into for the posture Protocol methods — the five `runtime.*` /
 // `metrics.*` reads plus `governance.posture` and
 // `llm.posture`. The production implementation is
 // *protocol.PostureSurface; tests inject a deterministic surface. A nil
@@ -167,13 +167,13 @@ type SearchSurface interface {
 // CodeUnknownMethod — preserving the 404 → SKIP path the smoke script
 // relies on while the surface is being wired through.
 //
-// All seven posture methods share the one read-only request envelope
+// All posture methods share the one read-only request envelope
 // `*types.RuntimeInfoRequest` — the governance / llm reads are also
 // identity-only, so they reuse the same shape rather than threading two
 // near-identical wire types.
 type PostureSurface interface {
-	// Dispatch handles one of the seven canonical posture methods.
-	// Returns either a *types.RuntimeInfo / *types.RuntimeHealth /
+	// Dispatch handles a canonical posture method.
+	// Returns either a *types.RuntimeInfo / *types.RuntimeHealth / *types.RuntimeRetention /
 	// *types.RuntimeCounters / *types.RuntimeDrivers /
 	// *types.MetricsSnapshot / *types.GovernancePostureResponse /
 	// *types.LLMPostureResponse, or a *errors.Error.

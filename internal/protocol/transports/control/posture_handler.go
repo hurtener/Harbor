@@ -43,7 +43,15 @@ func (h *Handler) servePosture(w http.ResponseWriter, r *http.Request, method me
 		}
 	}
 
-	ctx, perr := h.reconcilePostureIdentity(r, req)
+	var ctx context.Context
+	var perr *protoerrors.Error
+	// These runtime-wide diagnostics share the observability policy: the body
+	// never selects another principal or grants widening.
+	if method == methods.MethodRuntimeHealth || method == methods.MethodRuntimeRetention {
+		ctx, perr = bodyscope.Reconcile(r.Context(), bodyscope.ForIdentityScope(&req.Identity), bodyscope.SurfaceObservability, nil)
+	} else {
+		ctx, perr = h.reconcilePostureIdentity(r, req)
+	}
 	if perr != nil {
 		h.writeError(w, r, perr)
 		return

@@ -397,3 +397,42 @@ func sortDedup(in []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// SlotGenerationReader is the optional Store surface the tool-catalog input
+// stamp uses. It reports the EventID of the session's overlay record for an
+// agent (and whether one exists) and returns no overlay content. It applies
+// the same session admission as Get first: an erased (pending or tombstoned)
+// session returns ErrSessionErased and an inactive or retired agent lifecycle
+// returns its lifecycle error, so a cached or conditional catalog read is
+// refused for exactly the sessions an uncached read refuses.
+type SlotGenerationReader interface {
+	OverlaySlotGeneration(ctx context.Context, id identity.Quadruple, agentID string) (state.EventID, bool, error)
+}
+
+// OverlaySlotGeneration implements SlotGenerationReader with four point reads
+// (agent lifecycle, erasure pending and tombstone fences, overlay slot).
+func (s *store) OverlaySlotGeneration(ctx context.Context, id identity.Quadruple, agentID string) (state.EventID, bool, error) {
+	if err := s.validate(id, agentID); err != nil {
+		return "", false, err
+	}
+	fenceState, err := loadFences(ctx, s.state, id, agentID)
+	if err != nil {
+		return "", false, err
+	}
+	if fenceState.erased() {
+		return "", false, ErrSessionErased
+	}
+	if err := fenceState.lifecycleError(); err != nil {
+		return "", false, err
+	}
+	rec, err := s.state.Load(ctx, sessionQuad(id), LegacyOverlayKind(agentID))
+	if errors.Is(err, state.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("%w: load overlay generation: %w", ErrStateUnavailable, err)
+	}
+	return rec.ID, true, nil
+}
+
+var _ SlotGenerationReader = (*store)(nil)

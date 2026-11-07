@@ -171,6 +171,48 @@ else
     fail "phase 151: a revision was recorded on an invalid loading value (before=${REV_BEFORE:-<none>} after=${REV_AFTER:-<none>})"
 fi
 
+# --- D-491: the configuration-view revision round trip. A page-1 list returns
+#     an input-addressed revision; resending it as if_revision answers
+#     not_modified with no rows; if_revision on the execution view is refused. ---
+CONFIG_LIST_BODY="$(mktemp)"
+CONFIG_LIST_STATUS=$(curl -s -o "${CONFIG_LIST_BODY}" -w '%{http_code}' --max-time 5 \
+    -X POST "$(api_url /v1/tools/list)" -H "Authorization: Bearer ${TOKEN}" "${ID_HEADERS[@]}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"view\":\"configuration\",\"agent_id\":\"${AGENT_ID}\",\"page\":1}")
+case "${CONFIG_LIST_STATUS}" in
+    404|405|501)
+        skip "phase 151: configuration-view tools.list unavailable (${CONFIG_LIST_STATUS}) — revision round trip skipped"
+        ;;
+    200)
+        CATALOG_REVISION="$(jq -r '.revision // empty' "${CONFIG_LIST_BODY}")"
+        if [ -n "${CATALOG_REVISION}" ]; then
+            ok "phase 151: configuration-view tools.list reports a catalog revision"
+            COND_BODY="$(curl -sS -X POST "$(api_url /v1/tools/list)" -H "Authorization: Bearer ${TOKEN}" "${ID_HEADERS[@]}" \
+                -H 'Content-Type: application/json' \
+                -d "{\"view\":\"configuration\",\"agent_id\":\"${AGENT_ID}\",\"page\":1,\"if_revision\":\"${CATALOG_REVISION}\"}" 2>/dev/null || true)"
+            if jq -e --arg rev "${CATALOG_REVISION}" '.not_modified == true and .revision == $rev and (.tools | length) == 0' >/dev/null 2>&1 <<<"${COND_BODY}"; then
+                ok "phase 151: if_revision round trip answers not_modified with no rows"
+            else
+                fail "phase 151: if_revision round trip did not answer not_modified"
+            fi
+        else
+            fail "phase 151: configuration-view tools.list returned no revision"
+        fi
+        ;;
+    *)
+        fail "phase 151: configuration-view tools.list expected 200, got ${CONFIG_LIST_STATUS}"
+        ;;
+esac
+rm -f "${CONFIG_LIST_BODY}"
+EXEC_COND_STATUS=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    -X POST "$(api_url /v1/tools/list)" -H "Authorization: Bearer ${TOKEN}" "${ID_HEADERS[@]}" \
+    -H 'Content-Type: application/json' -d '{"if_revision":"x"}')
+if [ "${EXEC_COND_STATUS}" = "400" ]; then
+    ok "phase 151: if_revision on the execution view is refused (400)"
+else
+    fail "phase 151: if_revision on the execution view expected 400, got ${EXEC_COND_STATUS}"
+fi
+
 # --- The describe/flip round trip needs ONE real catalog tool. The example
 #     dev config ships with no built-in tools or MCP servers registered by
 #     default (tools.built_in / tools.mcp_servers are both empty), so this

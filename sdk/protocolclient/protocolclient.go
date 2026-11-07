@@ -15,6 +15,9 @@ type (
 	// RuntimeClient is the additive Runtime inspection/control client,
 	// including HA-68 skill-publication methods.
 	RuntimeClient = internal.RuntimeClient
+	// RetentionClient is the optional admin-only runtime.retention read; the
+	// client returned by New implements it (type-assert to use it).
+	RetentionClient = internal.RetentionClient
 	// Connection describes one authenticated Runtime attachment.
 	Connection = internal.Connection
 	// TokenSource resolves a bearer token for each request.
@@ -48,6 +51,10 @@ type (
 	ExternalGrantReadiness = types.ExternalGrantReadiness
 	// RuntimeHealth is the runtime.health response.
 	RuntimeHealth = types.RuntimeHealth
+	// RuntimeRetention is the admin-only runtime.retention response.
+	RuntimeRetention = types.RuntimeRetention
+	// RetentionHorizon describes one observed retained surface.
+	RetentionHorizon = types.RetentionHorizon
 	// StartRequest is the start request.
 	StartRequest = types.StartRequest
 	// LLMProviderRouteSelector is the opaque provider-route selector carried by

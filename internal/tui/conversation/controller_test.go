@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,6 +108,8 @@ func (f *controllerFixture) serve(w http.ResponseWriter, r *http.Request) {
 			capabilities = []types.Capability{types.CapTaskControl, types.CapEventsSubscribe, types.CapStateSnapshots, types.CapSessionLifecycle}
 		}
 		write(types.RuntimeInfo{InstanceID: "fixture", BuildVersion: "test", BuildCommit: "test", BuildGoVersion: "go", ProtocolVersion: types.ProtocolVersion, WireSurfaceDigest: "digest", Capabilities: capabilities})
+	case "/v1/control/runtime.retention":
+		write(types.RuntimeRetention{Retention: []types.RetentionHorizon{{Surface: "events", Scope: types.RetentionScopeRuntime}, {Surface: "tasks", Scope: types.RetentionScopeRuntime}, {Surface: "sessions", Scope: types.RetentionScopeRuntime}}})
 	case "/v1/control/runtime.health":
 		write(types.RuntimeHealth{})
 	case "/v1/state/history":
@@ -585,5 +588,89 @@ func TestController_ConcurrentSwitchReuseCancellationAndLeak(t *testing.T) {
 	}
 	if runtime.NumGoroutine() > baseline+4 {
 		t.Fatalf("goroutine leak baseline=%d now=%d", baseline, runtime.NumGoroutine())
+	}
+}
+
+func TestController_RetentionFetchedOnlyForAdminToken(t *testing.T) {
+	for _, admin := range []bool{false, true} {
+		t.Run(fmt.Sprint(admin), func(t *testing.T) {
+			f, server := newControllerFixture(t)
+			defer server.Close()
+			id := types.IdentityScope{Tenant: "t", User: "u", Session: "retention"}
+			token := testToken(t, id, time.Now().Add(time.Hour))
+			if !admin {
+				parts := strings.Split(token, ".")
+				payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+				if err != nil {
+					t.Fatal(err)
+				}
+				var claims map[string]any
+				if err := json.Unmarshal(payload, &claims); err != nil {
+					t.Fatal(err)
+				}
+				delete(claims, "scopes")
+				payload, err = json.Marshal(claims)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parts[1] = base64.RawURLEncoding.EncodeToString(payload)
+				token = strings.Join(parts, ".")
+			}
+			c, err := NewController(server.URL, NewTokenSource("", token), id, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Switch(t.Context(), id); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = c.Close() }()
+			f.mu.Lock()
+			calls := f.requests["/v1/control/runtime.retention"]
+			f.mu.Unlock()
+			if admin && calls != 1 || !admin && calls != 0 {
+				t.Fatalf("admin=%v calls=%d", admin, calls)
+			}
+		})
+	}
+}
+
+// Review regression: the stream-reconcile re-hydration keeps the admin-only
+// retention diagnostics the initial hydration requested.
+func TestController_ReconcileRehydrateKeepsAdminRetention(t *testing.T) {
+	f, server := newControllerFixture(t)
+	defer server.Close()
+	id := types.IdentityScope{Tenant: "t", User: "u", Session: "reconcile-retention"}
+	updates := make(chan Update, 64)
+	c, err := NewController(server.URL, NewTokenSource("", testToken(t, id, time.Now().Add(time.Hour))), id, func(u Update) {
+		select {
+		case updates <- u:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := c.Switch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	f.awaitStreamRegistration(ctx, id.Session, 1)
+	f.drop(id.Session)
+	f.awaitStreamRegistration(ctx, id.Session, 2)
+	for {
+		f.mu.Lock()
+		calls := f.requests["/v1/control/runtime.retention"]
+		f.mu.Unlock()
+		if calls >= 2 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("runtime.retention calls = %d after reconcile, want the re-hydration to request it again", calls)
+		case <-updates:
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }

@@ -61,6 +61,21 @@ view selector. It is advertised only when the owned-source configuration backend
 is wired. An older runtime receives no selector; clients do not retry a refused
 configuration request by downgrading its view.
 
+Configuration-view list responses and manifests carry an opaque `revision`
+(D-491). To revalidate a cached inventory cheaply, send the cached value as
+`if_revision` on page 1: a match answers `{revision, not_modified: true}` with
+no rows. Later pages ignore `if_revision`; compare each page's `revision` with
+page 1's and restart once on a mismatch. The revision covers structural row
+fields, including the row-level `side_effect` and `loading_mode` (so no
+per-tool `tools.describe` is needed for them), and excludes `oauth_status`,
+`approval_policy`, `last_used_at` and `display_modes`. `not_modified` speaks
+only for the structural rows of the identical query; `if_revision` combined
+with `filter.oauth_statuses` or `filter.approval_policies` is refused. Key a client cache by
+runtime, tenant, agent, acting user and filter. `tools.catalog.changed` is only
+a hint to drop short-lived caches early; never rely on it for correctness.
+Only send `if_revision` to a runtime whose release includes D-491 — older
+runtimes reject the unknown field.
+
 ## Route-aware provider checks
 
 The existing admin-scoped `llm.posture` provider `validate` and `discover`
@@ -333,14 +348,27 @@ Three things to read and act on:
 
 ### 2a. Retention horizons — how far back this Runtime actually holds data
 
-`runtime.health` (POST `/v1/control/runtime.health`) carries, alongside the per-subsystem readiness rollup, an additive `retention[]` block: one **observed** oldest-retained instant per durable surface (`events`, `tasks`, `sessions`). Read it before a windowed history/enumeration read so a merged "last N days" fleet view can mark "this runtime retains only back to X" instead of implying a complete window.
+`runtime.health` (POST `/v1/control/runtime.health`) is a liveness read. For
+every caller it returns subsystem readiness and only the events horizon, when
+wired, at `scope:"runtime"`. Polling it performs no stored reads, elevation or
+audit publication, including with `admin` or `console:fleet` authority.
 
-Each entry carries a **`scope`** marker — `runtime` (identity-free, the whole retained set), `tenant`, or `session` — that makes an absent timestamp representable:
+For observed oldest-retained instants across `events`, `tasks` and `sessions`,
+explicitly call `runtime.retention` (POST `/v1/control/runtime.retention`) with a
+verified **`admin`** token and an empty `{}` request body. Its response is
+`{"retention":[...]}`; entries use the existing `RetentionHorizon` shape and
+all have `scope:"runtime"`. `console:fleet` alone, ordinary callers and
+trust-mode callers receive `scope_mismatch`. A successful read emits exactly
+one `audit.admin_scope_used` attributed to the verified actor; failure to emit
+the audit returns a runtime error without a retention response.
 
-- `scope:"runtime"` + no `oldest_retained_at` ⇒ a *trustworthy empty* — the runtime genuinely retains nothing on that surface.
-- `scope:"session"` / `scope:"tenant"` + no `oldest_retained_at` ⇒ the runtime-wide truth is simply *not observable at your scope*; do not read it as empty. Mark the window's completeness unverifiable.
-
-The `events` horizon is always `scope:"runtime"`. For an ordinary caller the `tasks` horizon is `scope:"session"` and the `sessions` horizon is `scope:"tenant"`. A caller carrying a verified `admin` **or** `console:fleet` scope (derived server-side from the session, never the request body) reads the `tasks` and `sessions` horizons at `scope:"runtime"` too — the fleet-observe path a `svc:` coordinator uses to observe all three. That widened read emits one `audit.admin_scope_used` per request. No new method or capability — it rides `runtime.health`.
+Read these horizons before a windowed history/enumeration read so a merged
+"last N days" view can mark incomplete coverage. An entry with
+`scope:"runtime"` and no `oldest_retained_at` means the surface is trustworthily
+empty. A missing entry means its reader is unwired, so completeness is
+unverifiable. Clients that previously used elevated `runtime.health` for task
+and session horizons must migrate to `runtime.retention` with admin authority
+(D-490). The Protocol version remains `0.1.0`.
 
 ## 3. Starting a task — the chat-message equivalent
 

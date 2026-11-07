@@ -180,10 +180,10 @@ func seedWaveV113(t *testing.T, bus events.EventBus, id identity.Identity, n int
 }
 
 // eventsHorizon reads the observed events retention horizon through the
-// same RetentionProvider that feeds runtime.health.
-func eventsHorizon(t *testing.T, bus events.EventBus, id identity.Identity) time.Time {
+// same EventsHorizonProvider that feeds runtime.health.
+func eventsHorizon(t *testing.T, bus events.EventBus) time.Time {
 	t.Helper()
-	horizons := runtimeposture.RetentionProvider(bus, nil, nil)(context.Background(), id, false)
+	horizons := runtimeposture.EventsHorizonProvider(bus)(context.Background())
 	for _, h := range horizons {
 		if h.Surface == "events" && h.OldestRetainedAt != nil {
 			return *h.OldestRetainedAt
@@ -229,7 +229,7 @@ func TestE2E_WaveV113_TruncatedWindowFloorEqualsRetentionHorizon(t *testing.T) {
 	oldestReturned := page.Events[0].OccurredAt
 
 	// Phase 163: the observed retention horizon over the SAME bus.
-	horizon := eventsHorizon(t, stack.bus, id)
+	horizon := eventsHorizon(t, stack.bus)
 
 	// THE COMPOSE: the windowed read's floor == the reported horizon, and
 	// the horizon has advanced strictly past the true first event — which
@@ -267,7 +267,7 @@ func TestE2E_WaveV113_NonTruncatedHorizonIsTrueOldest(t *testing.T) {
 	if len(page.Events) != 3 {
 		t.Fatalf("complete read returned %d rows, want 3", len(page.Events))
 	}
-	horizon := eventsHorizon(t, stack.bus, id)
+	horizon := eventsHorizon(t, stack.bus)
 	if !horizon.Equal(times[0]) || !page.Events[0].OccurredAt.Equal(times[0]) {
 		t.Fatalf("non-truncated horizon %v / floor %v != true first event %v",
 			horizon, page.Events[0].OccurredAt, times[0])
@@ -321,7 +321,7 @@ func TestE2E_WaveV113_ComposeConcurrency(t *testing.T) {
 				if len(page.Events) == 0 {
 					continue
 				}
-				horizons := runtimeposture.RetentionProvider(stack.bus, nil, nil)(context.Background(), id, false)
+				horizons := runtimeposture.EventsHorizonProvider(stack.bus)(context.Background())
 				var horizon time.Time
 				for _, h := range horizons {
 					if h.Surface == "events" && h.OldestRetainedAt != nil {

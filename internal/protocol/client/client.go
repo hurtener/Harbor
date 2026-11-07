@@ -164,6 +164,16 @@ type Client interface {
 	Identity() types.IdentityScope
 }
 
+// RetentionClient is the optional admin-only retention read. It is a separate
+// interface so adding it does not change the method set of Client or
+// RuntimeClient that external implementations and test doubles satisfy. The
+// concrete client returned by New implements it; callers type-assert.
+type RetentionClient interface {
+	RuntimeRetention(context.Context) (types.RuntimeRetention, error)
+}
+
+var _ RetentionClient = (*client)(nil)
+
 // RuntimeClient is the additive Runtime inspection/control client consumed by
 // the native TUI. Narrow projection consumers continue to depend on Client.
 type RuntimeClient interface {
@@ -446,6 +456,13 @@ func (c *client) runtimeInfo(ctx context.Context, agentID string) (types.Runtime
 func (c *client) RuntimeHealth(ctx context.Context) (types.RuntimeHealth, error) {
 	var out types.RuntimeHealth
 	err := c.callMethod(ctx, methods.MethodRuntimeHealth, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
+	return out, err
+}
+
+// RuntimeRetention reads audited runtime-wide horizons; the server requires admin.
+func (c *client) RuntimeRetention(ctx context.Context) (types.RuntimeRetention, error) {
+	var out types.RuntimeRetention
+	err := c.callMethod(ctx, methods.MethodRuntimeRetention, types.RuntimeInfoRequest{Identity: c.scope()}, &out)
 	return out, err
 }
 
