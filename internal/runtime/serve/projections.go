@@ -92,8 +92,20 @@ func OpenTurnsProjection(ctx context.Context, cfg *config.Config, deps TurnsProj
 		return nil, nil, nil, fmt.Errorf("sessions.turns projection source: %w", sErr)
 	}
 
+	// Every production turns driver implements the coordination store
+	// (single-writer lease, persisted resume cursor, identity repair).
+	coord, ok := store.(turns.MaterializerStore)
+	if !ok {
+		closeProjectionClosers(closers)
+		return nil, nil, nil, fmt.Errorf("sessions.turns: store %T does not implement the materializer coordination store", store)
+	}
 	mat, mErr := materializer.New(src, projector,
 		materializer.WithErasureProbe(turnsErasureProbe(deps.Sessions)),
+		// Only one instance sharing this store materializes at a time
+		// (a rolling deploy overlaps two); a restart resumes from the
+		// persisted cursor instead of re-reading the whole event log.
+		materializer.WithCoordination(coord),
+		materializer.WithLogger(deps.Logger),
 		// The bounded lost-wake / pending-snapshot poll: a completed
 		// task whose answer record converges after its terminal event
 		// (or after a restart) seals without a new canonical event.
@@ -264,7 +276,12 @@ func (a *taskSnapshotAdapter) Task(ctx context.Context, id identity.Identity, ta
 	if err != nil {
 		return materializer.TaskSnapshot{}, fmt.Errorf("turns task snapshot: identity ctx: %w", err)
 	}
-	t, err := a.reg.Get(taskCtx, tasks.TaskID(taskID))
+	// GetPersisted, not Get: during a rolling-deploy overlap the event
+	// this projection is applying may have been published by ANOTHER
+	// instance sharing the durable stores, so the task is not in this
+	// instance's memory. The persisted record carries the query and the
+	// agent; reporting it absent would append a turn with neither.
+	t, err := a.reg.GetPersisted(taskCtx, tasks.TaskID(taskID))
 	if err != nil {
 		if errors.Is(err, tasks.ErrNotFound) {
 			return materializer.TaskSnapshot{}, fmt.Errorf("%w: task %q under %s/%s/%s", materializer.ErrTaskSnapshotNotFound, taskID, id.TenantID, id.UserID, id.SessionID)

@@ -56,6 +56,13 @@ type Backend interface {
 	// engine's in-memory state. An ephemeral backend returns an empty
 	// Snapshot.
 	Hydrate(ctx context.Context) (Snapshot, error)
+	// LoadTask reads ONE persisted task record under its session
+	// identity, bypassing the engine's in-memory map. It serves
+	// readers that must see a record another instance sharing the same
+	// store persisted (a rolling-deploy overlap). found=false when no
+	// record exists; an ephemeral backend may report false always. The
+	// returned task is fresh memory (never aliased).
+	LoadTask(ctx context.Context, id identity.Identity, taskID tasks.TaskID) (task *tasks.Task, found bool, err error)
 }
 
 // TaskRecord is the durable unit for a task: the task itself plus the

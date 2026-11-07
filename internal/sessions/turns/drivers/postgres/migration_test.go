@@ -29,8 +29,8 @@ func TestMigrate_CleanDB_StartsClean(t *testing.T) {
 	defer func() { _ = s.Close(context.Background()) }()
 
 	versions := readSchemaMigrations(t, dsn)
-	if len(versions) != 1 || versions[0] != 1 {
-		t.Errorf("schema_migrations = %v, want [1]", versions)
+	if len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
+		t.Errorf("schema_migrations = %v, want [1 2]", versions)
 	}
 	for _, tbl := range []string{"turn_rows", "turn_sessions"} {
 		if !tableExists(t, dsn, tbl) {
@@ -59,8 +59,8 @@ func TestMigrate_Idempotent(t *testing.T) {
 	defer func() { _ = s2.Close(context.Background()) }()
 
 	versions := readSchemaMigrations(t, dsn)
-	if len(versions) != 1 || versions[0] != 1 {
-		t.Errorf("schema_migrations after second run = %v, want [1]", versions)
+	if len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
+		t.Errorf("schema_migrations after second run = %v, want [1 2]", versions)
 	}
 }
 
@@ -122,8 +122,8 @@ func TestMigrate_Concurrent_AdvisoryLockSerializes(t *testing.T) {
 	}
 
 	versions := readSchemaMigrations(t, dsn)
-	if len(versions) != 1 || versions[0] != 1 {
-		t.Errorf("schema_migrations after %d concurrent runs = %v, want [1]", n, versions)
+	if len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
+		t.Errorf("schema_migrations after %d concurrent runs = %v, want [1 2]", n, versions)
 	}
 }
 

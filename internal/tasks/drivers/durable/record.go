@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -99,6 +100,27 @@ func (b *backend) DeleteTask(ctx context.Context, t *tasks.Task) error {
 		return fmt.Errorf("tasks/durable: state delete (task %s): %w", t.ID, err)
 	}
 	return nil
+}
+
+// LoadTask reads one task's per-ID slot under its session scope — the
+// cross-instance read path (a record another runtime sharing this
+// StateStore persisted). An absent slot is found=false.
+func (b *backend) LoadTask(ctx context.Context, id identity.Identity, taskID tasks.TaskID) (*tasks.Task, bool, error) {
+	rec, err := b.store.Load(ctx, identity.Quadruple{Identity: id}, taskKindPrefix+string(taskID))
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("tasks/durable: state load (task %s): %w", taskID, err)
+	}
+	var pt persistedTask
+	if err := json.Unmarshal(rec.Bytes, &pt); err != nil {
+		return nil, false, fmt.Errorf("tasks/durable: unmarshal task record %q: %w", rec.Kind, err)
+	}
+	if pt.Task == nil {
+		return nil, false, nil
+	}
+	return pt.Task, true, nil
 }
 
 // save writes one record under a fresh EventID so the (Identity, Kind)

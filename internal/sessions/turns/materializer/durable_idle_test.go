@@ -51,6 +51,10 @@ func (s *scriptedProjectionSource) Page(ctx context.Context, after uint64, _ int
 	return page, nil
 }
 
+func (s *scriptedProjectionSource) PageSession(_ context.Context, _ identity.Identity, after uint64, _ int) (events.ProjectionPage, error) {
+	return events.ProjectionPage{Next: after, Quality: events.ProjectionCurrent}, nil
+}
+
 func (s *scriptedProjectionSource) Watermark(context.Context) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

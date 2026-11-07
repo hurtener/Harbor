@@ -17,6 +17,78 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.40.0] — 2026-11-07
+
+### Fixed
+
+- **Conversation turns no longer lose the user's message during a
+  rolling deploy, and a restart no longer re-reads the whole event log.**
+  While two instances shared one database, the old instance's turns
+  materializer projected the new instance's `task.spawned` events, looked
+  the task up only in its own memory, treated the miss as "no record" and
+  appended the turn with an empty query and agent — permanently, since the
+  query was only ever written at append. Fixes:
+  - The materializer's task-record read uses the CURRENT persisted record
+    (`TaskRegistry.GetPersisted`, backed by a single-record
+    `Backend.LoadTask` in both task drivers), so neither a task held only
+    by another instance nor a stale local copy hides the record.
+  - A live root spawn whose record is still unreadable is deferred
+    (bounded: 5 attempts and a 10 s grace window) instead of appended
+    without its query; after the bound it is appended honestly unavailable.
+  - Rows with an unavailable query/agent are flagged (`identity_repair`)
+    and repaired once from the task record — including sealed rows and rows
+    written before this release (the migration backfills the flag). A
+    complete component is never overwritten. An idempotent append that
+    finds a peer's incomplete row fills it inline.
+  - A single-writer lease (`turn_materializer` row, expiry on the database
+    clock, works through transaction pooling) lets only one instance
+    materialize; the other stands by and takes over when the holder
+    releases the lease on shutdown or stops renewing it (30 s TTL). Every
+    projection write carries the lease generation and the store refuses it
+    in the same transaction once the lease changed hands, so a paused
+    former holder cannot write after a takeover.
+  - The materializer persists its resume cursor (lease-fenced, monotonic)
+    and resumes from it, held back to just before the oldest still-open
+    turn within a 10,000-event lookback. Older open turns are recovered
+    from durable state: deferred completions are marked on their row
+    (`pending_complete`) and requeued on every new lease tenure, and task
+    ancestry (task → parent, run → task) is persisted (`turn_routes`,
+    pruned when the root turn seals) so child and explicit-run events keep
+    routing exactly. The migration seeds the cursor from the existing
+    per-session checkpoints, so the first boot after upgrading does not
+    replay the log either. Catch-up progress is logged at Info at most
+    every 15 s.
+  - Upgrading a store an earlier release populated runs a one-time,
+    resumable bootstrap owned by the lease holder before fast resume: it
+    backfills the repair flag in short batches and replays ONLY the
+    sessions that still hold unsealed rows (their own history via the new
+    per-session `ProjectionSource.PageSession`, up to the seeded cursor)
+    to rebuild the pending completions and task routes that release never
+    persisted. Routes are pruned when a task finishes (sealed root,
+    finished child, rootless background task), on replayed terminals, and
+    with retention eviction.
+  - Migrations: `sessions.turns` Postgres and SQLite `0002` (new
+    `turn_materializer` and `turn_routes` tables,
+    `turn_rows.identity_repair` / `pending_complete` columns, cursor seed,
+    bootstrap mark). On Postgres the migration is metadata-only (defaulted
+    columns, new tables; no row rewrite, no index build over `turn_rows`)
+    with a short `lock_timeout`; the migration runner retries a
+    lock-timed-out migration so a briefly blocking reader delays a boot
+    instead of failing it, and the flag indexes are built at runtime with
+    `CREATE INDEX CONCURRENTLY`. Forward-only; no config changes. A
+    Postgres database created by v1.39 or earlier upgrades in place: the
+    migration runner accepts a store's previous contract only at the
+    schema version it described and moves the store identity to the new
+    contract in the migration's own transaction.
+- **Projection pages no longer reload every index chunk above a far-behind
+  cursor.** Since the chunked v2 event index (v1.37.0), each projection
+  page walked and loaded every chunk between a session's tail and the
+  reader's cursor, so a cold catch-up cost O(history) chunk loads per
+  page. Verified chunk spans are now cached per session (bounded: at most
+  8,192 spans per session and ~3 MiB in total) and pages merge sessions
+  lazily, loading only the chunks holding the rows they return; each loaded chunk is still authenticated by its digest, and any
+  mismatch falls back to the verifying walk.
+
 ## [1.39.0] — 2026-11-07
 
 ### Security

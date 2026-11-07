@@ -625,6 +625,33 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 	return &cp, nil
 }
 
+// GetPersisted implements tasks.TaskRegistry: the CURRENT persisted
+// record first, then this instance's memory. Another instance sharing the
+// store may have advanced the task (completed it, recorded its answer)
+// after this instance hydrated or last touched its own copy, so a local
+// copy must never shadow the persisted record. The persisted read runs
+// outside the engine lock and is accepted only when its id and identity
+// match the request; the returned record is freshly decoded (never
+// aliased, never adopted into this engine's state). Without a persisted
+// record the in-memory copy (if any) is returned as Get would.
+func (e *Engine) GetPersisted(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) {
+	if e.closed.Load() {
+		return nil, tasks.ErrRegistryClosed
+	}
+	ident, err := identityFromCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rec, found, loadErr := e.backend.LoadTask(ctx, ident, id)
+	if loadErr != nil {
+		return nil, fmt.Errorf("tasks: load persisted task %q: %w", id, loadErr)
+	}
+	if found && rec != nil && rec.ID == id && identityVisible(ident, rec.Identity) {
+		return rec, nil
+	}
+	return e.Get(ctx, id)
+}
+
 // List implements tasks.TaskRegistry. Filters by session and the
 // optional fields on `f`. Returns task summaries in arbitrary order
 // does not promise iteration order; may.

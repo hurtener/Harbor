@@ -138,6 +138,10 @@ func (s *scriptedProjectionSource) Page(ctx context.Context, after uint64, _ int
 	return page, nil
 }
 
+func (s *scriptedProjectionSource) PageSession(_ context.Context, _ identity.Identity, after uint64, _ int) (events.ProjectionPage, error) {
+	return events.ProjectionPage{Next: after, Quality: events.ProjectionCurrent}, nil
+}
+
 func (s *scriptedProjectionSource) Watermark(context.Context) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -752,6 +756,12 @@ func (s *stubSource) Page(ctx context.Context, after uint64, limit int) (events.
 		quality = events.ProjectionCatchingUp
 	}
 	return events.ProjectionPage{Events: out, Next: next, Watermark: wm, Quality: quality}, nil
+}
+
+// PageSession is unused by the rollups worker; the stub serves an empty
+// current page.
+func (s *stubSource) PageSession(_ context.Context, _ identity.Identity, after uint64, _ int) (events.ProjectionPage, error) {
+	return events.ProjectionPage{Next: after, Quality: events.ProjectionCurrent}, nil
 }
 
 func (s *stubSource) Watermark(_ context.Context) (uint64, error) {

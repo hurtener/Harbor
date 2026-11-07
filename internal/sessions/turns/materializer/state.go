@@ -27,9 +27,11 @@ var ErrTaskRoutingConflict = errors.New("materializer: task parent binding chang
 // which the row cannot retain past its bounded windows) and the
 // run/task routing index, across the events of one materializer
 // lifetime. After a process restart the state is rebuilt by re-paging
-// the durable event source from sequence zero (idempotent: every
-// projector mutation at or below a row's last-applied sequence is a
-// no-op), so the state never needs its own persistence.
+// the durable event source from the persisted resume cursor (or from
+// zero when uncoordinated; idempotent either way: every projector
+// mutation at or below a row's last-applied sequence is a no-op), and a
+// turn opened before the cursor is adopted from its durable row, so the
+// state never needs its own persistence.
 type sessionState struct {
 	// id is the session's isolation triple.
 	id identity.Identity
@@ -78,6 +80,9 @@ type sessionState struct {
 	tasks map[string]string
 	// turns holds one entry per materialized turn, keyed by TurnID.
 	turns map[turns.TurnID]*turnState
+	// adoptMiss is the bounded negative cache of root task ids that
+	// have no adoptable durable row (see preRoute).
+	adoptMiss map[string]bool
 }
 
 // turnState is the materializer's per-turn derived working state: the
@@ -141,6 +146,19 @@ type turnState struct {
 	// inputs is the accumulated input attachment metadata list (from
 	// task.input_disposition.resolved), deduplicated by artifact id.
 	inputs []turns.Attachment
+	// adoptedThrough is the durable row's last applied event sequence
+	// when the turn was ADOPTED from its row (it was spawned before the
+	// persisted resume cursor): events at or below it are already
+	// reflected in the row and in the seeded accumulators. 0 = observed
+	// from its spawn.
+	adoptedThrough uint64
+	// activityFrozen / reasoningFrozen mark an adopted turn whose row
+	// window had already overflowed: its partial row feed cannot be
+	// extended without corrupting the stored exact totals, so further
+	// activity / reasoning observations are acknowledged without a
+	// write (the stored totals stay as the honest lower bound).
+	activityFrozen  bool
+	reasoningFrozen bool
 }
 
 // newSessionState creates the per-session state and seeds the
@@ -304,4 +322,21 @@ func containsRune(s string, r rune) bool {
 		}
 	}
 	return false
+}
+
+// rootTaskOf returns the root task id taskID folds into when its ancestry
+// is known ("" otherwise).
+func (s *sessionState) rootTaskOf(taskID string) string {
+	cur := taskID
+	for range 128 {
+		parent, ok := s.tasks[cur]
+		if !ok {
+			return ""
+		}
+		if parent == "" {
+			return cur
+		}
+		cur = parent
+	}
+	return ""
 }

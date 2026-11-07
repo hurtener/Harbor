@@ -16,6 +16,7 @@ package inprocess
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -70,6 +71,28 @@ func (b ephemeralBackend) SaveTask(ctx context.Context, rec engine.TaskRecord) e
 		return fmt.Errorf("tasks/inprocess: state save (task): %w", err)
 	}
 	return nil
+}
+
+// LoadTask reads the session's single fixed lifecycle slot and reports
+// it only when it holds exactly the requested task. The in-process
+// driver keeps no per-record history, so an older task of the session
+// is honestly not found.
+func (b ephemeralBackend) LoadTask(ctx context.Context, id identity.Identity, taskID tasks.TaskID) (*tasks.Task, bool, error) {
+	rec, err := b.store.Load(ctx, identity.Quadruple{Identity: id}, tasks.LifecycleKind)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("tasks/inprocess: state load (task %s): %w", taskID, err)
+	}
+	var t tasks.Task
+	if err := json.Unmarshal(rec.Bytes, &t); err != nil {
+		return nil, false, fmt.Errorf("tasks/inprocess: unmarshal task: %w", err)
+	}
+	if t.ID != taskID {
+		return nil, false, nil
+	}
+	return &t, true, nil
 }
 
 func (b ephemeralBackend) SaveGroup(ctx context.Context, g *tasks.TaskGroup) error {

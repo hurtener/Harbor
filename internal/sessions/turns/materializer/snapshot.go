@@ -237,23 +237,32 @@ func snapshotFailureMessage(message string) string {
 // the caller via bindRunID, which knows the event-derived run and the
 // turn's existing binding.
 func (m *Materializer) readTaskSnapshot(ctx context.Context, id identity.Identity, taskID string) (TaskSnapshot, error) {
+	snap, _, err := m.readTaskSnapshotFound(ctx, id, taskID)
+	return snap, err
+}
+
+// readTaskSnapshotFound is readTaskSnapshot that also reports whether a
+// record was found (false for a nil reader or ErrTaskSnapshotNotFound),
+// so a live root spawn can defer instead of appending without its query
+// and agent.
+func (m *Materializer) readTaskSnapshotFound(ctx context.Context, id identity.Identity, taskID string) (TaskSnapshot, bool, error) {
 	if m.snap == nil {
-		return TaskSnapshot{}, nil
+		return TaskSnapshot{}, false, nil
 	}
 	snap, err := m.snap.Task(ctx, id, taskID)
 	if err != nil {
 		if errors.Is(err, ErrTaskSnapshotNotFound) {
-			return TaskSnapshot{}, nil
+			return TaskSnapshot{}, false, nil
 		}
-		return TaskSnapshot{}, fmt.Errorf("materializer: task snapshot %s: %w", taskID, err)
+		return TaskSnapshot{}, false, fmt.Errorf("materializer: task snapshot %s: %w", taskID, err)
 	}
 	if err := validateTaskSnapshot(snap); err != nil {
-		return TaskSnapshot{}, err
+		return TaskSnapshot{}, false, err
 	}
 	if snap.TaskID != "" && snap.TaskID != taskID {
-		return TaskSnapshot{}, fmt.Errorf("%w: requested %s, record reports %s", ErrSnapshotTaskIDMismatch, taskID, snap.TaskID)
+		return TaskSnapshot{}, false, fmt.Errorf("%w: requested %s, record reports %s", ErrSnapshotTaskIDMismatch, taskID, snap.TaskID)
 	}
-	return snap, nil
+	return snap, true, nil
 }
 
 // bindRunID enforces the turn/run binding contract at the seam. The

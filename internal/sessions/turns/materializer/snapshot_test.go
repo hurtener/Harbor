@@ -324,7 +324,7 @@ func TestMaterialize_TaskSnapshot_LegacyAbsenceStaysUnavailable(t *testing.T) {
 		h := newHarness(t, "")
 		defer h.closeStore()
 		reader := newFakeTaskReader().markMissing("task-l")
-		m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+		m := h.newMaterializer(t, WithTaskSnapshotReader(reader), withSpawnDeferral(0, 0)) // a record that never appears (legacy absence)
 
 		quad := testQuad(h.id, "run-l")
 		h.src.publish(t, spawnEv(h.id, quad.RunID, "task-l", tasks.KindForeground, ""))

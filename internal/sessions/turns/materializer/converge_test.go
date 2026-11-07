@@ -34,7 +34,7 @@ func TestMaterialize_DeferredCompleteConvergesWhenRecordAppears(t *testing.T) {
 	h := newHarness(t, "")
 	defer h.closeStore()
 	reader := newFakeTaskReader().markMissing("task-miss")
-	m := h.newMaterializer(t, WithTaskSnapshotReader(reader))
+	m := h.newMaterializer(t, WithTaskSnapshotReader(reader), withSpawnDeferral(0, 0)) // a record that never appears (legacy absence)
 
 	quad := testQuad(h.id, "run-miss")
 	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-miss", tasks.KindForeground, ""))

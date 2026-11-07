@@ -833,6 +833,15 @@ type TaskRegistry interface {
 	// identity (cross-tenant / cross-session reads are rejected).
 	Get(ctx context.Context, id TaskID) (*Task, error)
 
+	// GetPersisted reads the CURRENT persisted task record — the one any
+	// runtime instance sharing the store last wrote (e.g. during a
+	// rolling-deploy overlap) — falling back to this instance's memory
+	// only when no persisted record exists. A stale local copy never
+	// shadows the persisted record. Same identity rule and ErrNotFound
+	// semantics as Get. Read-only: the record is never adopted into this
+	// instance's lifecycle state.
+	GetPersisted(ctx context.Context, id TaskID) (*Task, error)
+
 	// List returns task summaries for the given session matching `f`.
 	// Empty pointer fields in `f` are wildcards.
 	List(ctx context.Context, sessionID identity.Identity, f TaskFilter) ([]TaskSummary, error)

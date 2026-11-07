@@ -124,6 +124,10 @@ type Config struct {
 	// retention eviction is never silent (AGENTS.md §13). <= 0 means
 	// the documented projection default (turns.MaxRetainedTurns).
 	Retention int
+	// Clock is the clock the single-writer materializer lease expiry
+	// is evaluated against; nil means time.Now. Tests inject it to
+	// expire a lease deterministically.
+	Clock func() time.Time
 }
 
 // New constructs a SQLite-backed `turns.Store` against cfg.DSN.
@@ -185,10 +189,15 @@ func New(cfg Config) (turns.Store, error) {
 	if retention <= 0 {
 		retention = turns.MaxRetainedTurns
 	}
+	clock := cfg.Clock
+	if clock == nil {
+		clock = time.Now
+	}
 	return &driver{
 		db:      db,
 		retain:  retention,
 		durable: !isMemoryDSN(cfg.DSN),
+		clock:   clock,
 	}, nil
 }
 
@@ -323,6 +332,7 @@ type driver struct {
 	closed  atomic.Bool
 	retain  int
 	durable bool
+	clock   func() time.Time
 }
 
 // Compile-time assertion that driver satisfies turns.Store.
@@ -366,6 +376,9 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 		}
 	}()
 
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return turns.TurnRow{}, err
+	}
 	// 1. STORE-LOCAL erasure fence first, always: an erased session
 	//    admits no turn write (checked in the same tx as the write).
 	fenced, err := scopeFenced(ctx, tx, id)
@@ -407,6 +420,13 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 	row.Version = 1
 	if err := writeRowAndChildren(ctx, tx, id, row); err != nil {
 		return turns.TurnRow{}, err
+	}
+	if turns.NeedsIdentityRepair(row) {
+		// Flag the row for the materializer's identity repair pass (its
+		// query / agent was unavailable at append).
+		if _, err := tx.ExecContext(ctx, flagIdentityRepairSQL, id.TenantID, id.UserID, id.SessionID, string(row.TurnID)); err != nil {
+			return turns.TurnRow{}, fmt.Errorf("sessions/turns/sqlite: flag identity repair: %w", err)
+		}
 	}
 
 	// 5. Retention: evict the session's oldest rows past the bound;
@@ -471,6 +491,9 @@ func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.
 		}
 	}()
 
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return turns.TurnRow{}, err
+	}
 	// 1. The store-local erasure fence is checked in the same
 	//    transaction as the write (no race between check and write).
 	fenced, err := scopeFenced(ctx, tx, id)
@@ -513,6 +536,16 @@ func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.
 	next.Version = curVersion + 1
 	if err := writeRowAndChildren(ctx, tx, id, next); err != nil {
 		return turns.TurnRow{}, err
+	}
+	if sealed {
+		// A sealed row is never pending completion (cleared with the
+		// seal), and a sealed root turn needs no routing any more.
+		if _, err := tx.ExecContext(ctx, clearPendingSQL, id.TenantID, id.UserID, id.SessionID, string(turnID)); err != nil {
+			return turns.TurnRow{}, fmt.Errorf("sessions/turns/sqlite: clear pending completion: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, pruneRoutesSQL, id.TenantID, id.UserID, id.SessionID, string(turnID)); err != nil {
+			return turns.TurnRow{}, fmt.Errorf("sessions/turns/sqlite: prune routes: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -792,6 +825,9 @@ func (d *driver) SaveCheckpoint(ctx context.Context, id identity.Identity, seq u
 		}
 	}()
 
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return err
+	}
 	// A fenced (erased) session must never advance its checkpoint — no
 	// resurrection after replay / restart.
 	fenced, err := scopeFenced(ctx, tx, id)
@@ -853,6 +889,11 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 	// child activity / App rows) and the per-session state. The erasure
 	// FENCE table and the SNAPSHOT generation table are never deleted.
 	deleted := 0
+	// The materializer's persisted routes go with the session (routing
+	// metadata, not counted as projection records).
+	if _, err := tx.ExecContext(ctx, deleteRoutesScopeSQL, id.TenantID, id.UserID, id.SessionID); err != nil {
+		return 0, fmt.Errorf("sessions/turns/sqlite: erase routes: %w", err)
+	}
 	for _, del := range []string{deleteActivityScopeSQL, deleteAppsScopeSQL, deleteRowsScopeSQL, deleteSessionStateSQL} {
 		res, err := tx.ExecContext(ctx, del, id.TenantID, id.UserID, id.SessionID)
 		if err != nil {
@@ -1034,6 +1075,15 @@ const (
         DELETE FROM turn_activity_rows
         WHERE tenant = ? AND user = ? AND session = ?
           AND turn_id IN (
+              SELECT turn_id FROM turn_rows
+              WHERE tenant = ? AND user = ? AND session = ?
+              ORDER BY sequence DESC, turn_id DESC
+              LIMIT -1 OFFSET ?
+          )`
+	evictRoutesSQL = `
+        DELETE FROM turn_routes
+        WHERE tenant = ? AND user = ? AND session = ?
+          AND root_task_id IN (
               SELECT turn_id FROM turn_rows
               WHERE tenant = ? AND user = ? AND session = ?
               ORDER BY sequence DESC, turn_id DESC
@@ -1338,6 +1388,12 @@ func (d *driver) enforceRetention(ctx context.Context, tx *sql.Tx, id identity.I
 		id.TenantID, id.UserID, id.SessionID, id.TenantID, id.UserID, id.SessionID, d.retain,
 	); err != nil {
 		return fmt.Errorf("sessions/turns/sqlite: evict app refs: %w", err)
+	}
+	// Routes never outlive the turns they route to.
+	if _, err := tx.ExecContext(ctx, evictRoutesSQL,
+		id.TenantID, id.UserID, id.SessionID, id.TenantID, id.UserID, id.SessionID, d.retain,
+	); err != nil {
+		return fmt.Errorf("sessions/turns/sqlite: evict routes: %w", err)
 	}
 	res, err := tx.ExecContext(ctx, evictRowsSQL,
 		id.TenantID, id.UserID, id.SessionID, id.TenantID, id.UserID, id.SessionID, d.retain,

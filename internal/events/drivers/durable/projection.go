@@ -91,6 +91,7 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		meta events.EventMetadata
 	}
 	var cands []candidate
+	var streams []*pageStream
 	retentionGap := false
 	skippedCorrupt := false
 	for _, rec := range recs {
@@ -127,37 +128,39 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		if view.hdr.Trimmed.Count > 0 && after < view.hdr.Trimmed.ThroughSeq {
 			retentionGap = true
 		}
-		// O(1) skip of a session with nothing after the cursor; otherwise
-		// walk back only to the first chunk holding a row after it, keeping
-		// at most limit+1 candidates per session.
-		rows, err := b.collectAbove(ctx, &view, after, limit+1, func(r indexRow) bool { return !r.Internal })
-		if err != nil {
-			through, classifyErr := b.classifyMissThrough(ctx, err)
-			if errors.Is(classifyErr, ErrIndexIntegrity) {
-				b.skipCorruptSession(ctx, rec.Identity, "projection page")
-				retentionGap = true
+		// O(1) skip of a session with nothing after the cursor. Otherwise
+		// the session joins the page merge as a LAZY row stream: rows in
+		// the header tail are free, and a sealed chunk is loaded only when
+		// the merge actually reaches its sequence range (verified spans
+		// are cached), so a page loads the chunks holding the rows it
+		// returns — not every chunk between the tail and a far-behind
+		// cursor, and not limit+1 rows from every session.
+		if view.hdr.RetainedCount == 0 || view.hdr.LastSeq <= after {
+			continue
+		}
+		st, ok := b.newPageStream(ctx, view, after)
+		if !ok {
+			rows, gap, corrupt, err := b.eagerSessionRows(ctx, &view, after, limit+1)
+			if err != nil {
+				return events.ProjectionPage{}, err
+			}
+			retentionGap = retentionGap || gap
+			if corrupt {
 				skippedCorrupt = true
 				continue
 			}
-			if classifyErr != nil {
-				return events.ProjectionPage{}, fmt.Errorf("durable: projection page: %w", classifyErr)
-			}
-			// A trim deleted a chunk below the rows already collected. Those
-			// rows are every retained row above the cut, so they stay
-			// candidates (dropping them would let a Current page's watermark
-			// skip retained events); only the trimmed range is gone.
-			retentionGap = true
-			kept := rows[:0]
-			for _, r := range rows {
-				if r.Seq > through {
-					kept = append(kept, r)
-				}
-			}
-			rows = kept
+			st = &pageStream{view: view, rows: rows}
 		}
-		for _, r := range rows {
-			cands = append(cands, candidate{id: rec.Identity, meta: r.metadata(rec.Identity)})
-		}
+		streams = append(streams, st)
+	}
+	merged, gap, corrupt, err := b.mergePageStreams(ctx, streams, after, limit+1)
+	if err != nil {
+		return events.ProjectionPage{}, err
+	}
+	retentionGap = retentionGap || gap
+	skippedCorrupt = skippedCorrupt || corrupt
+	for _, r := range merged {
+		cands = append(cands, candidate{id: r.id, meta: r.row.metadata(r.id)})
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].meta.Sequence < cands[j].meta.Sequence })
 
@@ -224,6 +227,106 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 		quality = events.ProjectionCatchingUp
 	}
 	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	next := after
+	if len(matches) > 0 {
+		next = matches[len(matches)-1].Sequence
+	}
+	return events.ProjectionPage{Events: matches, Next: next, Watermark: wm, Quality: quality, RetentionGap: retentionGap}, nil
+}
+
+// PageSession implements events.ProjectionSource: one session's forward
+// page, read from that session's index alone (cost proportional to the
+// session's rows above the cursor). A fenced session yields an empty
+// Current page; an integrity failure or an unexplained gap fails loud.
+func (b *bus) PageSession(ctx context.Context, id identity.Identity, after uint64, limit int) (events.ProjectionPage, error) {
+	if b.closed.Load() {
+		return events.ProjectionPage{}, events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return events.ProjectionPage{}, err
+	}
+	quad := identity.Quadruple{Identity: id}
+	if limit <= 0 {
+		return events.ProjectionPage{Next: after, Quality: events.ProjectionCurrent}, nil
+	}
+	if b.bestEffort {
+		if b.ringCap == 0 {
+			return events.ProjectionPage{Next: after, Quality: events.ProjectionUnavailable}, nil
+		}
+		b.publishMu.Lock()
+		snapshot := b.ringSnapshotLocked()
+		wm := b.nextSeq
+		evicted := b.evicted
+		b.publishMu.Unlock()
+		return events.ProjectionPageFromSnapshot(snapshot, after, limit, wm, evicted, func(ev events.Event) bool {
+			return ev.Identity.Identity != id || b.isFenced(ev.Identity)
+		}), nil
+	}
+	wm, _, err := b.loadSequenceAuthority(ctx)
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: session page: load sequence authority: %w", err)
+	}
+	empty := events.ProjectionPage{Next: after, Watermark: wm, Quality: events.ProjectionCurrent}
+	fences, err := b.loadDurableFenceSnapshot(ctx)
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: session page: %w", err)
+	}
+	if fences.contains(quad) {
+		return empty, nil
+	}
+	rec, err := b.store.Load(ctx, quad, kindHead)
+	if errors.Is(err, state.ErrNotFound) {
+		return empty, nil
+	}
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: session page: load head: %w", err)
+	}
+	view, err := b.indexViewFromRecord(ctx, quad, rec.Bytes)
+	if err != nil {
+		return events.ProjectionPage{}, fmt.Errorf("durable: session page: index head: %w", err)
+	}
+	retentionGap := view.hdr.Trimmed.Count > 0 && after < view.hdr.Trimmed.ThroughSeq
+	rows, err := b.collectAboveSeek(ctx, &view, after, limit+1, nonInternalRow)
+	if err != nil {
+		rows, err = b.collectAbove(ctx, &view, after, limit+1, nonInternalRow)
+		if err != nil {
+			through, classifyErr := b.classifyMissThrough(ctx, err)
+			if classifyErr != nil {
+				return events.ProjectionPage{}, fmt.Errorf("durable: session page: %w", classifyErr)
+			}
+			retentionGap = true
+			kept := rows[:0]
+			for _, r := range rows {
+				if r.Seq > through {
+					kept = append(kept, r)
+				}
+			}
+			rows = kept
+		}
+	}
+	matches := make([]events.Event, 0, len(rows))
+	for _, r := range rows {
+		ev, err := b.loadEntryBody(ctx, quad, r.Seq)
+		if err != nil {
+			if _, classifyErr := b.classifyMissThrough(ctx, err); classifyErr != nil {
+				return events.ProjectionPage{}, fmt.Errorf("durable: session page: %w", classifyErr)
+			}
+			retentionGap = true
+			continue
+		}
+		if err := validateMetadataEvent(r.metadata(quad), ev); err != nil {
+			return events.ProjectionPage{}, fmt.Errorf("durable: session page metadata mismatch seq=%d: %w", r.Seq, err)
+		}
+		if events.IsBusInternalNotice(ev.Type) {
+			continue
+		}
+		matches = append(matches, ev)
+	}
+	quality := events.ProjectionCurrent
+	if len(matches) > limit {
+		quality = events.ProjectionCatchingUp
 		matches = matches[:limit]
 	}
 	next := after

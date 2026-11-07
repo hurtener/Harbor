@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -182,6 +183,35 @@ func fieldNested(m map[string]any, key string) map[string]any {
 // (unrecognised type, incomplete identity, unknown session, fenced
 // session, sealed turn, unroutable run), or a wrapped error for a hard
 // failure that must abort the pass.
+// sessionForLocked returns the session's working state, creating it on
+// first contact. The durable erasure probe is consulted ONCE at creation:
+// an erased session is never re-materialized merely because the
+// in-memory state restarted (the restart gate mirroring the projector's
+// Reconcile); it is returned fenced.
+func (m *Materializer) sessionForLocked(ctx context.Context, id identity.Identity) (*sessionState, error) {
+	if sess := m.sessions[id]; sess != nil {
+		return sess, nil
+	}
+	if m.probe != nil {
+		erased, perr := m.probe.Erased(ctx, id)
+		if perr != nil {
+			return nil, fmt.Errorf("materializer: erasure probe for %s: %w", id.SessionID, perr)
+		}
+		if erased {
+			sess := &sessionState{id: id, fenced: true, runs: map[string]string{}, derivedRuns: map[string]bool{}, taskRuns: map[string]string{}, tasks: map[string]string{}, turns: map[turns.TurnID]*turnState{}}
+			m.sessions[id] = sess
+			return sess, nil
+		}
+	}
+	sess, err := m.newSessionState(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("materializer: open session %s: %w", id.SessionID, err)
+	}
+	m.sessions[id] = sess
+	m.passTouched++
+	return sess, nil
+}
+
 func (m *Materializer) applyEvent(ctx context.Context, ev events.Event) (applied, skipped bool, err error) {
 	if !recognizedType(ev.Type) {
 		return false, true, nil
@@ -195,32 +225,9 @@ func (m *Materializer) applyEvent(ctx context.Context, ev events.Event) (applied
 		return false, true, nil
 	}
 
-	sess := m.sessions[id]
-	if sess == nil {
-		// First contact with this session: materialize the root
-		// foreground spawn (which creates the session) or create the
-		// session for a routed child/tool event. The durable erasure
-		// probe is consulted ONCE at creation: an erased session is
-		// never re-materialized from sequence zero (the restart gate
-		// mirroring the projector's Reconcile).
-		if m.probe != nil {
-			erased, perr := m.probe.Erased(ctx, id)
-			if perr != nil {
-				return false, false, fmt.Errorf("materializer: erasure probe for %s: %w", id.SessionID, perr)
-			}
-			if erased {
-				sess = &sessionState{id: id, fenced: true, runs: map[string]string{}, tasks: map[string]string{}, turns: map[turns.TurnID]*turnState{}}
-				m.sessions[id] = sess
-				return false, true, nil
-			}
-		}
-		created, err := m.newSessionState(ctx, id)
-		if err != nil {
-			return false, false, fmt.Errorf("materializer: open session %s: %w", id.SessionID, err)
-		}
-		sess = created
-		m.sessions[id] = sess
-		m.passTouched++
+	sess, err := m.sessionForLocked(ctx, id)
+	if err != nil {
+		return false, false, err
 	}
 	if sess.fenced {
 		return false, true, nil
@@ -277,10 +284,61 @@ func (m *Materializer) applyEvent(ctx context.Context, ev events.Event) (applied
 	return applied, !applied, nil
 }
 
+// routeKind names how an event routes to its turn (see routeOf).
+type routeKind int
+
+const (
+	routeNone routeKind = iota
+	routeTask
+	routeRun
+)
+
+// routeOf returns the routing key of a recognized non-spawn event: the
+// payload task id of a task lifecycle / input-disposition event, or the
+// envelope run id of a run-scoped event. task.spawned routes itself.
+func routeOf(ev events.Event, payload map[string]any) (routeKind, string) {
+	switch ev.Type {
+	case tasks.EventTypeTaskSpawned:
+		return routeNone, ""
+	case tasks.EventTypeTaskStarted, tasks.EventTypeTaskResumed, tasks.EventTypeTaskCompleted,
+		tasks.EventTypeTaskFailed, tasks.EventTypeTaskCancelled, tasks.EventTypeTaskPaused:
+		return routeTask, fieldString(payload, "TaskID")
+	case runctx.EventTypeInputDispositionResolved:
+		return routeTask, fieldString(payload, "task_id")
+	}
+	return routeRun, runIDFromIdentity(ev.Identity)
+}
+
 // applyToSession routes one recognized event to the owning turn and
 // derives the projector observation. Returns applied=false for a
 // deliberate skip (routing miss, sealed turn, unclassifiable step).
 func (m *Materializer) applyToSession(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
+	if kind, key := routeOf(ev, payload); kind != routeNone {
+		ts, err := m.preRoute(ctx, sess, kind, key)
+		if err != nil {
+			return false, err
+		}
+		if ts != nil && ev.Sequence <= ts.adoptedThrough {
+			// The adopted durable row already reflects this event.
+			return true, nil
+		}
+	}
+	applied, err := m.dispatch(ctx, sess, ev, payload)
+	if err != nil {
+		return applied, err
+	}
+	switch ev.Type {
+	case tasks.EventTypeTaskCompleted, tasks.EventTypeTaskFailed, tasks.EventTypeTaskCancelled:
+		// A finished task's persisted routes go once nothing can need them.
+		if err := m.pruneOnTerminal(ctx, sess, fieldString(payload, "TaskID")); err != nil {
+			return false, err
+		}
+	}
+	return applied, nil
+}
+
+// dispatch applies one recognized event to its family handler.
+func (m *Materializer) dispatch(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
 	switch ev.Type {
 	case tasks.EventTypeTaskSpawned:
 		return m.applyTaskSpawned(ctx, sess, ev, payload)
@@ -364,10 +422,20 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 		// run route is registered only when the event explicitly names it;
 		// the stock root-foreground TaskID-as-RunID derivation below is
 		// deliberately not generalized to other task executors.
+		if _, ok := sess.tasks[parent]; !ok && parent != "" {
+			// The parent was spawned before this instance's resume
+			// cursor: recover its durable ancestry first.
+			if _, err := m.ensureKnownTask(ctx, sess, parent, 0, false); err != nil {
+				return false, err
+			}
+		}
 		if err := sess.validateTaskRoute(taskID, parent, runID, false); err != nil {
 			return false, err
 		}
 		sess.commitTaskRoute(taskID, parent, runID, false)
+		if err := m.saveRoute(ctx, sess, turns.TaskRoute{TaskID: taskID, ParentTaskID: parent, RunID: runID, RootTaskID: sess.rootTaskOf(parent), EventSeq: ev.Sequence}); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 	if hasPipe(taskID) {
@@ -383,10 +451,23 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 	// later disposition update never replaces the row's inputs without
 	// them (restart convergence). A nil reader / missing record leaves
 	// the components honestly unavailable.
-	snap, err := m.readTaskSnapshot(ctx, sess.id, taskID)
+	snap, found, err := m.readTaskSnapshotFound(ctx, sess.id, taskID)
 	if err != nil {
 		return false, err
 	}
+	if !found && m.snap != nil && ev.Sequence > sess.checkpoint {
+		if _, exists := sess.turns[turns.TurnID(taskID)]; !exists && m.deferSpawnLocked(sess.id, taskID) {
+			// A LIVE root spawn whose task record is not readable yet
+			// (another instance published the event and has not
+			// persisted the record where this one reads it). Appending
+			// now would persist the turn without the user's query and
+			// agent; defer — bounded by attempts AND a grace window —
+			// and retry the same event. After the bound the row is
+			// appended honestly unavailable and flagged for repair.
+			return false, errSpawnDeferred
+		}
+	}
+	m.clearSpawnMissLocked(sess.id, taskID)
 	// Run binding at the turn's birth: the event envelope's run id and
 	// the record's run id must agree when both are present; the record
 	// may FILL the run only when the event genuinely lacks one. The
@@ -442,7 +523,7 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 			appendAgentName = snap.AgentName
 			appendBinding = snap.AgentBindingSource
 		}
-		if _, err := m.proj.Append(ctx, sess.id, turns.Append{
+		row, err := m.proj.Append(ctx, sess.id, turns.Append{
 			TurnID:             turns.TurnID(taskID),
 			TaskID:             taskID, // the event's canonical task id — a snapshot can never replace it
 			RunID:              runID,
@@ -455,13 +536,36 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 			Status:             turns.StatusPending,
 			StartedAt:          ev.OccurredAt,
 			EventSeq:           ev.Sequence,
-		}); err != nil {
+		})
+		if err != nil {
 			return false, fmt.Errorf("materializer: append turn %s: %w", taskID, err)
+		}
+		// The append is idempotent: a row another writer appended first
+		// (an older instance during a rolling deploy) may lack the query
+		// / agent this snapshot carries — fill them once.
+		if err := m.fillIdentityIfMissing(ctx, sess.id, taskID, row, snap, found); err != nil {
+			return false, err
+		}
+	} else if found && (snap.QueryPresent || snap.AgentPresent) && m.coord != nil {
+		// Replay of a spawn a previous lifetime appended: repair a row
+		// persisted without the query / agent the record carries.
+		row, err := m.proj.Get(ctx, sess.id, turns.TurnID(taskID))
+		if err != nil && !errors.Is(err, turns.ErrTurnNotFound) {
+			return false, err
+		}
+		if err == nil {
+			if err := m.fillIdentityIfMissing(ctx, sess.id, taskID, row, snap, found); err != nil {
+				return false, err
+			}
 		}
 	}
 
 	sess.commitTaskRoute(taskID, parent, runID, derivedRunID)
+	if err := m.saveRoute(ctx, sess, turns.TaskRoute{TaskID: taskID, RunID: runID, RootTaskID: taskID, EventSeq: ev.Sequence}); err != nil {
+		return false, err
+	}
 	ts := &turnState{taskID: taskID, runID: runID}
+	m.open = append(m.open, openRef{ts: ts, spawnSeq: ev.Sequence})
 	if snap.InputsPresent {
 		// Seed the in-memory input accumulator with the record's input
 		// metadata (deep-copied) so a later disposition event for the
@@ -560,6 +664,7 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 			return false, err
 		}
 		if current.Sealed {
+			ts.sealed = true
 			return true, nil
 		}
 		if current.TaskID != "" && current.TaskID != taskID {
@@ -569,6 +674,9 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 			return true, nil
 		}
 		m.enqueuePending(sess, ts)
+		if err := m.markPending(ctx, sess, ts); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
 	sealed, stillPending, err := m.completeSealProjection(ctx, sess, ts, runIDFromIdentity(ev.Identity), ev.Sequence)
@@ -577,6 +685,9 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 	}
 	if stillPending {
 		m.enqueuePending(sess, ts)
+		if err := m.markPending(ctx, sess, ts); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
 	if sealed {
@@ -616,6 +727,11 @@ func (m *Materializer) applyTaskFailed(ctx context.Context, sess *sessionState, 
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
+		// Already applied in a previous lifetime: a failed / cancelled
+		// seal needs no answer source, so the row is sealed (or was
+		// retired). Mark it so later events skip it and its routes go.
+		ts.sealed = true
+		m.clearPending(sess, ts)
 		return true, nil
 	}
 	snap, err := m.readTaskSnapshot(ctx, sess.id, taskID)
@@ -693,6 +809,11 @@ func (m *Materializer) applyTaskCancelled(ctx context.Context, sess *sessionStat
 		return false, nil
 	}
 	if ev.Sequence <= sess.checkpoint {
+		// Already applied in a previous lifetime: a failed / cancelled
+		// seal needs no answer source, so the row is sealed (or was
+		// retired). Mark it so later events skip it and its routes go.
+		ts.sealed = true
+		m.clearPending(sess, ts)
 		return true, nil
 	}
 	bound, err := bindRunID(runIDFromIdentity(ev.Identity), ts.runID, "")
@@ -867,6 +988,9 @@ func (m *Materializer) applyPlannerDecision(ctx context.Context, sess *sessionSt
 	if !ok || ts.terminal() {
 		return false, nil
 	}
+	if ts.reasoningFrozen {
+		return true, nil
+	}
 	kind, ok := reasoningKindFor(fieldString(payload, "DecisionKind"))
 	if !ok {
 		return false, nil
@@ -916,6 +1040,9 @@ func (m *Materializer) applyToolInvoked(ctx context.Context, sess *sessionState,
 	if !ok || ts.terminal() {
 		return false, nil
 	}
+	if ts.activityFrozen {
+		return true, nil
+	}
 	toolName := fieldString(payload, "ToolName")
 	if toolName == "" {
 		return false, nil
@@ -961,6 +1088,9 @@ func (m *Materializer) applyToolCompleted(ctx context.Context, sess *sessionStat
 	if !ok || ts.terminal() {
 		return false, nil
 	}
+	if ts.activityFrozen {
+		return true, nil
+	}
 	toolName := fieldString(payload, "ToolName")
 	idx := findInFlight(ts.activity, toolName)
 	if idx < 0 {
@@ -997,6 +1127,9 @@ func (m *Materializer) applyToolFailed(ctx context.Context, sess *sessionState, 
 	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
+	}
+	if ts.activityFrozen {
+		return true, nil
 	}
 	toolName := fieldString(payload, "ToolName")
 	idx := findInFlight(ts.activity, toolName)
@@ -1038,6 +1171,9 @@ func (m *Materializer) applyToolPolicyExhausted(ctx context.Context, sess *sessi
 	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
 	if !ok || ts.terminal() {
 		return false, nil
+	}
+	if ts.activityFrozen {
+		return true, nil
 	}
 	toolName := fieldString(payload, "ToolName")
 	idx := findInFlight(ts.activity, toolName)

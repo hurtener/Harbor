@@ -16501,3 +16501,75 @@ reports its history as possibly incomplete permanently, even though only
 retention horizon can now move later; it is recomputed from the headers after a
 complete pass. Harbor's default stays off; operators opt in per runtime.
 **Cross-references:** RFC §6.13; D-492.
+
+## D-494 — Single-writer turns materializer with a persisted resume cursor
+
+**Date:** 2026-11-07. **Scope:** `sessions.turns` materializer, its three
+store drivers (migration `0002`), the Postgres migration runner's contract
+history, the task registry's persisted read, and the durable projection read
+path. No config keys.
+
+Several runtime instances can share one durable projection (a rolling deploy
+overlaps the old and the new instance). The turns materializer coordinates
+through a store-level `turns.MaterializerStore`: a lease row whose expiry is
+evaluated on the store clock (the database clock for Postgres — no session
+advisory lock, so transaction-pooling proxies work), renewed every TTL/3
+(TTL 30 s) and released on shutdown. The lease carries a generation that
+advances whenever it changes hands; every projection write (append, update,
+seal, checkpoint, repair, pending mark, route, cursor) carries the holder's
+`turns.WriteFence` and the store checks it inside the write's own transaction
+(share-locking the lease row), so a paused former holder is refused after a
+takeover regardless of its clock. Only the holder pages and writes; a standby
+takes over from the persisted cursor.
+
+A restart never re-reads the whole event log: the holder persists a
+lease-fenced, monotonic resume cursor, held back to just before the oldest
+non-terminal turn spawned within a 10,000-event lookback (so that turn's
+accumulators rebuild by replay). Nothing older is lost: a deferred complete
+seal is marked durably on its row (`pending_complete`, cleared by the seal)
+and the pending queue is rebuilt from the marks on every new tenure; task
+ancestry (task → parent, run → task, root) is persisted in `turn_routes`
+(pruned with the root's seal and the session's erasure), so an event for a
+task spawned before the cursor recovers its exact route and the root's
+durable row is adopted (an overflowed activity / reasoning window is frozen
+at its stored exact totals). A root row older than the routes table is
+adopted only through its own stored run binding — routing never guesses.
+Migration `0002` seeds the cursor from the highest per-session checkpoint
+minus the lookback (the previous materializer applied events in global
+order) and marks a populated store for a one-time bootstrap. The lease
+holder runs it before the first forward catch-up, resumably (progress
+persisted, lease renewed between batches): it backfills the repair flag in
+short batches and replays only the sessions that still hold unsealed rows —
+their own history through `ProjectionSource.PageSession`, up to the seeded
+cursor — so the earlier release's open turns get the pending marks and
+routes it never wrote. Routes are pruned when their task finishes and with
+retention eviction. On Postgres the migration itself is metadata-only
+(defaulted columns and new tables under a short `lock_timeout`; the runner
+retries a lock-timed-out migration), and the flag indexes are built at
+runtime with `CREATE INDEX CONCURRENTLY`.
+
+The Postgres migration runner gained `PostgresMigrationSpec.PreviousContracts`:
+a store whose identity row carries a superseded contract is accepted only at
+a schema version that contract described, and the migration that moves it
+past that version rewrites the identity's contract in the same transaction —
+databases created by an earlier release upgrade in place instead of failing
+the identity check.
+
+The task-record read used while projecting is the CURRENT persisted record
+(`TaskRegistry.GetPersisted` → `engine.Backend.LoadTask`, falling back to
+memory only without one), so neither another instance's task nor a stale
+local copy hides it; a live root spawn whose record is still unreadable
+defers within a bound instead of appending a turn without the user's query.
+Query and agent are the only components a sealed row may still receive,
+exactly once, while `unavailable` (`RepairTurnIdentity`, the shared
+`turns.ApplyIdentityFill` rule); rows are flagged at append and existing rows
+are backfilled by the migration.
+
+The durable projection page caches verified chunk spans per session (bounded
+per session and in total) and merges sessions lazily, loading only the
+chunks holding the rows it returns; chunks remain authenticated by digest,
+and any mismatch falls back to the verifying walk. The per-page scan of every
+session header is unchanged (a session-activity index is a possible
+follow-up). The rollups projector worker already resumes from its durable
+checkpoint.
+**Cross-references:** D-492.

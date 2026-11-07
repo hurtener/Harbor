@@ -39,7 +39,10 @@ type fakeSource struct {
 	unavailable bool // no retained substrate
 	skip        func(events.Event) bool
 	pageCalls   int
-	wake        chan<- uint64 // the registered wake sink (Run loop tests)
+	pageAfters  []uint64 // the cursor of every Page call, in order
+	// sessionPageCalls counts PageSession calls (targeted reconstruction).
+	sessionPageCalls int
+	wake             chan<- uint64 // the registered wake sink (Run loop tests)
 	// unsubscribed records that the last Watch handle's Unsubscribe ran
 	// — the Run-loop cancellation test asserts the watcher is stopped.
 	unsubscribed bool
@@ -65,6 +68,7 @@ func (f *fakeSource) Page(_ context.Context, after uint64, limit int) (events.Pr
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pageCalls++
+	f.pageAfters = append(f.pageAfters, after)
 	if f.unavailable {
 		return events.ProjectionPage{Next: after, Quality: events.ProjectionUnavailable}, nil
 	}
@@ -74,6 +78,23 @@ func (f *fakeSource) Page(_ context.Context, after uint64, limit int) (events.Pr
 		watermark = f.evs[len(f.evs)-1].Sequence
 	}
 	return events.ProjectionPageFromSnapshot(snapshot, after, limit, watermark, f.evicted, f.skip), nil
+}
+
+func (f *fakeSource) PageSession(_ context.Context, id identity.Identity, after uint64, limit int) (events.ProjectionPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionPageCalls++
+	if f.unavailable {
+		return events.ProjectionPage{Next: after, Quality: events.ProjectionUnavailable}, nil
+	}
+	snapshot := append([]events.Event(nil), f.evs...)
+	watermark := uint64(0)
+	if len(f.evs) > 0 {
+		watermark = f.evs[len(f.evs)-1].Sequence
+	}
+	return events.ProjectionPageFromSnapshot(snapshot, after, limit, watermark, f.evicted, func(ev events.Event) bool {
+		return ev.Identity.Identity != id || (f.skip != nil && f.skip(ev))
+	}), nil
 }
 
 func (f *fakeSource) Watermark(_ context.Context) (uint64, error) {
