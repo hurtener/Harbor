@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"sort"
 
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
 )
@@ -124,7 +125,7 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 		if err != nil {
 			return report, fmt.Errorf("%w: entry %s is malformed", ErrRebuildRefused, rec.Kind)
 		}
-		if rec.Kind != kindEntryPrefix+seqToken(ev.Sequence) || ev.Identity.Identity != id.Identity || !readableEventType(ev.Type) {
+		if rec.Kind != kindEntryPrefix+seqToken(ev.Sequence) || ev.Identity.Identity != id.Identity || !events.IsValidEventType(ev.Type) {
 			return report, fmt.Errorf("%w: entry %s disagrees with its slot or identity", ErrRebuildRefused, rec.Kind)
 		}
 		if trimmedCount > 0 && ev.Sequence <= through {

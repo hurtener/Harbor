@@ -51,38 +51,12 @@ Two versions move independently in Harbor (RFC §5.3):
   `ErrCursorTooOld`, list pages set `truncated`, and projection pages set
   `RetentionGap`. New gauge `harbor_events_retention_heads`.
 
-- Durable event reads accept an unregistered but well-formed event type
-  (dot-separated lowercase segments) as opaque instead of failing: legacy head
-  adoption, the v2 index, migration and every reader keep working on sessions
-  that hold events from a newer release. Malformed types are still refused, and
-  publishing still requires a registered type.
-
 ### Upgrade notes
 
-- **Correction to the v1.36.0 notes:** a plain image revert from v1.36.0 to
-  v1.35.0 is not fully safe. v1.36.0 persists the new `tools.catalog.changed`
-  event in durable session logs, and a v1.35.0 binary rejects that unknown
-  event type while adopting durable metadata, so its turns materializer fails
-  with `metadata sequence=N has unknown event type "tools.catalog.changed"` for
-  any session containing it. This was observed on the outgoing v1.35.0 instance
-  during a rolling deploy overlap (transient; it cleared when the old instance
-  stopped). After a rollback below v1.36.0, such sessions stay unreadable by
-  projections until the runtime moves forward again. From this release on,
-  unknown well-formed event types are read as opaque, so a later rollback to
-  this release does not repeat the problem for future event types.
-
-- **Forward-only storage change.** Each durable-log session migrates to the v2
-  index once. Binaries below this release cannot decode a migrated header: their
-  publishes and reads of a migrated session fail loudly before writing, and their
-  boot recovery fails. They cannot corrupt it, but a rolling deploy's old
-  instance errors on migrated sessions until it stops.
-- **Snapshot the StateStore database before upgrading.** Rollback means
-  restoring that snapshot; there is no dual-read release and no downgrade path
-  for migrated sessions.
-- **Canary first on a Postgres-backed runtime** (an in-memory store has nothing
-  to migrate), let the background migrator finish (look for the
-  `durable: index migration pass` log line with `failed=0`), then roll out the
-  rest.
+- Correction to the v1.36.0 notes: reverting v1.36.0 to v1.35.0 is not a clean
+  revert (v1.35.0 rejects the `tools.catalog.changed` events v1.36.0 persists).
+- Forward-only storage change: each durable-log session migrates to the v2
+  index once, and binaries below this release refuse migrated sessions.
 - Audit retention stays off unless `events.retention.audit_max_age` is set. With retention on, projectors that read from before
   a trim (rebuilds, new projectors) latch `RetentionGap` permanently.
 - Migration of a very large legacy session (about 100k events) costs a

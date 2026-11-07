@@ -16440,14 +16440,6 @@ publish path. Readers reload the header when a chunk or body disappears mid-read
 and classify the miss as trimmed (D-493) or a genuine gap. The legacy repair
 command reports v2 heads as `not_legacy_v2` and never mutates them.
 
-Forward compatibility: durable reads accept an unregistered but well-formed
-event type (dot-separated lowercase `[a-z0-9_]` segments, at least two, at most
-128 bytes) as opaque, never a bus-internal notice. A v1.35.0 binary rejected
-v1.36.0's `tools.catalog.changed` while adopting durable metadata, which made
-every session containing it unreadable to projections on the older binary;
-treating such types as opaque keeps future rollbacks to this release readable.
-Publishing still requires a registered type.
-
 Known limitation: readers reach an old position by walking the verified chain
 back from the tail, one chunk load per 256 rows. Steady-state reads near the
 tail are cheap, but a deep `Window`/`events.list` page or a projection rebuild
@@ -16456,9 +16448,8 @@ skipped. A per-chunk directory in the header was rejected because it would
 make the header — and so every append — grow with history again; a later
 release can add direct, self-verified chunk seeks if deep reads matter.
 
-Binaries below v1.37.0 cannot decode a v2 header and fail closed: their
-publishes and reads of a migrated session error before writing, and their boot
-recovery fails. Rollback is a restore of the snapshot taken before the upgrade.
+The change is forward-only: binaries below v1.37.0 cannot decode a v2 header
+and refuse migrated sessions.
 **Cross-references:** RFC §6.13; D-074, D-415, D-493.
 
 ---
