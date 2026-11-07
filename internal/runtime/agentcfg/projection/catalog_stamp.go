@@ -44,14 +44,20 @@ type registryGenerationReporter interface {
 //     are random per instance, so a restart or another replica never repeats a
 //     stamp;
 //   - the agent active pointer (the lifecycle slot), every activation-fence
-//     record, and the acting user's active pointer, as write identities;
+//     record, the acting user's active pointer and the agent's
+//     deletion-generation record, as write identities (the last makes
+//     absent → present → absent slot cycles visible);
 //   - the session overlay record's write identity, or its absence.
 //
 // It deliberately excludes per-request annotations (approval policy, OAuth
 // status, last-used, display modes): they are never cached and never part of
 // a revision.
 //
-// The cost is four small StateStore reads. ok=false (with a nil error) means
+// The cost is eight small StateStore reads: four agent-config identities
+// (agent pointer, deletion generation, fence list, user pointer) and four for
+// session admission plus the overlay (agent lifecycle, erasure pending and
+// tombstone, overlay slot). An erased session or inactive agent lifecycle is
+// returned as an error, exactly as an uncached projection would fail. ok=false (with a nil error) means
 // one of the wired dependencies cannot report generations; the caller must
 // then build the projection on every request and report no revision. Errors
 // are returned, never folded into ok=false.
@@ -133,6 +139,7 @@ func (a CatalogViewResolver) CatalogStamp(ctx context.Context, id identity.Ident
 	field(strconv.FormatUint(regGeneration, 10))
 	field(string(durable.AgentActive))
 	field(string(durable.UserActive))
+	field(string(durable.DeletionGeneration))
 	field(strconv.Itoa(len(durable.Fences)))
 	for _, fence := range durable.Fences {
 		field(fence.Kind)

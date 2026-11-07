@@ -267,6 +267,21 @@ func TestCatalogStamp_ChangesForEveryInventoryClass(t *testing.T) {
 	}
 	for _, step := range steps {
 		step.mutate()
+		if step.name == "agent deactivate" {
+			// With no agent pointer the agent lifecycle is inactive: the
+			// stamp refuses exactly as an uncached projection does.
+			if _, _, _, err := resolver.CatalogStamp(ctx, actor.Identity, projAgent, "configuration"); !errors.Is(err, sessionoverlay.ErrAgentLifecycleInactive) {
+				t.Fatalf("stamp with inactive lifecycle err=%v, want ErrAgentLifecycleInactive", err)
+			}
+			continue
+		}
+		if step.name == "lifecycle retire" {
+			// A retired agent is refused by the stamp, as by the projection.
+			if _, _, _, err := resolver.CatalogStamp(ctx, actor.Identity, projAgent, "configuration"); !errors.Is(err, agentcfg.ErrAgentRetired) {
+				t.Fatalf("stamp after retirement err=%v, want ErrAgentRetired", err)
+			}
+			continue
+		}
 		got, scoped := stamp()
 		if moved := got != previous; moved != step.moves {
 			t.Fatalf("%s: stamp moved=%v, want %v", step.name, moved, step.moves)

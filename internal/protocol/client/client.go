@@ -146,7 +146,6 @@ func (e *ProtocolError) Unwrap() error { return e.Cause }
 type Client interface {
 	RuntimeInfo(context.Context) (types.RuntimeInfo, error)
 	RuntimeHealth(context.Context) (types.RuntimeHealth, error)
-	RuntimeRetention(context.Context) (types.RuntimeRetention, error)
 	Start(context.Context, types.StartRequest) (types.StartResponse, error)
 	TasksList(context.Context, types.TaskListRequest) (types.TaskListResponse, error)
 	TasksGet(context.Context, types.TaskGetRequest) (types.TaskDetail, error)
@@ -167,6 +166,16 @@ type Client interface {
 
 // RuntimeClient is the additive Runtime inspection/control client consumed by
 // the native TUI. Narrow projection consumers continue to depend on Client.
+// RetentionClient is the optional admin-only retention read. It is a separate
+// interface so adding it does not change the method set of Client or
+// RuntimeClient that external implementations and test doubles satisfy. The
+// concrete client returned by New implements it; callers type-assert.
+type RetentionClient interface {
+	RuntimeRetention(context.Context) (types.RuntimeRetention, error)
+}
+
+var _ RetentionClient = (*client)(nil)
+
 type RuntimeClient interface {
 	Client
 	RuntimeInfoForAgent(context.Context, string) (types.RuntimeInfo, error)

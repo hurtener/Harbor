@@ -627,8 +627,10 @@ func HydrateClientWithOptions(ctx context.Context, c client.Client, generation, 
 	}
 	bundle.Health = &health
 	if options.IncludeRuntimeRetention {
-		retention, err := c.RuntimeRetention(ctx)
-		if err != nil {
+		reader, ok := c.(client.RetentionClient)
+		if !ok {
+			bundle.RetentionUnavailable = true
+		} else if retention, err := reader.RuntimeRetention(ctx); err != nil {
 			bundle.RetentionUnavailable = true
 		} else {
 			bundle.RuntimeRetention = &retention

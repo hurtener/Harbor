@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -129,7 +130,8 @@ func decodePolicy(data []byte) (prototypes.ToolApprovalPolicy, error) {
 	return policy, nil
 }
 
-// Policies implements PolicyStore.Policies with one identity-scoped list.
+// Policies implements PolicyStore.Policies with one identity-scoped list. A
+// store failure fails the read; an individually corrupt record is skipped.
 func (s *statePolicyStore) Policies(ctx context.Context, id identity.Identity) (map[string]prototypes.ToolApprovalPolicy, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -148,7 +150,13 @@ func (s *statePolicyStore) Policies(ctx context.Context, id identity.Identity) (
 		}
 		policy, err := decodePolicy(rec.Bytes)
 		if err != nil {
-			return nil, err
+			// One corrupt override must not fail every list for this identity.
+			// Skipping it projects the tool's default (auto), exactly what the
+			// single-tool read reports for the same record; the corruption is
+			// logged (kind only, never the bytes). Store errors still fail.
+			slog.WarnContext(ctx, "approval: skipping corrupt approval-policy override",
+				slog.String("kind", rec.Kind), slog.String("error", err.Error()))
+			continue
 		}
 		policies[strings.TrimPrefix(rec.Kind, policyKindPrefix)] = policy
 	}

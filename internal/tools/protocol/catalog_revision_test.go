@@ -14,6 +14,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	_ "github.com/hurtener/Harbor/internal/agentcfg/drivers/statestore"
+	"github.com/hurtener/Harbor/internal/agentcfg/sessionfence"
 	"github.com/hurtener/Harbor/internal/agentcfg/sessionoverlay"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
@@ -277,8 +278,14 @@ func rowNames(rows []prototypes.Tool) map[string]prototypes.Tool {
 	return out
 }
 
+// stampReads is the exact StateStore cost of one stamp: agent pointer,
+// deletion generation, fence list and user pointer (agent config), then the
+// agent lifecycle, erasure pending and tombstone fences and overlay slot
+// (session admission).
+const stampReads = 8
+
 // AC3: an unchanged repeated list is served from the cache after exactly the
-// four stamp reads; a matching conditional read costs the same four reads and
+// stamp reads; a matching conditional read costs the same four reads and
 // returns not_modified with no rows.
 func TestCatalogRevision_CacheHitCostsOnlyStampReads(t *testing.T) {
 	f := newCatalogFixture(t, newInmemStore(t), "tenant-ac3")
@@ -300,8 +307,8 @@ func TestCatalogRevision_CacheHitCostsOnlyStampReads(t *testing.T) {
 
 	before := f.store.reads.Load()
 	second := f.mustList(admin, nil)
-	if reads := f.store.reads.Load() - before; reads != 4 {
-		t.Fatalf("cached list made %d StateStore reads, want exactly 4 (stamp only)", reads)
+	if reads := f.store.reads.Load() - before; reads != stampReads {
+		t.Fatalf("cached list made %d StateStore reads, want exactly %d (stamp only)", reads, stampReads)
 	}
 	if f.resolver.builds.Load() != 1 || second.Revision != first.Revision || len(second.Tools) != 100 {
 		t.Fatalf("second list not served from cache: builds=%d rev=%q rows=%d", f.resolver.builds.Load(), second.Revision, len(second.Tools))
@@ -309,8 +316,8 @@ func TestCatalogRevision_CacheHitCostsOnlyStampReads(t *testing.T) {
 
 	before = f.store.reads.Load()
 	cond := f.mustList(admin, func(r *prototypes.ToolListRequest) { r.IfRevision = first.Revision })
-	if reads := f.store.reads.Load() - before; reads != 4 {
-		t.Fatalf("conditional list made %d reads, want 4", reads)
+	if reads := f.store.reads.Load() - before; reads != stampReads {
+		t.Fatalf("conditional list made %d reads, want %d", reads, stampReads)
 	}
 	if !cond.NotModified || cond.Revision != first.Revision || len(cond.Tools) != 0 {
 		t.Fatalf("conditional list = %+v, want not_modified with no rows", cond)
@@ -730,4 +737,263 @@ func TestCatalogRevision_ConcurrentMutateListDescribe(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// barrierResolver runs a hook immediately before each structural build, so a
+// test can land a write between the pre-build stamp and the build's reads.
+type barrierResolver struct {
+	*countingResolver
+	before func()
+}
+
+func (r *barrierResolver) ConfigurationCatalogView(ctx context.Context, id identity.Identity, agent string) (tools.PlannerCatalogView, error) {
+	if r.before != nil {
+		r.before()
+	}
+	return r.countingResolver.ConfigurationCatalogView(ctx, id, agent)
+}
+
+// Review regression: an absent user pointer that goes absent → candidate →
+// absent around a build must not let the candidate's transient loading mode
+// be cached under the absent-pointer revision.
+func TestCatalogRevision_AbsentPointerCycleNotCached_LoadingMode(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-aba-loading")
+	f.registerBootTools(1)
+	id := f.id("admin", "session")
+	var rev agentcfg.Revision
+	var once sync.Once
+	f.projector.view = &barrierResolver{countingResolver: f.resolver, before: func() {
+		once.Do(func() {
+			var err error
+			rev, err = f.agents.SetRevision(context.Background(), identity.Quadruple{Identity: id}, revAgent, agentcfg.ConfigScopeUser,
+				agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{ToolLoadingModes: map[string]string{"boot_000": "deferred"}}}, agentcfg.SetOptions{})
+			if err != nil {
+				t.Error(err)
+			}
+		})
+	}}
+	f.projector.afterStructuralBuild = func() {
+		if changed, err := f.agents.DeactivateIfActive(context.Background(), identity.Quadruple{Identity: id}, revAgent, rev.RevisionID, agentcfg.ConfigScopeUser); err != nil || !changed {
+			t.Errorf("deactivate changed=%v err=%v", changed, err)
+		}
+	}
+	first := f.mustList(id, nil)
+	f.projector.afterStructuralBuild = nil
+	second := f.mustList(id, nil)
+	if second.Tools[0].LoadingMode != string(tools.LoadingAlways) {
+		t.Fatalf("cached transient loading mode: first=%s second=%s want always", first.Tools[0].LoadingMode, second.Tools[0].LoadingMode)
+	}
+	if first.Revision == second.Revision {
+		t.Fatal("the absent → present → absent cycle did not move the revision")
+	}
+}
+
+// Review regression: the same cycle must not keep a withdrawn user source.
+func TestCatalogRevision_AbsentPointerCycleNotCached_WithdrawnSource(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-aba-source")
+	f.registerBootTools(1)
+	f.attachUserSource("admin", "mine", "one")
+	id := f.id("admin", "s-admin")
+	q := identity.Quadruple{Identity: id}
+	active, ok, err := f.agents.Active(context.Background(), q, revAgent, agentcfg.ConfigScopeUser)
+	if err != nil || !ok {
+		t.Fatalf("active=%v %v", ok, err)
+	}
+	if changed, err := f.agents.DeactivateIfActive(context.Background(), q, revAgent, active.RevisionID, agentcfg.ConfigScopeUser); err != nil || !changed {
+		t.Fatalf("deactivate %v %v", changed, err)
+	}
+	var candidate agentcfg.Revision
+	var once sync.Once
+	f.projector.view = &barrierResolver{countingResolver: f.resolver, before: func() {
+		once.Do(func() {
+			ctx := agentcfg.WithSignedOAuthMCPFenceOperation(context.Background(), active.Payload.SignedOAuthMCPPair.AuthorityOperationKind)
+			var err error
+			if candidate, err = f.agents.SetRevision(ctx, q, revAgent, agentcfg.ConfigScopeUser, active.Payload, agentcfg.SetOptions{}); err != nil {
+				t.Error(err)
+			}
+		})
+	}}
+	f.projector.afterStructuralBuild = func() {
+		if changed, err := f.agents.DeactivateIfActive(context.Background(), q, revAgent, candidate.RevisionID, agentcfg.ConfigScopeUser); err != nil || !changed {
+			t.Errorf("deactivate=%v %v", changed, err)
+		}
+	}
+	f.mustList(id, nil)
+	f.projector.afterStructuralBuild = nil
+	cached := f.mustList(id, nil)
+	raw, err := f.resolver.ConfigurationCatalogView(context.Background(), id, revAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cached.Tools) != len(raw.List()) {
+		t.Fatalf("cached withdrawn user source: cached=%d actual=%d", len(cached.Tools), len(raw.List()))
+	}
+}
+
+// Review regression: an erased session is refused before any cache lookup and
+// before the conditional comparison, even when another session of the same
+// user warmed the shared (overlay-free) entry.
+func TestCatalogRevision_ErasedSessionRefusedBeforeCacheAndConditional(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-erased")
+	f.registerBootTools(1)
+	live := f.id("admin", "live")
+	erased := f.id("admin", "erased")
+	warm := f.mustList(live, nil)
+	q, kind, err := sessionfence.PendingSlot(identity.Quadruple{Identity: erased})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Save(context.Background(), state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, rawErr := f.resolver.ConfigurationCatalogView(context.Background(), erased, revAgent); !errors.Is(rawErr, sessionoverlay.ErrSessionErased) {
+		t.Fatalf("uncached build = %v, want ErrSessionErased", rawErr)
+	}
+	if _, err := f.list(erased, nil); !errors.Is(err, sessionoverlay.ErrSessionErased) {
+		t.Fatalf("cached erased-session list = %v, want ErrSessionErased", err)
+	}
+	if _, err := f.list(erased, func(r *prototypes.ToolListRequest) { r.IfRevision = warm.Revision }); !errors.Is(err, sessionoverlay.ErrSessionErased) {
+		t.Fatalf("erased-session conditional = %v, want ErrSessionErased", err)
+	}
+	if got := f.mustList(live, func(r *prototypes.ToolListRequest) { r.IfRevision = warm.Revision }); !got.NotModified {
+		t.Fatal("the live session lost its conditional answer")
+	}
+}
+
+// Review regression: a single-flight follower honours its own deadline while
+// another caller's build is in progress.
+func TestCatalogRevision_SingleFlightFollowerHonoursCancellation(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-cancel")
+	f.registerBootTools(1)
+	id := f.id("admin", "session")
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.projector.view = &barrierResolver{countingResolver: f.resolver, before: func() {
+		once.Do(func() { close(entered); <-release })
+	}}
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, _, err := f.projector.configurationInventory(context.Background(), id, revAgent)
+		leaderDone <- err
+	}()
+	<-entered
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	followerDone := make(chan error, 1)
+	go func() {
+		_, _, err := f.projector.configurationInventory(ctx, id, revAgent)
+		followerDone <- err
+	}()
+	select {
+	case err := <-followerDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("follower = %v, want deadline exceeded", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("cancelled follower still blocked on another caller's build")
+	}
+	close(release)
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("leader: %v", err)
+	}
+}
+
+// Review regression: a cancelled first caller does not fail the shared build
+// for a concurrent caller that is still waiting.
+func TestCatalogRevision_CancelledLeaderDoesNotFailFollower(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-cancel-leader")
+	f.registerBootTools(2)
+	id := f.id("admin", "session")
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.projector.view = &barrierResolver{countingResolver: f.resolver, before: func() {
+		once.Do(func() { close(entered); <-release })
+	}}
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, _, err := f.projector.configurationInventory(leaderCtx, id, revAgent)
+		leaderDone <- err
+	}()
+	<-entered
+	followerDone := make(chan error, 1)
+	go func() {
+		rows, _, err := f.projector.configurationInventory(context.Background(), id, revAgent)
+		if err == nil && len(rows) != 2 {
+			err = fmt.Errorf("rows=%d", len(rows))
+		}
+		followerDone <- err
+	}()
+	cancelLeader()
+	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader = %v, want canceled", err)
+	}
+	close(release)
+	if err := <-followerDone; err != nil {
+		t.Fatalf("follower failed with the leader's cancellation: %v", err)
+	}
+}
+
+// Review regression: an unchanged empty discovery is a no-op.
+func TestCatalogRevision_EmptyDiscoveryKeepsRevision(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-empty")
+	f.registerBootTools(1)
+	server := f.attachUserSource("admin", "empty")
+	id := f.id("admin", "s-admin")
+	before := f.mustList(id, nil)
+	f.refresh("admin", server)
+	if after := f.mustList(id, nil); after.Revision != before.Revision {
+		t.Fatal("unchanged empty discovery moved the revision")
+	}
+	server.setTools("now_one")
+	f.refresh("admin", server)
+	if after := f.mustList(id, nil); after.Revision == before.Revision {
+		t.Fatal("empty → non-empty discovery did not move the revision")
+	}
+}
+
+// Review regression (P1): if_revision cannot be combined with filters on
+// per-request annotations, whose membership the revision does not cover.
+func TestCatalogRevision_IfRevisionRejectsAnnotationFacetFilters(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-facets")
+	f.registerBootTools(1)
+	id := f.id("admin", "session")
+	warm := f.mustList(id, nil)
+	for name, mutate := range map[string]func(*prototypes.ToolListRequest){
+		"approval": func(r *prototypes.ToolListRequest) {
+			r.Filter.ApprovalPolicies = []prototypes.ToolApprovalPolicy{prototypes.ToolApprovalGated}
+		},
+		"oauth": func(r *prototypes.ToolListRequest) {
+			r.Filter.OAuthStatuses = []prototypes.ToolOAuthStatus{prototypes.ToolOAuthRequired}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := f.store.reads.Load()
+			_, err := f.list(id, func(r *prototypes.ToolListRequest) { r.IfRevision = warm.Revision; mutate(r) })
+			if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "if_revision") {
+				t.Fatalf("err=%v, want invalid_request naming if_revision", err)
+			}
+			if f.store.reads.Load() != before {
+				t.Fatal("refused conditional read touched the store")
+			}
+		})
+	}
+}
+
+// Review regression (P2): a principal keeps at most one entry; a newer stable
+// build replaces the superseded one.
+func TestCatalogRevision_OneEntryPerPrincipal(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-lru")
+	f.registerBootTools(1)
+	id := f.id("admin", "session")
+	for i := range 5 {
+		f.mustList(id, nil)
+		if err := f.catalog.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: fmt.Sprintf("extra_%d", i)}, Invoke: noopInvoke}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := f.mustList(id, nil)
+	if f.projector.structural.len() != 1 || len(got.Tools) != 6 {
+		t.Fatalf("entries=%d rows=%d, want 1 entry and 6 rows", f.projector.structural.len(), len(got.Tools))
+	}
 }

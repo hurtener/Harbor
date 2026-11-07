@@ -16244,8 +16244,12 @@ only. Fleet scope grants no retention fan-in.
 optional with its existing type, and clients already must handle absent
 surface entries. The semantic narrowing and privilege reduction are documented
 under Changed with the migration above. No Protocol version bump is required:
-`0.1.0` remains pinned. No storage-format or configured-retention change is part
-of H1. **Cross-references:** RFC §5.2, §5.3, §5.5; D-111, D-296, D-310.
+`0.1.0` remains pinned. The Go client exposes the read through a separate
+optional `RetentionClient` interface rather than extending `Client` or
+`RuntimeClient`, so existing implementations and test doubles of those public
+interfaces keep compiling. Health horizon reads in in-memory and best-effort
+modes scan the ring in place under the publish lock instead of copying it. No
+storage-format or configured-retention change is part of H1. **Cross-references:** RFC §5.2, §5.3, §5.5; D-111, D-296, D-310.
 
 ---
 
@@ -16262,8 +16266,10 @@ caller's complete identity triple. The approval store lists
 one bounded lifecycle-event `Window` into last-used timestamps and memoizes
 OAuth status once per runtime source. The event types, scan bound,
 max-timestamp rule, and no-history behavior match the per-tool path. Missing
-approval overrides remain `auto`; failed scans or corrupt overrides fail
-closed. All maps belong to one request; the OAuth memo is internally
+approval overrides remain `auto`. A failed approval scan fails the list; an
+individually corrupt override is skipped and logged (kind only), so that tool
+projects `auto` exactly as the single-tool read reports it and one bad record
+cannot take every list down. All maps belong to one request; the OAuth memo is internally
 synchronized, and concurrent lists and approval writes share no mutable
 annotation state. Single-tool get/describe retains its per-tool reads and never
 prepares a batch for unrelated tools. Annotations and authorization decisions
@@ -16273,8 +16279,9 @@ are never cached across requests; only the admitted structure is (below).
 input-addressed `revision`: a SHA-256 over the principal (tenant, user, agent,
 and the session only when a session overlay record exists), the agent active
 pointer (which is also the lifecycle slot), every signed-capability
-activation-fence record, the acting user's active pointer, the session overlay
-record — all as StateStore write identities — and the tools catalog's and MCP
+activation-fence record, the acting user's active pointer, an agent-scoped
+deletion-generation record, the session overlay record — all as StateStore
+write identities — and the tools catalog's and MCP
 registry's random per-instance epoch plus monotonic generation. Fence phase
 changes alter `Active` visibility without a pointer write, so the fence records
 are inputs; the fence projection has no clock input, so no deadline accompanies
@@ -16284,46 +16291,78 @@ change to the live-entry, owner or logical-name maps; the existing per-server
 request from durable slots, two runtimes sharing a store never serve each other
 stale revisions, and nothing depends on event delivery.
 
+A deleted slot reads as absent, so an absent → present → absent cycle would
+otherwise leave every slot identity unchanged. Every writer therefore rewrites
+the deletion-generation record (`agentcfg.catalog.deletion_generation`) after
+reading the state its conditional delete depends on and before issuing that
+delete (active-pointer deactivation, pending-fence release); a failed rewrite
+aborts the delete. Any such cycle therefore moves the revision.
+
+The stamp also applies the session admission an uncached read applies: an
+erased (pending or tombstoned) session and an inactive or retired agent
+lifecycle are refused before any cache lookup and before the conditional
+comparison, so an erased session never receives a cached list or
+`not_modified`. A stamp costs eight small StateStore reads.
+
 `tools.list` rows gain `side_effect` and `loading_mode` so list consumers need
 no per-tool describe. Configuration-view list responses and configuration
 manifests carry `revision`; `if_revision` makes page 1 conditional
 (`not_modified: true`, no rows) and is ignored on later pages, where clients
 compare each page's revision with page 1's and restart on a mismatch. Other
-views reject `if_revision`. The revision covers every structural field and
-excludes `oauth_status`, `approval_policy`, `last_used_at` and `display_modes`.
+views reject `if_revision`, and so do requests filtering on the annotation
+facets `oauth_statuses` or `approval_policies`, whose membership the revision
+does not cover. The revision covers every structural field and excludes
+`oauth_status`, `approval_policy`, `last_used_at` and `display_modes`;
+`not_modified` speaks only for the structural rows of the identical query (same
+filter, search and page size) and carries no aggregates.
 
-A bounded LRU (512 entries, single-flight per key) caches only the admitted
-structural descriptors, keyed by (tenant, user, agent, view,
-session-if-overlay, revision). Tenant and user are always key components, so a
+A bounded LRU (512 entries) caches only the admitted structural descriptors,
+keyed by (tenant, user, agent, view, session-if-overlay) with the revision held
+in the entry: a principal has at most one entry, replaced by each newer stable
+build. Concurrent misses for one principal and revision share a build that runs
+detached from every caller's cancellation and bounded at 30 seconds; each
+caller waits only as long as its own context allows. Tenant and user are always key components, so a
 principal-dependent visibility rule cannot cross principals even under a
 digest collision. The filter is applied per request after annotations, over the
 cached unfiltered inventory, so filtered and unfiltered reads cannot
 contaminate each other. Admission runs before any revision read and is never
 cached. A miss re-reads the revision after building and inserts only when it is
-unchanged. An overlay-free session shares its user's entry: such an entry
-contains no session data, so a session erasure fence is not consulted on a
-cache hit. The execution (planner) view is not cached and reports no revision.
+unchanged. An overlay-free session shares its user's entry; it contains no
+session data, and the session admission above still runs for every caller. The
+execution (planner) view is not cached and reports no revision.
 
 A discovery refresh whose deterministic descriptor generation (tools,
-resources and App callbacks) equals the committed one commits nothing; an
-unknown generation still republishes. Convergence sweeps and no-op run-start
+resources and App callbacks) equals the committed one commits nothing, and so
+does a known-empty snapshot after a known-empty commit; an unhashable
+non-empty snapshot still republishes, and App admission keeps treating the
+empty generation as unknown. Convergence sweeps and no-op run-start
 reconciles therefore leave revisions and cache entries intact.
 
 `tools.catalog.changed` is a best-effort hint, published asynchronously after
 agent-config pointer and lifecycle writes, activation-fence transitions, MCP
-publication or withdrawal, and changed discoveries. Its payload is
+publication or withdrawal (including an exact removal invalidating or
+releasing a private stage), and changed discoveries. Catalog-only mutations
+outside the MCP registry (in-process registration at boot, `Replace`) carry no
+agent owner and publish no hint; they still move the revision. Its payload is
 `{agent_id, scope: agent|user, reason}` with no tool data and no revision. The
 identity is the writer's quadruple when complete and same-tenant, else
 `{tenant, __agentcfg__, agent}`; an unresolvable owner (a boot-declared server)
-is skipped at Debug. Consumers may use it only to drop short-lived caches.
+is skipped at Debug. A hint therefore lands in the acting writer's session
+stream for interactive writes and on the agent control-plane identity otherwise
+(reconciles, exact-removal stages); a consumer that needs every hint subscribes
+tenant-wide with admin authority. Consumers may use it only to drop
+short-lived caches.
 
 The Protocol version is unchanged: every field is additive and optional. An
 older runtime's strict decoder refuses `if_revision`, so clients send it only to
 runtimes at or above the release carrying this decision.
 **Cross-references:** RFC §6.4, §6.16; D-025, D-301, D-314, D-448, D-459.
 Regression tests cover a 100-tool list's read counts and byte equality against
-per-tool projection, approval corruption and scope boundaries, concurrent
+per-tool projection, skipped corrupt approval records and scope boundaries,
+concurrent
 configuration lists with `tools.set_approval_policy` across 100 identities on
 in-memory and Postgres state, every revision input class, no-op discovery and
-run-start reconcile stability, cross-principal isolation, the ABA guard, and
-450-tool conditional paging.
+run-start reconcile stability, absent-slot cycles on real drivers, erased-session
+refusal on hits and conditional reads, follower cancellation, known-empty
+discovery, annotation-facet refusal, one entry per principal, cross-principal
+isolation, the ABA guard, and 450-tool conditional paging.

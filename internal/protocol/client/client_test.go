@@ -604,7 +604,11 @@ func TestClient_RuntimeRetention_UsesIdentityAndCanonicalMethod(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(types.RuntimeRetention{Retention: []types.RetentionHorizon{{Surface: "events", Scope: types.RetentionScopeRuntime}}})
 	}))
 	defer server.Close()
-	got, err := testClient(t, server).RuntimeRetention(t.Context())
+	reader, ok := testClient(t, server).(RetentionClient)
+	if !ok {
+		t.Fatal("concrete client does not implement RetentionClient")
+	}
+	got, err := reader.RuntimeRetention(t.Context())
 	if err != nil || len(got.Retention) != 1 {
 		t.Fatalf("got=%+v err=%v", got, err)
 	}

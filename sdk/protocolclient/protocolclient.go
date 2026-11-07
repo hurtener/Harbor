@@ -15,6 +15,9 @@ type (
 	// RuntimeClient is the additive Runtime inspection/control client,
 	// including HA-68 skill-publication methods.
 	RuntimeClient = internal.RuntimeClient
+	// RetentionClient is the optional admin-only runtime.retention read; the
+	// client returned by New implements it (type-assert to use it).
+	RetentionClient = internal.RetentionClient
 	// Connection describes one authenticated Runtime attachment.
 	Connection = internal.Connection
 	// TokenSource resolves a bearer token for each request.

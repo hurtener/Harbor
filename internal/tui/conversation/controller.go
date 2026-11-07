@@ -324,7 +324,10 @@ func (c *Controller) readLoop(ctx context.Context, generation uint64, identity t
 			c.generation++
 			reconcileGeneration := c.generation
 			c.mu.Unlock()
-			bundle, hydrateErr := projection.HydrateClient(ctx, client, reconcileGeneration, 0, 8)
+			// Re-hydration keeps the admin-only retention diagnostics the
+			// initial hydration requested; the server re-verifies the call.
+			bundle, hydrateErr := projection.HydrateClientWithOptions(ctx, client, reconcileGeneration, 0,
+				projection.HydrateOptions{MaxHistoryPages: 8, IncludeRuntimeRetention: c.adminDiagnostics(ctx, identity)})
 			if hydrateErr != nil {
 				var protocolErr *protocolclient.ProtocolError
 				if !errors.As(hydrateErr, &protocolErr) || protocolErr.Code != protoerrors.CodeNotFound {
@@ -484,7 +487,11 @@ func (c *Controller) Inspect(ctx context.Context, request InspectionRequest) Run
 	if c.tokens != nil {
 		if token, tokenErr := c.tokens.Token(ctx, identity); tokenErr == nil {
 			if claims, claimErr := ParseToken(token, time.Now()); claimErr == nil && claims.Admin {
-				retention, retentionErr := client.RuntimeRetention(ctx)
+				var retention types.RuntimeRetention
+				retentionErr := errors.New("tui: Protocol client lacks the runtime.retention read")
+				if reader, ok := client.(protocolclient.RetentionClient); ok {
+					retention, retentionErr = reader.RuntimeRetention(ctx)
+				}
 				if retentionErr != nil {
 					data.Errors[string(methods.MethodRuntimeRetention)] = retentionErr.Error()
 				} else {
@@ -1051,4 +1058,19 @@ func requireConversationCapabilities(capabilities []types.Capability) error {
 		}
 	}
 	return nil
+}
+
+// adminDiagnostics reports whether the current token's claims select the
+// optional admin-only diagnostics. Claims are only a hint; the server
+// verifies every call. A token that cannot be read selects none.
+func (c *Controller) adminDiagnostics(ctx context.Context, identity types.IdentityScope) bool {
+	if c.tokens == nil {
+		return false
+	}
+	token, err := c.tokens.Token(ctx, identity)
+	if err != nil {
+		return false
+	}
+	claims, err := ParseToken(token, time.Now())
+	return err == nil && claims.Admin
 }

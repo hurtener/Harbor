@@ -2,10 +2,36 @@ package agentcfg
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
 )
+
+// CatalogDeletionGenerationKind is the agent-scoped record every writer
+// rewrites immediately BEFORE it deletes a slot the catalog stamp reads (an
+// active pointer or an activation-fence record). A deleted slot reads as
+// absent, so "absent → present → absent" between two stamps would otherwise
+// be invisible; the rewrite gives every such cycle a fresh, durable write
+// identity that survives the deletion. It carries no content.
+const CatalogDeletionGenerationKind = "agentcfg.catalog.deletion_generation"
+
+// TouchCatalogDeletionGeneration rewrites the agent's deletion-generation
+// record with a fresh EventID. Callers invoke it after reading the state their
+// conditional delete is predicated on and before issuing that delete, so any
+// write the delete depends on is ordered before the touch. A failure must
+// abort the delete: proceeding would let a structural cache keep a projection
+// built from the deleted state.
+func TouchCatalogDeletionGeneration(ctx context.Context, st state.StateStore, tenantID, agentID string) error {
+	q, err := AgentScope(tenantID, agentID)
+	if err != nil {
+		return err
+	}
+	if err := st.Save(ctx, state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: CatalogDeletionGenerationKind, Bytes: []byte("{}")}); err != nil {
+		return fmt.Errorf("%w: touch catalog deletion generation: %w", ErrStateUnavailable, err)
+	}
+	return nil
+}
 
 // SlotGeneration names one durable record by its kind and the EventID of its
 // current write. Every StateStore write mints a fresh EventID, so an
@@ -28,6 +54,9 @@ type SlotGeneration struct {
 type CatalogInputs struct {
 	AgentActive state.EventID
 	UserActive  state.EventID
+	// DeletionGeneration is the CatalogDeletionGenerationKind record's write
+	// identity: it moves before every deletion of a stamped slot.
+	DeletionGeneration state.EventID
 	// Fences lists every activation-fence record for the agent, sorted by
 	// Kind. Fences are agent-scoped records; user-tier candidates are matched
 	// against them at read time, so the same list covers both tiers.
@@ -35,8 +64,9 @@ type CatalogInputs struct {
 }
 
 // CatalogInputReader is the optional Registry surface that reports
-// CatalogInputs with a bounded number of small reads (two point loads, one
-// identity-scoped prefix list, and one more point load for the user tier).
+// CatalogInputs with a bounded number of small reads (two agent-scope point
+// loads, one identity-scoped prefix list, and one point load for the user
+// tier).
 // A Registry that does not implement it cannot back a structural catalog
 // cache; callers branch on the type assertion and fall back to building the
 // projection on every request.

@@ -241,3 +241,54 @@ func TestCatalogChangedEvent_IdentityResolution(t *testing.T) {
 		t.Fatal("empty tenant must be skipped")
 	}
 }
+
+// TestCatalogInputs_DeletionGenerationSurvivesSlotDeletion pins the review
+// fix: a slot that goes absent → present → absent leaves its own generation
+// back at "absent", so every deletion first rewrites the durable deletion
+// generation and the cycle is still visible to the stamp.
+func TestCatalogInputs_DeletionGenerationSurvivesSlotDeletion(t *testing.T) {
+	ctx := context.Background()
+	reg, st, _ := newHintRegistry(t)
+	reader := reg.(agentcfg.CatalogInputReader)
+	operator := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "operator", SessionID: "op"}}
+	user := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
+	if _, err := reg.SetRevision(ctx, operator, "agent", agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := reader.CatalogInputs(ctx, user, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := reg.SetRevision(ctx, user, "agent", agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{"x"}}}, agentcfg.SetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := reg.DeactivateIfActive(ctx, user, "agent", rev.RevisionID, agentcfg.ConfigScopeUser); err != nil || !changed {
+		t.Fatalf("deactivate changed=%v err=%v", changed, err)
+	}
+	afterPointer, err := reader.CatalogInputs(ctx, user, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterPointer.UserActive != before.UserActive || afterPointer.DeletionGeneration == before.DeletionGeneration {
+		t.Fatalf("pointer cycle: user %q→%q deletion %q→%q", before.UserActive, afterPointer.UserActive, before.DeletionGeneration, afterPointer.DeletionGeneration)
+	}
+	fences, err := agentcfg.NewSignedOAuthMCPActivationFenceStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := fences.BeginForOperation(ctx, "t", "agent", "op", "fp", "hash", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fences.ReleasePending(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	afterFence, err := reader.CatalogInputs(ctx, user, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterFence.Fences) != len(afterPointer.Fences) || afterFence.DeletionGeneration == afterPointer.DeletionGeneration {
+		t.Fatalf("fence cycle not visible: fences %d→%d deletion %q→%q", len(afterPointer.Fences), len(afterFence.Fences), afterPointer.DeletionGeneration, afterFence.DeletionGeneration)
+	}
+}

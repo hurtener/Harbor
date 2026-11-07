@@ -386,6 +386,12 @@ type serverEntry struct {
 	// generation). Guarded by the Registry's mu like every other
 	// per-server field.
 	currentGeneration string
+	// discoveredEmpty records that the committed views came from a discovery
+	// snapshot that was known to be empty (after allow/deny filtering). It
+	// lets the refresh no-op gate tell a known-empty snapshot apart from an
+	// unhashable one, both of which have an unknown ("") currentGeneration;
+	// App admission keeps treating "" as unknown (fail closed).
+	discoveredEmpty bool
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -777,6 +783,7 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 	// publication, so no stale callback can survive either direction.
 	entry.appVisible = partitionAppVisible(descs)
 	entry.currentGeneration = currentGenerationFor(descs)
+	entry.discoveredEmpty = descs != nil && len(descs) == 0
 	if descs != nil {
 		entry.stats.lastDiscoveryAt = now
 	}
@@ -1578,6 +1585,14 @@ func (r *Registry) BeginExactRemoval(name string, owner auth.Owner, descriptorFi
 	if name == "" || owner.IsZero() || descriptorFingerprint == "" {
 		return nil, fmt.Errorf("%w: %q", ErrServerNotFound, name)
 	}
+	invalidatedStage := false
+	// Registered before the unlock defer, so it runs after the lock is
+	// released: an invalidated private stage moved into closing.
+	defer func() {
+		if invalidatedStage {
+			r.notifyChanged(context.Background(), name, owner, RegistryChangeConnection)
+		}
+	}()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	reservation := r.removing[name]
@@ -1603,6 +1618,7 @@ func (r *Registry) BeginExactRemoval(name string, owner auth.Owner, descriptorFi
 		staged.invalidated.Store(true)
 		r.closing[name] = staged.staged
 		r.bumpLocked()
+		invalidatedStage = true
 		reservation.invalidatedStage = staged.staged
 	}
 	r.removing[name] = reservation
@@ -1706,15 +1722,20 @@ func (f *ExactRemovalFence) Cancel(ctx context.Context) error {
 		return fmt.Errorf("mcp: cancel exact removal %q: close invalidated transport: %w", f.name, err)
 	}
 	f.registry.mu.Lock()
+	released := false
 	if f.registry.removing[f.name] == reservation && !reservation.sealed && reservation.holders == 1 {
 		if f.registry.closing[f.name] == invalidated {
 			delete(f.registry.closing, f.name)
 			f.registry.bumpLocked()
+			released = true
 		}
 		delete(f.registry.removing, f.name)
 		reservation.holders = 0
 	}
 	f.registry.mu.Unlock()
+	if released {
+		f.registry.notifyChanged(ctx, f.name, invalidated.owner, RegistryChangeConnection)
+	}
 	f.done = true
 	return nil
 }
@@ -2874,10 +2895,15 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 	// one, both views already hold exactly this snapshot. Republishing would
 	// only move the catalog and registry generations and invalidate every
 	// structural catalog projection keyed on them, so the commit is skipped.
-	// An unknown ("") generation is never treated as equal: the previous
-	// behaviour (republish) is kept whenever equality cannot be proven.
+	// A known-empty snapshot equals a committed known-empty one. An
+	// unhashable non-empty snapshot (generation "") is never treated as
+	// equal: the previous behaviour (republish) is kept whenever equality
+	// cannot be proven.
 	nextGeneration := currentGenerationFor(descs)
-	changed := nextGeneration == "" || nextGeneration != e.currentGeneration
+	nextEmpty := len(descs) == 0
+	unchanged := (nextGeneration != "" && nextGeneration == e.currentGeneration) ||
+		(nextEmpty && e.discoveredEmpty)
+	changed := !unchanged
 	if changed {
 		if e.catalog != nil {
 			catalogSwap, cerr := e.catalog.StageSource(tools.ToolSourceID(name), ordinaryDescriptors(descs), true)
@@ -2895,6 +2921,7 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		// registration descriptor did not change.
 		e.appVisible = partitionAppVisible(descs)
 		e.currentGeneration = nextGeneration
+		e.discoveredEmpty = nextEmpty
 		r.bumpLocked()
 	}
 	owner := e.owner
@@ -3213,6 +3240,7 @@ func (r *Registry) RecordDiscovery(name string, descs []tools.ToolDescriptor) er
 	// pre-discovery stage.
 	e.appVisible = partitionAppVisible(descs)
 	e.currentGeneration = currentGenerationFor(descs)
+	e.discoveredEmpty = len(descs) == 0
 	r.bumpLocked()
 	return nil
 }

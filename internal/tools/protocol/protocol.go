@@ -257,6 +257,13 @@ func (s *Service) ListForView(ctx context.Context, req prototypes.ToolListReques
 		return prototypes.ToolListResponse{}, fmt.Errorf(
 			"%w: if_revision is only valid with view %q", ErrInvalidRequest, prototypes.ToolCatalogViewConfiguration)
 	}
+	// The revision covers structure only. Row membership under an
+	// annotation-facet filter changes with approval or OAuth state that never
+	// moves the revision, so a conditional answer would be wrong: refuse it.
+	if req.IfRevision != "" && (len(req.Filter.OAuthStatuses) > 0 || len(req.Filter.ApprovalPolicies) > 0) {
+		return prototypes.ToolListResponse{}, fmt.Errorf(
+			"%w: if_revision cannot be combined with filter.oauth_statuses or filter.approval_policies", ErrInvalidRequest)
+	}
 
 	// Annotator-wired gate (the projection-completeness gate). With no Annotator wired (V1 production —
 	// the concrete lands in the tools annotator follow-up) the OAuth-status / approval-policy /

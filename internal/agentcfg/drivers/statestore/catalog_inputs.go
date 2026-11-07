@@ -14,7 +14,8 @@ import (
 // CatalogInputs implements agentcfg.CatalogInputReader. It reads only record
 // identities — the agent active pointer (the lifecycle slot), the activation
 // fence records, and the acting user's active pointer — never revision
-// bodies, so its cost is three small reads regardless of config size.
+// bodies, so its cost is four small reads regardless of config size: the
+// agent pointer, the deletion generation, the fence list and the user pointer.
 //
 // The fence projection Active applies (applySignedOAuthMCPFence) is a pure
 // function of the active revision and these fence records; it has no clock
@@ -33,6 +34,9 @@ func (r *registry) CatalogInputs(ctx context.Context, id identity.Quadruple, age
 	agentQuad := syntheticQuad(id.TenantID, agentID)
 	var out agentcfg.CatalogInputs
 	if out.AgentActive, err = r.slotEventID(ctx, agentQuad, kindActive); err != nil {
+		return agentcfg.CatalogInputs{}, err
+	}
+	if out.DeletionGeneration, err = r.slotEventID(ctx, agentQuad, agentcfg.CatalogDeletionGenerationKind); err != nil {
 		return agentcfg.CatalogInputs{}, err
 	}
 	records, err := r.state.ListKindForIdentity(ctx, agentQuad, agentcfg.SignedOAuthMCPActivationFenceKind())

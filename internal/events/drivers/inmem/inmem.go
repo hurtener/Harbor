@@ -383,19 +383,34 @@ func (b *bus) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 	if b.closed.Load() {
 		return time.Time{}, false, events.ErrBusClosed
 	}
+	// The first non-notice event, oldest first, is the horizon. Bus-internal
+	// notices are excluded so the horizon matches the shape of the history a
+	// session read would surface.
 	b.publishMu.Lock()
-	snapshot := b.ringSnapshotLocked()
+	at, ok := b.oldestRetainedLocked()
 	b.publishMu.Unlock()
-	// The snapshot is oldest-first; the first non-notice event is the
-	// horizon. Bus-internal notices are excluded so the horizon matches
-	// the shape of the history a session read would surface.
-	for _, ev := range snapshot {
+	return at, ok, nil
+}
+
+// oldestRetainedLocked scans the ring in place, oldest first, for the first
+// non-notice event. It allocates nothing and stops at the first match, so the
+// health read holds publishMu only briefly. Caller holds publishMu.
+func (b *bus) oldestRetainedLocked() (time.Time, bool) {
+	if b.ringCap == 0 {
+		return time.Time{}, false
+	}
+	start, n := 0, b.ringHead
+	if b.ringFull {
+		start, n = b.ringHead, b.ringCap
+	}
+	for i := range n {
+		ev := &b.ringBuf[(start+i)%b.ringCap]
 		if events.IsBusInternalNotice(ev.Type) {
 			continue
 		}
-		return ev.OccurredAt, true, nil
+		return ev.OccurredAt, true
 	}
-	return time.Time{}, false, nil
+	return time.Time{}, false
 }
 
 // startReaper launches the idle-subscription sweep goroutine. The

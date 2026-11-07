@@ -3,11 +3,11 @@ package protocol
 import (
 	"container/list"
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 
@@ -49,28 +49,35 @@ const configurationStampView = string(prototypes.ToolCatalogViewConfiguration)
 // defaultStructuralCacheEntries bounds the configuration-inventory cache.
 const defaultStructuralCacheEntries = 512
 
-// structuralKey addresses one cached configuration inventory. Tenant, user
-// and agent are always present, so a row-visibility rule that depends on the
-// principal (user-owned MCP sources) can never be served across principals
-// even if two stamps collided. session is set only when a session overlay
-// exists. revision is the stamp the entry was built under.
+// structuralBuildTimeout bounds one shared structural build. The build runs
+// on a context detached from every caller's cancellation (so one caller's
+// disconnect cannot fail the others) but never longer than this.
+const structuralBuildTimeout = 30 * time.Second
+
+// structuralKey addresses one principal's cached configuration inventory.
+// Tenant, user and agent are always present, so a row-visibility rule that
+// depends on the principal (user-owned MCP sources) can never be served
+// across principals even if two stamps collided. session is set only when a
+// session overlay exists. The revision lives in the entry, not the key: a
+// principal has at most one entry, replaced by each newer stable build, so
+// superseded inventories never pin memory.
 type structuralKey struct {
-	tenant, user, agent, view, session, revision string
+	tenant, user, agent, view, session string
 }
 
-func (k structuralKey) flight() string {
+func (k structuralKey) flight(revision string) string {
 	return strings.Join([]string{
 		strconv.Quote(k.tenant), strconv.Quote(k.user), strconv.Quote(k.agent),
-		strconv.Quote(k.view), strconv.Quote(k.session), k.revision,
+		strconv.Quote(k.view), strconv.Quote(k.session), revision,
 	}, "\x00")
 }
 
 // structuralCache is a bounded LRU of configuration inventories plus a
-// per-key single-flight. It stores STRUCTURE only — the admitted descriptor
-// views a CatalogViewResolver produced. It never stores annotations (OAuth,
-// approval, last-used, display modes), which are applied per request, and it
-// never stores an authorization decision: admission runs on every request
-// before any stamp read. Cached slices are shared read-only.
+// per-(key, revision) single-flight. It stores STRUCTURE only — the admitted
+// descriptor views a CatalogViewResolver produced. It never stores
+// annotations (OAuth, approval, last-used, display modes), which are applied
+// per request, and it never stores an authorization decision: admission runs
+// on every request before any stamp read. Cached slices are shared read-only.
 type structuralCache struct {
 	mu    sync.Mutex
 	max   int
@@ -80,34 +87,43 @@ type structuralCache struct {
 }
 
 type structuralEntry struct {
-	key   structuralKey
-	tools []tools.Tool
+	key      structuralKey
+	revision string
+	tools    []tools.Tool
 }
 
 func newStructuralCache(max int) *structuralCache {
 	return &structuralCache{max: max, order: list.New(), items: make(map[structuralKey]*list.Element)}
 }
 
-func (c *structuralCache) get(key structuralKey) ([]tools.Tool, bool) {
+// get returns the principal's inventory only when it was built under exactly
+// revision.
+func (c *structuralCache) get(key structuralKey, revision string) ([]tools.Tool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	el, ok := c.items[key]
 	if !ok {
 		return nil, false
 	}
+	entry := entryOf(el)
+	if entry.revision != revision {
+		return nil, false
+	}
 	c.order.MoveToFront(el)
-	return entryOf(el).tools, true
+	return entry.tools, true
 }
 
-func (c *structuralCache) put(key structuralKey, list []tools.Tool) {
+// put stores (or replaces) the principal's inventory for revision.
+func (c *structuralCache) put(key structuralKey, revision string, list []tools.Tool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if el, ok := c.items[key]; ok {
-		entryOf(el).tools = list
+		entry := entryOf(el)
+		entry.revision, entry.tools = revision, list
 		c.order.MoveToFront(el)
 		return
 	}
-	c.items[key] = c.order.PushFront(&structuralEntry{key: key, tools: list})
+	c.items[key] = c.order.PushFront(&structuralEntry{key: key, revision: revision, tools: list})
 	for c.order.Len() > c.max {
 		oldest := c.order.Back()
 		c.order.Remove(oldest)
@@ -133,13 +149,22 @@ func (c *structuralCache) len() int {
 
 // configurationInventory returns the admitted configuration descriptors for
 // (id, agentID) and the revision they were built under ("" when the runtime
-// cannot stamp). Callers have already admitted the request.
+// cannot stamp). Callers have already admitted the request; the stamp itself
+// applies the session erasure and agent lifecycle refusals, so a refused
+// session never reaches the cache.
 //
 // On a miss it stamps, builds, then stamps again and inserts only when the
 // two stamps agree (the ABA guard): a mutation that lands between the first
 // stamp and the build's reads would otherwise be cached under a revision that
-// does not describe it. The pre-build stamp is the one reported, so a
-// concurrent mutation can only make the client's next conditional read miss.
+// does not describe it. Deletions of stamped slots are preceded by a durable
+// deletion-generation write, so "absent → present → absent" cycles also move
+// the stamp. The pre-build stamp is the one reported, so a concurrent mutation
+// can only make the client's next conditional read miss.
+//
+// Concurrent misses for the same principal and revision share one build. The
+// build runs detached from every caller's cancellation, bounded by
+// structuralBuildTimeout; each caller waits only as long as its own context
+// allows.
 func (p *CatalogProjector) configurationInventory(ctx context.Context, id identity.Identity, agentID string) ([]tools.Tool, string, error) {
 	resolver, ok := p.view.(ConfigurationCatalogViewResolver)
 	if !ok {
@@ -165,51 +190,45 @@ func (p *CatalogProjector) configurationInventory(ctx context.Context, id identi
 		descriptors, err := build(ctx)
 		return descriptors, "", err
 	}
-	key := structuralKey{tenant: id.TenantID, user: id.UserID, agent: agentID, view: configurationStampView, revision: revision}
+	key := structuralKey{tenant: id.TenantID, user: id.UserID, agent: agentID, view: configurationStampView}
 	if sessionScoped {
 		key.session = id.SessionID
 	}
-	if descriptors, hit := p.structural.get(key); hit {
+	if descriptors, hit := p.structural.get(key, revision); hit {
 		return descriptors, revision, nil
 	}
-	led := false
-	value, err, _ := p.structural.group.Do(key.flight(), func() (any, error) {
-		led = true
-		if descriptors, hit := p.structural.get(key); hit {
+	results := p.structural.group.DoChan(key.flight(revision), func() (any, error) {
+		if descriptors, hit := p.structural.get(key, revision); hit {
 			return descriptors, nil
 		}
-		descriptors, err := build(ctx)
+		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), structuralBuildTimeout)
+		defer cancel()
+		descriptors, err := build(bctx)
 		if err != nil {
 			return nil, err
 		}
 		if p.afterStructuralBuild != nil {
 			p.afterStructuralBuild()
 		}
-		after, _, stillStampable, err := stamper.CatalogStamp(ctx, id, agentID, configurationStampView)
+		after, _, stillStampable, err := stamper.CatalogStamp(bctx, id, agentID, configurationStampView)
 		if err == nil && stillStampable && after == revision {
-			p.structural.put(key, descriptors)
+			p.structural.put(key, revision, descriptors)
 		}
 		return descriptors, nil
 	})
-	if err != nil {
-		if !led {
-			// The leader's failure (its context, or a session-specific read
-			// such as an erased session when no overlay keyed the flight) is
-			// not this caller's outcome: build with this caller's own context
-			// and identity, uncached.
-			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return nil, "", ctx.Err()
-			}
-			descriptors, buildErr := build(ctx)
-			return descriptors, revision, buildErr
+	select {
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	case result := <-results:
+		if result.Err != nil {
+			return nil, "", result.Err
 		}
-		return nil, "", err
+		descriptors, ok := result.Val.([]tools.Tool)
+		if !ok {
+			return nil, "", fmt.Errorf("%w: structural build returned %T", ErrMisconfigured, result.Val)
+		}
+		return descriptors, revision, nil
 	}
-	descriptors, ok := value.([]tools.Tool)
-	if !ok {
-		return nil, "", fmt.Errorf("%w: structural build returned %T", ErrMisconfigured, value)
-	}
-	return descriptors, revision, nil
 }
 
 // ListConfigurationToolsWithRevision implements RevisionedConfigurationProjector.

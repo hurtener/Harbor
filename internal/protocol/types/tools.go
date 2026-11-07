@@ -260,7 +260,11 @@ type ToolListRequest struct {
 	// reads. It is ignored on pages after the first (always full; the client
 	// compares each page's revision with page 1's and restarts on a
 	// mismatch). Valid only with view "configuration" — any other view is a
-	// 400 (CodeInvalidRequest).
+	// 400 (CodeInvalidRequest), as is a filter on the per-request annotation
+	// facets (oauth_statuses, approval_policies), whose membership the revision
+	// does not cover. not_modified speaks only for the structural rows of the
+	// identical query (same filter, search and page size) and carries no
+	// aggregates.
 	IfRevision string `json:"if_revision,omitempty"`
 }
 

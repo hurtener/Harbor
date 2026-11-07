@@ -633,3 +633,44 @@ func TestController_RetentionFetchedOnlyForAdminToken(t *testing.T) {
 		})
 	}
 }
+
+// Review regression: the stream-reconcile re-hydration keeps the admin-only
+// retention diagnostics the initial hydration requested.
+func TestController_ReconcileRehydrateKeepsAdminRetention(t *testing.T) {
+	f, server := newControllerFixture(t)
+	defer server.Close()
+	id := types.IdentityScope{Tenant: "t", User: "u", Session: "reconcile-retention"}
+	updates := make(chan Update, 64)
+	c, err := NewController(server.URL, NewTokenSource("", testToken(t, id, time.Now().Add(time.Hour))), id, func(u Update) {
+		select {
+		case updates <- u:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := c.Switch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	f.awaitStreamRegistration(ctx, id.Session, 1)
+	f.drop(id.Session)
+	f.awaitStreamRegistration(ctx, id.Session, 2)
+	for {
+		f.mu.Lock()
+		calls := f.requests["/v1/control/runtime.retention"]
+		f.mu.Unlock()
+		if calls >= 2 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("runtime.retention calls = %d after reconcile, want the re-hydration to request it again", calls)
+		case <-updates:
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}

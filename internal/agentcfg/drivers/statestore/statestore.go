@@ -648,6 +648,9 @@ func (r *registry) DeactivateIfActive(ctx context.Context, id identity.Quadruple
 	if pointer.RevisionID != revisionID {
 		return false, nil
 	}
+	if err := agentcfg.TouchCatalogDeletionGeneration(ctx, r.state, id.TenantID, agentID); err != nil {
+		return false, err
+	}
 	changed, err := r.state.DeleteIf(ctx, state.SlotExpectation{Identity: keys.quad, Kind: keys.activeKind, ExpectedEventID: current.ID})
 	if err != nil {
 		return false, fmt.Errorf("%w: conditionally deactivate active pointer: %w", agentcfg.ErrStateUnavailable, err)

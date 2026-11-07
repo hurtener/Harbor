@@ -68,7 +68,9 @@ no rows. Later pages ignore `if_revision`; compare each page's `revision` with
 page 1's and restart once on a mismatch. The revision covers structural row
 fields, including the row-level `side_effect` and `loading_mode` (so no
 per-tool `tools.describe` is needed for them), and excludes `oauth_status`,
-`approval_policy`, `last_used_at` and `display_modes`. Key a client cache by
+`approval_policy`, `last_used_at` and `display_modes`. `not_modified` speaks
+only for the structural rows of the identical query; `if_revision` combined
+with `filter.oauth_statuses` or `filter.approval_policies` is refused. Key a client cache by
 runtime, tenant, agent, acting user and filter. `tools.catalog.changed` is only
 a hint to drop short-lived caches early; never rely on it for correctness.
 Only send `if_revision` to a runtime whose release includes D-491 — older

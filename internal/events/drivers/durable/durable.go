@@ -1016,15 +1016,9 @@ func (b *bus) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 	}
 	if b.bestEffort {
 		b.publishMu.Lock()
-		defer b.publishMu.Unlock()
-		snapshot := b.ringSnapshotLocked()
-		for _, ev := range snapshot {
-			if events.IsBusInternalNotice(ev.Type) {
-				continue
-			}
-			return ev.OccurredAt, true, nil
-		}
-		return time.Time{}, false, nil
+		at, ok := b.oldestRetainedLocked()
+		b.publishMu.Unlock()
+		return at, ok, nil
 	}
 	if !b.oldestRetainedPresent.Load() {
 		return time.Time{}, false, nil
@@ -1904,6 +1898,27 @@ func (b *bus) ringAppendLocked(ev events.Event) {
 
 // ringSnapshotLocked returns the best-effort ring contents in sequence
 // order (oldest first). Caller holds publishMu.
+// oldestRetainedLocked scans the ring in place, oldest first, for the first
+// non-notice event. It allocates nothing and stops at the first match, so the
+// health read holds publishMu only briefly. Caller holds publishMu.
+func (b *bus) oldestRetainedLocked() (time.Time, bool) {
+	if b.ringCap == 0 {
+		return time.Time{}, false
+	}
+	start, n := 0, b.ringHead
+	if b.ringFull {
+		start, n = b.ringHead, b.ringCap
+	}
+	for i := range n {
+		ev := &b.ringBuf[(start+i)%b.ringCap]
+		if events.IsBusInternalNotice(ev.Type) {
+			continue
+		}
+		return ev.OccurredAt, true
+	}
+	return time.Time{}, false
+}
+
 func (b *bus) ringSnapshotLocked() []events.Event {
 	if b.ringCap == 0 {
 		return nil

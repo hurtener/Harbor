@@ -141,7 +141,7 @@ func TestStatePolicyStore_Policies_InvalidAndCancelled_FailClosed(t *testing.T) 
 	}
 }
 
-func TestStatePolicyStore_Policies_CorruptOverride_FailClosed(t *testing.T) {
+func TestStatePolicyStore_Policies_CorruptOverrideSkipped(t *testing.T) {
 	for _, data := range []string{`{`, `{"policy":"invalid"}`} {
 		t.Run(data, func(t *testing.T) {
 			st, err := stateinmem.New(config.StateConfig{})
@@ -160,8 +160,18 @@ func TestStatePolicyStore_Policies_CorruptOverride_FailClosed(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if policies, err := ps.Policies(context.Background(), id); err == nil || policies != nil {
-				t.Fatalf("corrupt policy read = %v, %v; want fail closed", policies, err)
+			if err := ps.SetPolicy(context.Background(), id, "beta", prototypes.ToolApprovalGated); err != nil {
+				t.Fatal(err)
+			}
+			policies, err := ps.Policies(context.Background(), id)
+			if err != nil {
+				t.Fatalf("one corrupt override failed the whole read: %v", err)
+			}
+			if _, ok := policies["alpha"]; ok || policies["beta"] != prototypes.ToolApprovalGated || len(policies) != 1 {
+				t.Fatalf("policies = %v, want only beta=gated (corrupt alpha skipped)", policies)
+			}
+			if single, err := ps.Policy(context.Background(), id, "alpha"); err == nil {
+				t.Fatalf("single-tool read of the corrupt record = %v, want an error the annotator maps to auto", single)
 			}
 		})
 	}

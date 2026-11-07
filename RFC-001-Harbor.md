@@ -745,8 +745,10 @@ non-empty tool list prepares one request-local annotation batch: one approval
 policy prefix scan scoped by the complete identity triple, one bounded tool
 lifecycle history window folded by tool name, and OAuth status memoized by
 runtime source within that identity's request. The batch never survives the
-request or caches authority. Missing overrides retain the `auto` default;
-approval scan or decode failures reject the list. Single-tool get/describe
+request or caches authority. Missing overrides retain the `auto` default; an
+approval scan failure rejects the list, while an individually corrupt override
+is skipped and logged so that tool projects `auto`, as the single-tool read
+does. Single-tool get/describe
 reads only that tool's annotations. Batching changes no wire shape and the
 Protocol version is unchanged. The structural configuration cache (§6.16,
 D-491) applies these annotations per request and never stores them.
@@ -2696,8 +2698,10 @@ manifest, carry an opaque input-addressed `revision`. It is a SHA-256 over
 every input the admitted inventory reads: the principal (tenant, user, agent,
 and the session when a session overlay exists); the agent active pointer
 (also the lifecycle slot), every signed-capability activation-fence record and
-the acting user's active pointer as durable write identities; the session
-overlay record; and the process-local tool-catalog and MCP-registry epoch and
+the acting user's active pointer as durable write identities; an agent-scoped
+deletion-generation record that every writer rewrites before deleting a
+stamped slot, so absent → present → absent cycles still move the revision; the
+session overlay record; and the process-local tool-catalog and MCP-registry epoch and
 generation. Epochs are random per instance, so a restart or another replica
 never repeats a revision, and replicas sharing a store observe each other's
 durable writes without any event. The revision covers every structural row
@@ -2707,16 +2711,23 @@ describe's `display_modes`.
 
 `if_revision` on page 1 of a configuration list answers
 `{revision, not_modified: true}` with no rows when it matches, after only the
-revision reads (four small StateStore reads). It is ignored on later pages; a
+revision reads (eight small StateStore reads). It is ignored on later pages; a
 client compares each page's `revision` with page 1's and restarts on a
-mismatch. Any other view rejects `if_revision`. Admission — verified admin,
-signed agent reach and effective-agent resolution — runs before any revision
-read. The runtime keeps a bounded structural cache of admitted descriptors
-keyed by principal and revision; it holds no annotations and no authorization
+mismatch. Any other view rejects `if_revision`, as does a filter on the
+annotation facets `oauth_statuses` or `approval_policies`; `not_modified`
+speaks only for the structural rows of the identical query and carries no
+aggregates. Admission — verified admin, signed agent reach and effective-agent
+resolution — runs before any revision read, and the revision read itself
+refuses an erased session or inactive agent lifecycle exactly as an uncached
+read does, so neither a cache hit nor `not_modified` bypasses them. The
+runtime keeps a bounded structural cache of admitted descriptors, one entry per
+principal holding its latest stable revision; concurrent misses share one
+build detached from caller cancellation and bounded in time, while each caller
+waits only within its own deadline. It holds no annotations and no authorization
 decision, and a miss re-reads the revision after building and caches only when
 it is unchanged. A discovery refresh whose deterministic descriptor generation
-is unchanged commits nothing, so convergence sweeps and no-op run-start
-reconciles leave revisions intact. The best-effort `tools.catalog.changed`
+is unchanged — or that stays known-empty — commits nothing, so convergence
+sweeps and no-op run-start reconciles leave revisions intact. The best-effort `tools.catalog.changed`
 event is a hint for dropping short-lived client caches; it carries no tool data
 or revision, and correctness never depends on it.
 

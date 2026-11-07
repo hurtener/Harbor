@@ -332,6 +332,9 @@ func (s *SignedOAuthMCPActivationFenceStore) ReleasePending(ctx context.Context,
 	if stateKind != signedOAuthMCPActivationFenceKind && stateKind != signedOAuthMCPPairActivationFenceKind(current.OperationKind) {
 		return fmt.Errorf("%w: activation fence state kind does not bind its operation", ErrSignedCapabilityTransition)
 	}
+	if err := TouchCatalogDeletionGeneration(ctx, s.state, current.TenantID, current.AgentID); err != nil {
+		return err
+	}
 	changed, err := s.state.DeleteIf(ctx, state.SlotExpectation{
 		Identity:        signedOAuthMCPActivationFenceQuad(current.TenantID, current.AgentID),
 		Kind:            stateKind,

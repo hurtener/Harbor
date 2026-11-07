@@ -22,18 +22,25 @@ Two versions move independently in Harbor (RFC §5.3):
 - `runtime.retention` explicitly reads observed events, tasks and sessions
   horizons at runtime scope. It requires verified `admin` authority and emits
   one `audit.admin_scope_used`; audit failure fails the request closed (D-490).
+  The Go client exposes it through the new optional
+  `protocolclient.RetentionClient` interface, which the client returned by
+  `New` implements; the existing `Client` and `RuntimeClient` method sets are
+  unchanged.
 - Configuration-view `tools.list` responses and `tools.describe` manifests
   carry an opaque input-addressed `revision` (D-491). Sending it back as
   `if_revision` on page 1 answers `{revision, not_modified: true}` with no rows
-  after only four small StateStore reads; later pages ignore it, and clients
+  after only eight small StateStore reads; later pages ignore it, and clients
   compare each page's `revision` with page 1's. The revision covers structural
   row fields and excludes `oauth_status`, `approval_policy`, `last_used_at` and
-  `display_modes`. Other views reject `if_revision`.
+  `display_modes`; `not_modified` speaks only for the structural rows of the
+  identical query. Other views, and filters on `oauth_statuses` or
+  `approval_policies`, reject `if_revision`. Erased sessions are refused before
+  any cached or conditional answer.
 - `tools.list` rows carry `side_effect` and `loading_mode`, so list consumers no
   longer need one `tools.describe` per tool.
-- The runtime caches admitted configuration inventories (structure only, keyed
-  by tenant, user, agent, view, session-when-overlaid and revision; 512
-  entries). Admission still runs on every request before any revision read,
+- The runtime caches admitted configuration inventories (structure only, one
+  entry per tenant, user, agent, view and session-when-overlaid, holding the
+  latest stable revision; 512 entries). Admission still runs on every request before any revision read,
   and annotations are applied per request.
 - `tools.catalog.changed` is a best-effort hint (`agent_id`, `scope`, `reason`;
   no tool data, no revision) published after agent-config pointer and lifecycle
@@ -51,11 +58,15 @@ Two versions move independently in Harbor (RFC §5.3):
 - Tool catalog lists share one identity-scoped approval-policy scan and one
   bounded event-history window per request, and reuse OAuth status reads for
   tools from the same source within that request. Single-tool descriptions
-  continue to read only their own annotations; approval read failures reject
-  the list rather than projecting an unverified default (D-491).
+  continue to read only their own annotations; an approval scan failure rejects
+  the list rather than projecting an unverified default, while an individually
+  corrupt approval override is skipped (logged) and projects `auto` (D-491).
 - An MCP discovery refresh whose deterministic descriptor generation is
-  unchanged no longer republishes the catalog or App views, so convergence
-  sweeps and no-op run-start reconciles no longer move catalog generations.
+  unchanged, or that stays known-empty, no longer republishes the catalog or App
+  views, so convergence sweeps and no-op run-start reconciles no longer move
+  catalog generations.
+- In-memory and best-effort durable `runtime.health` horizon reads scan the
+  event ring in place instead of copying it under the publish lock.
 
 ### Upgrade notes
 
@@ -64,6 +75,11 @@ Two versions move independently in Harbor (RFC §5.3):
   to before the client sends it.
 - Callers that relied on elevated `runtime.health` for task/session horizons
   must switch to `runtime.retention` with an `admin` token.
+- Strict response decoders: `tools.list` / `tools.get` rows now always carry
+  `side_effect` and `loading_mode` (`omitempty` does not suppress them, since
+  they are populated), and the `audit.admin_scope_used` payload gains an
+  optional `method` field (set by `runtime.retention`). Consumers that decode
+  these with unknown-field rejection must be updated before the runtime is.
 
 ## [1.35.0] — 2026-11-06
 
