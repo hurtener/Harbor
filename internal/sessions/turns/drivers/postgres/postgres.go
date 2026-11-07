@@ -246,6 +246,9 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 		return turns.TurnRow{}, fmt.Errorf("turns/postgres: append begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // best-effort; the surfaced error is the original one
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return turns.TurnRow{}, err
+	}
 
 	// 1. Mint the next per-session sequence ATOMICALLY with the
 	//    erasure-fence check. The `DO UPDATE ... WHERE NOT fenced` arm
@@ -384,6 +387,9 @@ func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.
 		return turns.TurnRow{}, fmt.Errorf("turns/postgres: mutate begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // best-effort; the surfaced error is the original one
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return turns.TurnRow{}, err
+	}
 
 	// 1. Erasure-fence check under the session row lock — serializes
 	//    against FenceSession (which upserts the same row), so a fence
@@ -451,7 +457,8 @@ func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.
             sealed                 = $6,
             version                = $7,
             last_applied_event_seq = $8,
-            row_json               = $9
+            row_json               = $9,
+            pending_complete       = pending_complete AND NOT $6
         WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND turn_id = $4
           AND version = $10 AND NOT sealed`,
 		id.TenantID, id.UserID, id.SessionID, string(turnID),
@@ -469,6 +476,17 @@ func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.
 		// Under the row lock this is impossible by construction; fail
 		// loud rather than silently report a write that did not land.
 		return turns.TurnRow{}, fmt.Errorf("turns/postgres: conditional update did not converge for turn %q (version %d)", turnID, expectedVersion)
+	}
+	if sealed {
+		// A sealed root turn needs no routing any more: prune its routes
+		// in the same transaction as the seal.
+		if _, err := tx.ExecContext(ctx, `
+            DELETE FROM turn_routes
+            WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3 AND root_task_id = $4`,
+			id.TenantID, id.UserID, id.SessionID, string(turnID),
+		); err != nil {
+			return turns.TurnRow{}, fmt.Errorf("turns/postgres: prune routes: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return turns.TurnRow{}, fmt.Errorf("turns/postgres: commit mutate: %w", err)
@@ -751,8 +769,31 @@ func (d *driver) SaveCheckpoint(ctx context.Context, id identity.Identity, seq u
 	if err := d.checkIdentity(id); err != nil {
 		return err
 	}
+	if _, fenced := turns.WriteFenceFrom(ctx); fenced {
+		// A lease-fenced checkpoint runs the fence check and the
+		// monotonic upsert in one transaction.
+		tx, err := d.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("turns/postgres: save checkpoint begin: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }() //nolint:errcheck // best-effort; the surfaced error is the original one
+		if err := checkWriteFence(ctx, tx); err != nil {
+			return err
+		}
+		if err := saveCheckpointQ(ctx, tx, id, seq); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("turns/postgres: save checkpoint commit: %w", err)
+		}
+		return nil
+	}
+	return saveCheckpointQ(ctx, d.db, id, seq)
+}
+
+func saveCheckpointQ(ctx context.Context, q queryer, id identity.Identity, seq uint64) error {
 	var fenced bool
-	err := d.db.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
         INSERT INTO turn_sessions (tenant_id, user_id, session_id, checkpoint, fenced)
         VALUES ($1, $2, $3, $4, false)
         ON CONFLICT (tenant_id, user_id, session_id) DO UPDATE
@@ -813,6 +854,15 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 		id.TenantID, id.UserID, id.SessionID,
 	).Scan(&prevCheckpoint, &prevNextSeq); err != nil {
 		return 0, fmt.Errorf("turns/postgres: erase lock session: %w", err)
+	}
+
+	// The materializer's persisted routes for the session go with it
+	// (not counted: they are routing metadata, not projection records).
+	if _, err := tx.ExecContext(ctx, `
+        DELETE FROM turn_routes WHERE tenant_id = $1 AND user_id = $2 AND session_id = $3`,
+		id.TenantID, id.UserID, id.SessionID,
+	); err != nil {
+		return 0, fmt.Errorf("turns/postgres: erase routes: %w", err)
 	}
 
 	// 2. Delete ONLY this projection's owned rows. The erasure FENCE

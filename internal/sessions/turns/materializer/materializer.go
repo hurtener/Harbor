@@ -159,21 +159,13 @@
 // cursor, which is held back to just before the oldest still-open turn
 // within a bounded lookback: replayed row mutations at or below the
 // checkpoint are no-ops, the open turns' accumulators rebuild from the
-// replayed events, and a turn opened before the cursor adopts its
-// durable row on its next event — restart cost is proportional to the
-// events after the cursor, never the whole log. An uncoordinated
-// materializer re-pages from sequence zero with the same idempotent,
-// converging semantics.
-//
-// # Single writer
-//
-// Instances sharing one durable projection (a rolling-deploy overlap)
-// coordinate through a lease row: only the holder pages and writes; a
-// standby takes over from the persisted cursor when the holder releases
-// the lease or stops renewing it. A live root spawn whose task record
-// is not readable yet is deferred (bounded) instead of appended without
-// the user's query, and rows that were appended without their query /
-// agent are repaired once from the task record by a bounded pass. Within one instance the
+// replayed events, and a turn opened before the cursor is recovered from
+// durable state (its persisted task routes, its durable row, and its
+// pending-completion mark) on its next event or on the new tenure —
+// restart cost is proportional to the events after the cursor, never
+// the whole log. An uncoordinated materializer re-pages from sequence
+// zero with the same idempotent, converging semantics. Within one
+// instance the
 // session state also tracks the sequence of the last event fully
 // incorporated into its accumulators, so a page retry after a
 // mid-page failure never re-derives already-applied events (event
@@ -187,6 +179,19 @@
 // optional runtime ErasureProbe (wired like the projector's own)
 // refuses to re-materialize an erased session from sequence zero on a
 // restarted in-memory store.
+//
+// # Single writer
+//
+// Instances sharing one durable projection (a rolling-deploy overlap)
+// coordinate through a lease row: only the holder pages and writes; a
+// standby takes over from the persisted cursor when the holder releases
+// the lease or stops renewing it. Every projection write carries the
+// lease generation and the store refuses it once the lease changed
+// hands, so a paused former holder cannot write after a takeover. A live
+// root spawn whose task record is not readable yet is deferred (bounded)
+// instead of appended without the user's query, and rows that were
+// appended without their query / agent are repaired once from the task
+// record by a bounded pass.
 //
 // # Source honesty
 //
@@ -298,9 +303,13 @@ type Materializer struct {
 	// mu. coord nil = uncoordinated (always active, cursor from zero).
 	coord          turns.MaterializerStore
 	holder         string
+	fence          turns.WriteFence
 	leaseTTL       time.Duration
 	resumeLookback uint64
 	held           bool
+	// restorePending asks the next pass to rebuild the deferred-complete
+	// queue from the durable pending marks (set on every new tenure).
+	restorePending bool
 	lastRenew      time.Time
 	lastAttempt    time.Time
 	// resumeFloor is the persisted cursor this instance resumed from:
@@ -503,6 +512,20 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 		return res, nil
 	}
 	passStart := m.now()
+	standby := func() (Result, error) {
+		res.Standby = true
+		res.Cursor = m.cursor
+		return res, nil
+	}
+	if m.restorePending {
+		if err := m.restorePendingLocked(m.fencedCtx(ctx)); err != nil {
+			if m.leaseLostLocked(ctx, err) {
+				return standby()
+			}
+			return res, err
+		}
+		m.restorePending = false
+	}
 
 	for {
 		if res.Pages > 0 {
@@ -536,7 +559,11 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 			if err := ctx.Err(); err != nil {
 				return res, err
 			}
-			applied, skipped, err := m.applyEvent(ctx, ev)
+			applied, skipped, err := m.applyEvent(m.fencedCtx(ctx), ev)
+			if m.leaseLostLocked(ctx, err) {
+				// Fenced out: another instance holds the projection now.
+				return standby()
+			}
 			if errors.Is(err, errSpawnDeferred) {
 				res.SpawnDeferred = true
 				res.PendingComplete = len(m.pending)
@@ -607,7 +634,10 @@ func (m *Materializer) Materialize(ctx context.Context) (Result, error) {
 	// is reread on the next pass. The pass is bounded
 	// (convergenceBudget entries) and served in stable FIFO /
 	// round-robin order.
-	if err := m.convergePending(ctx, &res); err != nil {
+	if err := m.convergePending(m.fencedCtx(ctx), &res); err != nil {
+		if m.leaseLostLocked(ctx, err) {
+			return standby()
+		}
 		return res, err
 	}
 	m.repairPassLocked(ctx)

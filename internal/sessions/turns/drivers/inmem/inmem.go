@@ -83,11 +83,13 @@ func New(opts ...Option) (turns.Store, error) {
 		o.clock = time.Now
 	}
 	return &driver{
-		retain: o.retention,
-		clock:  o.clock,
-		rows:   map[rowKey]turns.TurnRow{},
-		repair: map[rowKey]bool{},
-		states: map[sessionKey]*sessionState{},
+		retain:  o.retention,
+		clock:   o.clock,
+		rows:    map[rowKey]turns.TurnRow{},
+		repair:  map[rowKey]bool{},
+		pending: map[rowKey]bool{},
+		routes:  map[rowKey]turns.TaskRoute{},
+		states:  map[sessionKey]*sessionState{},
 	}, nil
 }
 
@@ -168,6 +170,12 @@ type driver struct {
 	// repair flags rows appended with an unavailable query / agent
 	// (the identity repair queue); removed with the row.
 	repair map[rowKey]bool
+	// pending marks rows whose complete seal is deferred (cleared by the
+	// seal); removed with the row.
+	pending map[rowKey]bool
+	// routes holds the materializer's persisted task routes, keyed like
+	// rows by (session, task id).
+	routes map[rowKey]turns.TaskRoute
 	states map[sessionKey]*sessionState
 	// lease is the single-writer materializer lease + resume cursor.
 	lease  leaseState
@@ -244,6 +252,9 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 	// The store-local erasure fence is checked in the same serialized
 	// section as the write (a real driver checks it in the same
 	// transaction as its row write).
+	if err := d.fenceLocked(ctx); err != nil {
+		return turns.TurnRow{}, err
+	}
 	st := d.stateLocked(id)
 	if st.fenced {
 		return turns.TurnRow{}, turns.ErrErasureFenced
@@ -269,6 +280,7 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 		for _, tid := range st.tail[:over] {
 			delete(d.rows, rowKeyOf(id, tid))
 			delete(d.repair, rowKeyOf(id, tid))
+			delete(d.pending, rowKeyOf(id, tid))
 		}
 		st.tail = append([]turns.TurnID(nil), st.tail[over:]...)
 		st.truncated = true
@@ -282,6 +294,9 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 // the store and out. Caller holds d.mu.
 func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.TurnID, expectedVersion int, row turns.TurnRow, sealed bool) (turns.TurnRow, error) {
 	if err := ctx.Err(); err != nil {
+		return turns.TurnRow{}, err
+	}
+	if err := d.fenceLocked(ctx); err != nil {
 		return turns.TurnRow{}, err
 	}
 	st := d.stateLocked(id)
@@ -307,6 +322,14 @@ func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.
 	next.Sealed = sealed
 	next.Version = current.Version + 1
 	d.rows[k] = cloneRow(next)
+	if sealed {
+		delete(d.pending, k)
+		for rk, r := range d.routes {
+			if rk.tenant == k.tenant && rk.user == k.user && rk.session == k.session && r.RootTaskID == string(turnID) {
+				delete(d.routes, rk)
+			}
+		}
+	}
 	return cloneRow(next), nil
 }
 
@@ -568,6 +591,9 @@ func (d *driver) SaveCheckpoint(ctx context.Context, id identity.Identity, seq u
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := d.fenceLocked(ctx); err != nil {
+		return err
+	}
 	st := d.stateLocked(id)
 	if st.fenced {
 		return turns.ErrErasureFenced
@@ -600,6 +626,12 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	sk := sessionKeyOf(id)
+	for rk := range d.routes {
+		if rk.tenant == sk.tenant && rk.user == sk.user && rk.session == sk.session {
+			delete(d.routes, rk)
+		}
+	}
 	st := d.stateRead(id)
 	if st == nil {
 		return 0, nil // idempotent absent scope
@@ -608,6 +640,7 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 	for _, tid := range st.tail {
 		delete(d.rows, rowKeyOf(id, tid))
 		delete(d.repair, rowKeyOf(id, tid))
+		delete(d.pending, rowKeyOf(id, tid))
 		deleted++
 	}
 	st.tail = nil

@@ -20,8 +20,9 @@
 // the session's spans and falls back to the full verifying walk, which
 // keeps its established failure semantics.
 //
-// Memory is bounded: each span is ~100 bytes and the whole cache is reset
-// when it exceeds maxCachedChunkSpans entries (~3 MiB).
+// Memory is bounded: each span is ~100 bytes, one session keeps at most
+// its newest maxSessionChunkSpans spans, and the whole cache is reset
+// before it would exceed maxCachedChunkSpans entries (~3 MiB).
 package durable
 
 import (
@@ -37,6 +38,11 @@ import (
 // maxCachedChunkSpans bounds the cache (~100 B per span; 256 events per
 // chunk, so the default covers ~8M indexed events).
 const maxCachedChunkSpans = 32_768
+
+// maxSessionChunkSpans bounds one session's cached window (the NEWEST
+// spans are kept: older chunks are simply verified by walking again), so
+// a single huge session can never push the cache past its bound.
+const maxSessionChunkSpans = maxCachedChunkSpans / 4
 
 type chunkSpan struct {
 	index    uint64
@@ -68,6 +74,9 @@ func (c *chunkSpanCache) get(id identity.Quadruple) []chunkSpan {
 }
 
 func (c *chunkSpanCache) put(id identity.Quadruple, spans []chunkSpan) {
+	if len(spans) > maxSessionChunkSpans {
+		spans = append([]chunkSpan(nil), spans[len(spans)-maxSessionChunkSpans:]...)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.m == nil {

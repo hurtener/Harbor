@@ -376,6 +376,9 @@ func (d *driver) AppendTurnIf(ctx context.Context, id identity.Identity, row tur
 		}
 	}()
 
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return turns.TurnRow{}, err
+	}
 	// 1. STORE-LOCAL erasure fence first, always: an erased session
 	//    admits no turn write (checked in the same tx as the write).
 	fenced, err := scopeFenced(ctx, tx, id)
@@ -488,6 +491,9 @@ func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.
 		}
 	}()
 
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return turns.TurnRow{}, err
+	}
 	// 1. The store-local erasure fence is checked in the same
 	//    transaction as the write (no race between check and write).
 	fenced, err := scopeFenced(ctx, tx, id)
@@ -530,6 +536,16 @@ func (d *driver) mutate(ctx context.Context, id identity.Identity, turnID turns.
 	next.Version = curVersion + 1
 	if err := writeRowAndChildren(ctx, tx, id, next); err != nil {
 		return turns.TurnRow{}, err
+	}
+	if sealed {
+		// A sealed row is never pending completion (cleared with the
+		// seal), and a sealed root turn needs no routing any more.
+		if _, err := tx.ExecContext(ctx, clearPendingSQL, id.TenantID, id.UserID, id.SessionID, string(turnID)); err != nil {
+			return turns.TurnRow{}, fmt.Errorf("sessions/turns/sqlite: clear pending completion: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, pruneRoutesSQL, id.TenantID, id.UserID, id.SessionID, string(turnID)); err != nil {
+			return turns.TurnRow{}, fmt.Errorf("sessions/turns/sqlite: prune routes: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -809,6 +825,9 @@ func (d *driver) SaveCheckpoint(ctx context.Context, id identity.Identity, seq u
 		}
 	}()
 
+	if err := checkWriteFence(ctx, tx); err != nil {
+		return err
+	}
 	// A fenced (erased) session must never advance its checkpoint — no
 	// resurrection after replay / restart.
 	fenced, err := scopeFenced(ctx, tx, id)
@@ -870,6 +889,11 @@ func (d *driver) DeleteScope(ctx context.Context, id identity.Identity) (int, er
 	// child activity / App rows) and the per-session state. The erasure
 	// FENCE table and the SNAPSHOT generation table are never deleted.
 	deleted := 0
+	// The materializer's persisted routes go with the session (routing
+	// metadata, not counted as projection records).
+	if _, err := tx.ExecContext(ctx, deleteRoutesScopeSQL, id.TenantID, id.UserID, id.SessionID); err != nil {
+		return 0, fmt.Errorf("sessions/turns/sqlite: erase routes: %w", err)
+	}
 	for _, del := range []string{deleteActivityScopeSQL, deleteAppsScopeSQL, deleteRowsScopeSQL, deleteSessionStateSQL} {
 		res, err := tx.ExecContext(ctx, del, id.TenantID, id.UserID, id.SessionID)
 		if err != nil {

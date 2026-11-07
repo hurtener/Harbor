@@ -365,6 +365,53 @@ type PostgresMigrationSpec struct {
 	Subsystem       string
 	RequiredTables  []string
 	RequiredColumns map[string][]string
+	// PreviousContracts lists the superseded schema contracts, oldest
+	// first. A store whose identity row still carries a previous contract
+	// is accepted ONLY at a schema_version that contract described
+	// (ThroughVersion), and the migration that moves it past that version
+	// rewrites the identity's contract in the same transaction — a
+	// validated, transactional transition instead of an identity mismatch
+	// on every database the previous release created.
+	PreviousContracts []PostgresContractRevision
+}
+
+// PostgresContractRevision is one superseded store contract: the required
+// schema a release expected for databases at schema_version <=
+// ThroughVersion.
+type PostgresContractRevision struct {
+	ThroughVersion  int64
+	RequiredTables  []string
+	RequiredColumns map[string][]string
+}
+
+// contractSpecForVersion returns the contract (as a spec) that describes a
+// store at schema_version v: the oldest previous contract covering v, or the
+// current one.
+func contractSpecForVersion(spec PostgresMigrationSpec, v int64) PostgresMigrationSpec {
+	for _, rev := range spec.PreviousContracts {
+		if v <= rev.ThroughVersion {
+			return PostgresMigrationSpec{Subsystem: spec.Subsystem, RequiredTables: rev.RequiredTables, RequiredColumns: rev.RequiredColumns}
+		}
+	}
+	return PostgresMigrationSpec{Subsystem: spec.Subsystem, RequiredTables: spec.RequiredTables, RequiredColumns: spec.RequiredColumns}
+}
+
+func contractForVersion(spec PostgresMigrationSpec, v int64) string {
+	return contractChecksum(contractSpecForVersion(spec, v))
+}
+
+func validateContractHistory(spec PostgresMigrationSpec, migs []migration, prefix string) error {
+	var last int64 = -1
+	for _, rev := range spec.PreviousContracts {
+		if rev.ThroughVersion <= last {
+			return fmt.Errorf("%s: previous contracts for subsystem %q are not strictly ascending by through-version", prefix, spec.Subsystem)
+		}
+		if len(migs) > 0 && rev.ThroughVersion >= int64(migs[len(migs)-1].version) {
+			return fmt.Errorf("%s: previous contract through-version %d for subsystem %q is not below the newest migration %d", prefix, rev.ThroughVersion, spec.Subsystem, migs[len(migs)-1].version)
+		}
+		last = rev.ThroughVersion
+	}
+	return nil
 }
 
 var knownPostgresSubsystems = map[string]struct{}{
@@ -409,6 +456,9 @@ func RunPostgresNamed(ctx context.Context, db *sql.DB, migrationsFS fs.FS, spec 
 	}
 	if len(migs) == 0 {
 		return fmt.Errorf("%s: no migrations found in embedded migrations/ — package mis-built", errPrefix)
+	}
+	if err := validateContractHistory(spec, migs, errPrefix); err != nil {
+		return err
 	}
 	if resolvedMode == ModeVerify {
 		return verifyNamedPostgres(ctx, db, migs, spec, errPrefix)
@@ -481,14 +531,15 @@ func RunPostgresNamed(ctx context.Context, db *sql.DB, migrationsFS fs.FS, spec 
 			}
 			continue
 		}
-		if _, adopted := legacy[m.version]; adopted && hasRequiredSchema(spec, observed, columns) {
-			if err := recordNamedMigration(ctx, conn, spec.Subsystem, m, checksum, errPrefix); err != nil {
+		contract := contractForVersion(spec, int64(m.version))
+		if _, adopted := legacy[m.version]; adopted && hasRequiredSchema(contractSpecForVersion(spec, int64(m.version)), observed, columns) {
+			if err := recordNamedMigrationContract(ctx, conn, spec.Subsystem, m, checksum, contract, errPrefix); err != nil {
 				return err
 			}
 			continue
 		}
 		body := strings.ReplaceAll(m.body, "schema_migrations", legacyMirrorName(spec.Subsystem))
-		if err := applyNamedPostgres(ctx, conn, spec.Subsystem, m, checksum, body, errPrefix); err != nil {
+		if err := applyNamedPostgresContract(ctx, conn, spec.Subsystem, m, checksum, body, contract, errPrefix); err != nil {
 			return err
 		}
 	}
@@ -605,11 +656,15 @@ func validateNamedLedger(applied map[int]namedLedgerRow, migs []migration, spec 
 }
 
 func ensureStoreIdentity(ctx context.Context, conn *sql.Conn, spec PostgresMigrationSpec, expectedAppliedVersion int64, prefix string) error {
-	contract := contractChecksum(spec)
+	contract := contractForVersion(spec, expectedAppliedVersion)
 	var schemaVersion int64
 	var observed string
 	err := conn.QueryRowContext(ctx, `SELECT schema_version, contract_checksum_sha256 FROM harbor_store_identity WHERE subsystem = $1`, spec.Subsystem).Scan(&schemaVersion, &observed)
 	if err == nil {
+		// The identity must carry exactly the contract that describes its
+		// recorded schema version: the current contract, or — for a store a
+		// previous release created and this one has not migrated yet — the
+		// previous contract covering that version.
 		if observed != contract {
 			return fmt.Errorf("%s: store identity mismatch for subsystem %q: ledger contract_checksum_sha256=%s, binary contract_checksum_sha256=%s", prefix, spec.Subsystem, observed, contract)
 		}
@@ -812,6 +867,11 @@ func validateLegacyShape(spec PostgresMigrationSpec, applied map[int]namedLedger
 	if hasRequiredSchema(spec, observed, columns) {
 		return nil
 	}
+	for _, rev := range spec.PreviousContracts {
+		if hasRequiredSchema(PostgresMigrationSpec{Subsystem: spec.Subsystem, RequiredTables: rev.RequiredTables, RequiredColumns: rev.RequiredColumns}, observed, columns) {
+			return nil
+		}
+	}
 	foreign := make([]string, 0)
 	for table := range observed {
 		owner, known := knownSubsystemTables[table]
@@ -843,6 +903,12 @@ func sortedVersions(values map[int]struct{}) []int {
 }
 
 func recordNamedMigration(ctx context.Context, conn *sql.Conn, subsystem string, m migration, checksum, prefix string) error {
+	return recordNamedMigrationContract(ctx, conn, subsystem, m, checksum, "", prefix)
+}
+
+// recordNamedMigrationContract is recordNamedMigration that also moves the
+// store identity to contract (when nonempty) in the same transaction.
+func recordNamedMigrationContract(ctx context.Context, conn *sql.Conn, subsystem string, m migration, checksum, contract, prefix string) error {
 	// Legacy adoption is bookkeeping-only, but it still changes three pieces
 	// of migration authority. Keep the transaction on the conn that already
 	// owns the subsystem advisory lock: a restart must observe either all
@@ -861,7 +927,7 @@ func recordNamedMigration(ctx context.Context, conn *sql.Conn, subsystem string,
 	if _, err := tx.ExecContext(ctx, `INSERT INTO harbor_schema_migrations (subsystem, version, filename, checksum_sha256) VALUES ($1, $2, $3, $4) ON CONFLICT (subsystem, version) DO NOTHING`, subsystem, m.version, m.name, checksum); err != nil {
 		return fmt.Errorf("%s: record namespaced migration %s: %w", prefix, m.name, err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE harbor_store_identity SET schema_version = $2, updated_at = NOW() WHERE subsystem = $1`, subsystem, m.version); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE harbor_store_identity SET schema_version = $2, contract_checksum_sha256 = COALESCE(NULLIF($3, ''), contract_checksum_sha256), updated_at = NOW() WHERE subsystem = $1`, subsystem, m.version, contract); err != nil {
 		return fmt.Errorf("%s: update harbor_store_identity for %q: %w", prefix, subsystem, err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, m.version); err != nil {
@@ -874,7 +940,10 @@ func recordNamedMigration(ctx context.Context, conn *sql.Conn, subsystem string,
 	return nil
 }
 
-func applyNamedPostgres(ctx context.Context, conn *sql.Conn, subsystem string, m migration, checksum, body, prefix string) error {
+// applyNamedPostgresContract applies one migration and moves the store
+// identity to contract (the contract describing m.version) in the same
+// transaction.
+func applyNamedPostgresContract(ctx context.Context, conn *sql.Conn, subsystem string, m migration, checksum, body, contract, prefix string) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("%s: begin migration %s: %w", prefix, m.name, err)
@@ -891,7 +960,7 @@ func applyNamedPostgres(ctx context.Context, conn *sql.Conn, subsystem string, m
 	if _, err := tx.ExecContext(ctx, `INSERT INTO harbor_schema_migrations (subsystem, version, filename, checksum_sha256) VALUES ($1, $2, $3, $4)`, subsystem, m.version, m.name, checksum); err != nil {
 		return fmt.Errorf("%s: record namespaced migration %s: %w", prefix, m.name, err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE harbor_store_identity SET schema_version = $2, updated_at = NOW() WHERE subsystem = $1`, subsystem, m.version); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE harbor_store_identity SET schema_version = $2, contract_checksum_sha256 = COALESCE(NULLIF($3, ''), contract_checksum_sha256), updated_at = NOW() WHERE subsystem = $1`, subsystem, m.version, contract); err != nil {
 		return fmt.Errorf("%s: update harbor_store_identity for %q: %w", prefix, subsystem, err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, m.version); err != nil {

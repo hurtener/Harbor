@@ -56,12 +56,22 @@ func TestGetPersisted_FallsBackToPersistedRecord(t *testing.T) {
 	if _, err := eng.GetPersisted(ctx, "task-remote"); err == nil || errors.Is(err, tasks.ErrNotFound) {
 		t.Fatalf("backend failure: %v; want a loud non-NotFound error", err)
 	}
-	// An in-memory task is served from memory as before.
+	be.mu.Lock()
+	be.loadErr = nil
+	be.mu.Unlock()
+	// A task in memory without a persisted record is served from memory.
 	h, err := eng.Spawn(ctx, tasks.SpawnRequest{Identity: owner, Kind: tasks.KindForeground, Query: "local"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
 	if got, err := eng.GetPersisted(ctx, h.ID); err != nil || got.Query != "local" {
 		t.Fatalf("GetPersisted of a local task = %+v, %v", got, err)
+	}
+	// A persisted record a peer advanced wins over the local copy.
+	be.mu.Lock()
+	be.persisted[h.ID] = &tasks.Task{ID: h.ID, Identity: owner, Query: "local", Status: tasks.StatusComplete}
+	be.mu.Unlock()
+	if got, err := eng.GetPersisted(ctx, h.ID); err != nil || got.Status != tasks.StatusComplete {
+		t.Fatalf("GetPersisted with a newer persisted record = %+v, %v; want the persisted record", got, err)
 	}
 }

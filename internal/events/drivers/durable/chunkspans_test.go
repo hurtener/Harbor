@@ -3,6 +3,7 @@ package durable
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -162,5 +163,29 @@ func TestChunkSpans_CorruptionAfterCachingStillFailsLoud(t *testing.T) {
 	})
 	if _, err := b.collectAboveSeek(context.Background(), &v, 0, 10, nil); !errors.Is(err, ErrIndexIntegrity) {
 		t.Fatalf("seek over a corrupted cached chunk = %v; want ErrIndexIntegrity", err)
+	}
+}
+
+// TestChunkSpans_CacheBoundHoldsForOneHugeSession: one session's spans
+// never push the cache past its bound; the newest window is kept.
+func TestChunkSpans_CacheBoundHoldsForOneHugeSession(t *testing.T) {
+	var c chunkSpanCache
+	huge := make([]chunkSpan, 2*maxCachedChunkSpans)
+	for i := range huge {
+		huge[i] = chunkSpan{index: uint64(i)}
+	}
+	c.put(sid("huge"), huge)
+	if c.entries > maxCachedChunkSpans {
+		t.Fatalf("cache holds %d spans; bound is %d", c.entries, maxCachedChunkSpans)
+	}
+	got := c.get(sid("huge"))
+	if len(got) != maxSessionChunkSpans || got[len(got)-1].index != uint64(len(huge)-1) {
+		t.Fatalf("kept %d spans ending at %d; want the newest %d", len(got), got[len(got)-1].index, maxSessionChunkSpans)
+	}
+	for i := range 10 {
+		c.put(sid(fmt.Sprintf("s%d", i)), huge)
+		if c.entries > maxCachedChunkSpans {
+			t.Fatalf("cache holds %d spans after %d sessions; bound is %d", c.entries, i+1, maxCachedChunkSpans)
+		}
 	}
 }

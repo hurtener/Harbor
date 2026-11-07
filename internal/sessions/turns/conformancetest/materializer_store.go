@@ -24,6 +24,9 @@ import (
 //   - Repair_FlagListFillSettle
 //   - Repair_KeysetPaging_AcrossSessions
 //   - Repair_Fenced_And_NotFound
+//   - Fence_StaleGenerationRejectsEveryWrite
+//   - PendingCompletion_MarkListClearedBySeal
+//   - Routes_SaveLoadPruneErase
 func RunMaterializerStore(t *testing.T, factory Factory) {
 	t.Helper()
 	open := func(t *testing.T) (turns.Store, turns.MaterializerStore) {
@@ -41,6 +44,111 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		t.Cleanup(cancel)
 		return c
 	}
+
+	runFenceSuite(t, open)
+
+	t.Run("Routes_SaveLoadPruneErase", func(t *testing.T) {
+		s, ms := open(t)
+		c := context.Background()
+		id := triple("t-route", "u", "s")
+		other := triple("t-route", "u", "s-other")
+		if _, err := s.AppendTurnIf(c, id, freshRow("root", id)); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		for _, r := range []turns.TaskRoute{
+			{TaskID: "root", RunID: "run-explicit", RootTaskID: "root", EventSeq: 1},
+			{TaskID: "child", ParentTaskID: "root", RunID: "run-child", RootTaskID: "root", EventSeq: 2},
+			{TaskID: "other-root", RunID: "run-reused", RootTaskID: "other-root", EventSeq: 3},
+			{TaskID: "later", RunID: "run-reused", RootTaskID: "later", EventSeq: 9},
+		} {
+			if err := ms.SaveTaskRoute(c, id, r); err != nil {
+				t.Fatalf("save %s: %v", r.TaskID, err)
+			}
+		}
+		// An upsert without a run keeps the bound run.
+		if err := ms.SaveTaskRoute(c, id, turns.TaskRoute{TaskID: "child", ParentTaskID: "root", EventSeq: 2}); err != nil {
+			t.Fatalf("re-save: %v", err)
+		}
+		if r, ok, err := ms.LoadTaskRoute(c, id, "child"); err != nil || !ok || r.ParentTaskID != "root" || r.RunID != "run-child" || r.RootTaskID != "root" {
+			t.Fatalf("child route = %+v %v %v", r, ok, err)
+		}
+		if r, ok, _ := ms.LoadRunRoute(c, id, "run-explicit"); !ok || r.TaskID != "root" {
+			t.Fatalf("run route = %+v %v", r, ok)
+		}
+		if r, ok, _ := ms.LoadRunRoute(c, id, "run-reused"); !ok || r.TaskID != "later" {
+			t.Fatalf("reused run resolves to %+v; want the most recent binding", r)
+		}
+		if _, ok, _ := ms.LoadTaskRoute(c, other, "child"); ok {
+			t.Fatalf("a route leaked across sessions")
+		}
+		cur, _ := s.GetTurn(c, id, "root")
+		sealed := cur
+		sealed.Status = turns.StatusCancelled
+		if _, err := s.SealTurnIf(c, id, "root", cur.Version, sealed); err != nil {
+			t.Fatalf("seal: %v", err)
+		}
+		if _, ok, _ := ms.LoadTaskRoute(c, id, "child"); ok {
+			t.Fatalf("routes of a sealed root survived the seal")
+		}
+		if _, ok, _ := ms.LoadTaskRoute(c, id, "later"); !ok {
+			t.Fatalf("an unrelated root's route was pruned")
+		}
+		if _, err := s.DeleteScope(c, id); err != nil {
+			t.Fatalf("erase: %v", err)
+		}
+		if _, ok, _ := ms.LoadTaskRoute(c, id, "later"); ok {
+			t.Fatalf("routes survived the session erasure")
+		}
+		if err := s.FenceSession(c, id); err != nil {
+			t.Fatalf("fence: %v", err)
+		}
+		if err := ms.SaveTaskRoute(c, id, turns.TaskRoute{TaskID: "x"}); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Fatalf("fenced route save: %v", err)
+		}
+	})
+
+	t.Run("PendingCompletion_MarkListClearedBySeal", func(t *testing.T) {
+		s, ms := open(t)
+		c := context.Background()
+		id := triple("t-pend", "u", "s")
+		for _, turn := range []string{"p1", "p2"} {
+			if _, err := s.AppendTurnIf(c, id, freshRow(turn, id)); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+			if err := ms.MarkPendingCompletion(c, id, turns.TurnID(turn)); err != nil {
+				t.Fatalf("mark %s: %v", turn, err)
+			}
+		}
+		keys, err := ms.ListPendingCompletions(c, turns.IdentityRepairKey{}, 10)
+		if err != nil || len(keys) != 2 {
+			t.Fatalf("pending = %+v, %v; want both rows", keys, err)
+		}
+		if page, _ := ms.ListPendingCompletions(c, keys[0], 10); len(page) != 1 || page[0] != keys[1] {
+			t.Fatalf("keyset page after %+v = %+v", keys[0], page)
+		}
+		cur, _ := s.GetTurn(c, id, "p1")
+		sealed := cur
+		sealed.Status = turns.StatusComplete
+		sealed.Answer = turns.Answer{State: turns.AnswerStateEmpty, Complete: turns.CompletenessComplete}
+		if _, err := s.SealTurnIf(c, id, "p1", cur.Version, sealed); err != nil {
+			t.Fatalf("seal: %v", err)
+		}
+		if err := ms.MarkPendingCompletion(c, id, "p1"); err != nil {
+			t.Fatalf("mark sealed (no-op): %v", err)
+		}
+		if keys, _ := ms.ListPendingCompletions(c, turns.IdentityRepairKey{}, 10); len(keys) != 1 || keys[0].TurnID != "p2" {
+			t.Fatalf("pending after seal = %+v; want only p2", keys)
+		}
+		if err := ms.MarkPendingCompletion(c, id, "missing"); !errors.Is(err, turns.ErrTurnNotFound) {
+			t.Fatalf("missing: %v", err)
+		}
+		if err := s.FenceSession(c, id); err != nil {
+			t.Fatalf("fence: %v", err)
+		}
+		if err := ms.MarkPendingCompletion(c, id, "p2"); !errors.Is(err, turns.ErrErasureFenced) {
+			t.Fatalf("fenced: %v", err)
+		}
+	})
 
 	t.Run("Lease_Exclusive_RenewAndRelease", func(t *testing.T) {
 		_, ms := open(t)
@@ -263,6 +371,75 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		}
 		if _, _, err := ms.RepairTurnIdentity(c, id, "r", turns.IdentityFill{QueryPresent: true, Query: "q"}); !errors.Is(err, turns.ErrErasureFenced) {
 			t.Fatalf("fenced repair: %v; want ErrErasureFenced", err)
+		}
+	})
+}
+
+// runFenceSuite pins the lease write fence: after the lease changes
+// hands, every write carrying the former tenure's fence is refused, the new
+// tenure's writes succeed, and a renewal keeps the generation.
+func runFenceSuite(t *testing.T, open func(t *testing.T) (turns.Store, turns.MaterializerStore)) {
+	t.Run("Fence_StaleGenerationRejectsEveryWrite", func(t *testing.T) {
+		s, ms := open(t)
+		c := context.Background()
+		id := triple("t-fence-gen", "u", "s")
+		a, err := ms.AcquireMaterializerLease(c, "holder-a", time.Minute)
+		if err != nil || !a.Held {
+			t.Fatalf("A acquire: %+v %v", a, err)
+		}
+		if r, _ := ms.AcquireMaterializerLease(c, "holder-a", time.Minute); r.Generation != a.Generation {
+			t.Fatalf("renewal moved the generation %d -> %d", a.Generation, r.Generation)
+		}
+		ctxA := turns.WithWriteFence(c, turns.WriteFence{Holder: "holder-a", Generation: a.Generation})
+		if _, err := s.AppendTurnIf(ctxA, id, repairRow("r1", id)); err != nil {
+			t.Fatalf("append under the live fence: %v", err)
+		}
+		if err := ms.ReleaseMaterializerLease(c, "holder-a"); err != nil {
+			t.Fatalf("release: %v", err)
+		}
+		b, err := ms.AcquireMaterializerLease(c, "holder-b", time.Minute)
+		if err != nil || !b.Held || b.Generation == a.Generation {
+			t.Fatalf("B acquire = %+v %v; want a new generation", b, err)
+		}
+		cur, err := s.GetTurn(c, id, "r1")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		writes := map[string]func(context.Context) error{
+			"AppendTurnIf": func(x context.Context) error { _, err := s.AppendTurnIf(x, id, repairRow("r2", id)); return err },
+			"UpdateTurnIf": func(x context.Context) error { _, err := s.UpdateTurnIf(x, id, "r1", cur.Version, cur); return err },
+			"SealTurnIf": func(x context.Context) error {
+				sealed := cur
+				sealed.Status = turns.StatusCancelled
+				_, err := s.SealTurnIf(x, id, "r1", cur.Version, sealed)
+				return err
+			},
+			"SaveCheckpoint": func(x context.Context) error { return s.SaveCheckpoint(x, id, 99) },
+			"RepairTurnIdentity": func(x context.Context) error {
+				_, _, err := ms.RepairTurnIdentity(x, id, "r1", turns.IdentityFill{QueryPresent: true, Query: "q"})
+				return err
+			},
+			"SaveMaterializerCursor": func(x context.Context) error { return ms.SaveMaterializerCursor(x, "holder-a", 50) },
+			"SaveTaskRoute":          func(x context.Context) error { return ms.SaveTaskRoute(x, id, turns.TaskRoute{TaskID: "r1"}) },
+			"MarkPendingCompletion":  func(x context.Context) error { return ms.MarkPendingCompletion(x, id, "r1") },
+		}
+		for name, w := range writes {
+			if err := w(ctxA); !errors.Is(err, turns.ErrLeaseNotHeld) {
+				t.Fatalf("%s under a superseded fence: %v; want ErrLeaseNotHeld", name, err)
+			}
+		}
+		if got, _ := s.GetTurn(c, id, "r1"); got.Version != cur.Version || got.Query.Complete != turns.CompletenessUnavailable {
+			t.Fatalf("a fenced-out write changed the row: %+v", got)
+		}
+		if cp, _ := s.LoadCheckpoint(c, id); cp == 99 {
+			t.Fatalf("a fenced-out checkpoint landed")
+		}
+		ctxB := turns.WithWriteFence(c, turns.WriteFence{Holder: "holder-b", Generation: b.Generation})
+		if _, err := s.UpdateTurnIf(ctxB, id, "r1", cur.Version, cur); err != nil {
+			t.Fatalf("write under the new fence: %v", err)
+		}
+		if err := s.SaveCheckpoint(ctxB, id, 7); err != nil {
+			t.Fatalf("checkpoint under the new fence: %v", err)
 		}
 	})
 }

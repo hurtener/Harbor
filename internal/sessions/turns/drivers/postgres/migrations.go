@@ -20,11 +20,23 @@ var migrationsFS embed.FS
 func runMigrations(ctx context.Context, db *sql.DB, dsn string, mode sqlmigrate.Mode) error {
 	return sqlmigrate.RunPostgresNamed(ctx, db, migrationsFS, sqlmigrate.PostgresMigrationSpec{
 		Subsystem:      "sessions.turns",
-		RequiredTables: []string{"turn_rows", "turn_sessions", "turn_materializer"},
+		RequiredTables: []string{"turn_rows", "turn_sessions", "turn_materializer", "turn_routes"},
 		RequiredColumns: map[string][]string{
-			"turn_rows":         {"tenant_id", "user_id", "session_id", "turn_id", "effective_agent_id", "sequence", "sealed", "version", "last_applied_event_seq", "row_json", "identity_repair"},
+			"turn_rows":         {"tenant_id", "user_id", "session_id", "turn_id", "effective_agent_id", "sequence", "sealed", "version", "last_applied_event_seq", "row_json", "identity_repair", "pending_complete"},
 			"turn_sessions":     {"tenant_id", "user_id", "session_id", "next_seq", "checkpoint", "snapshot", "truncated", "fenced"},
-			"turn_materializer": {"name", "holder", "lease_expires", "cursor"},
+			"turn_materializer": {"name", "holder", "lease_expires", "cursor", "generation"},
+			"turn_routes":       {"tenant_id", "user_id", "session_id", "task_id", "parent_task_id", "run_id", "root_task_id", "event_seq"},
 		},
+		// The v1.39-and-earlier contract (schema version 1). Stores that
+		// release created carry its identity until 0002 moves them to the
+		// current contract in its own transaction.
+		PreviousContracts: []sqlmigrate.PostgresContractRevision{{
+			ThroughVersion: 1,
+			RequiredTables: []string{"turn_rows", "turn_sessions"},
+			RequiredColumns: map[string][]string{
+				"turn_rows":     {"tenant_id", "user_id", "session_id", "turn_id", "effective_agent_id", "sequence", "sealed", "version", "last_applied_event_seq", "row_json"},
+				"turn_sessions": {"tenant_id", "user_id", "session_id", "next_seq", "checkpoint", "snapshot", "truncated", "fenced"},
+			},
+		}},
 	}, "turns/postgres", "harbor-turns-migrations", dsn, mode)
 }

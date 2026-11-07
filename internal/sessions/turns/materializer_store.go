@@ -19,9 +19,12 @@ var ErrLeaseNotHeld = errors.New("turns: materializer lease not held")
 // MaterializerStore is the durable coordination surface the turn
 // materializer needs on top of the row Store. Every production turns
 // driver (in-memory / SQLite / Postgres) implements it next to Store,
-// pinned by conformancetest.RunMaterializerStore. It carries three
-// bounded concerns, all GLOBAL to the store (not identity-scoped —
-// they are maintenance state of the one materializer, never data):
+// pinned by conformancetest.RunMaterializerStore. Beyond the lease,
+// cursor and repair queue below, it persists the durable recovery state
+// a resumed materializer needs for turns older than its cursor (pending
+// completion marks, task routes), and its drivers enforce the lease
+// write fence (WithWriteFence) on every projection write. Its core
+// concerns:
 //
 //   - The SINGLE-WRITER LEASE. Several runtime instances can share one
 //     durable projection (a rolling deploy overlaps the old and the new
@@ -77,6 +80,43 @@ type MaterializerStore interface {
 	// with ErrErasureFenced for a fenced session; ErrTurnNotFound when the
 	// row is not retained. Returns the stored row and whether it changed.
 	RepairTurnIdentity(ctx context.Context, id identity.Identity, turnID TurnID, fill IdentityFill) (TurnRow, bool, error)
+
+	// MarkPendingCompletion durably records that the row's complete seal
+	// is deferred until its answer source converges, so a restart or a
+	// takeover rebuilds the pending-completion queue from the store
+	// instead of from (possibly long past) events. A sealed row is a
+	// no-op; SealTurnIf clears the mark atomically with the seal.
+	// ErrTurnNotFound when the row is not retained, ErrErasureFenced for
+	// a fenced session.
+	MarkPendingCompletion(ctx context.Context, id identity.Identity, turnID TurnID) error
+
+	// ListPendingCompletions pages (keyset, like the repair queue) the
+	// rows carrying a pending-completion mark.
+	ListPendingCompletions(ctx context.Context, after IdentityRepairKey, limit int) ([]IdentityRepairKey, error)
+
+	// SaveTaskRoute upserts one task's routing binding (parent task, run
+	// id, root turn) so a materializer that resumes past the task's spawn
+	// event still routes its events exactly. Refused with
+	// ErrErasureFenced for a fenced session. Routes whose root turn seals
+	// are pruned with the seal; the session's erasure removes the rest.
+	SaveTaskRoute(ctx context.Context, id identity.Identity, r TaskRoute) error
+
+	// LoadTaskRoute reads the binding of one task (found=false if none).
+	LoadTaskRoute(ctx context.Context, id identity.Identity, taskID string) (TaskRoute, bool, error)
+
+	// LoadRunRoute reads the binding of the task most recently bound to
+	// runID (found=false if none).
+	LoadRunRoute(ctx context.Context, id identity.Identity, runID string) (TaskRoute, bool, error)
+}
+
+// TaskRoute is one persisted task routing binding.
+type TaskRoute struct {
+	TaskID       string
+	ParentTaskID string // "" = a root task
+	RunID        string // "" = none bound
+	RootTaskID   string // the root turn's task id ("" = not yet known)
+	// EventSeq is the spawn event's sequence (orders run rebinding).
+	EventSeq uint64
 }
 
 // MaterializerLease is the result of a lease acquisition attempt.
@@ -85,8 +125,40 @@ type MaterializerLease struct {
 	Held bool
 	// Holder is the current holder ("" when none).
 	Holder string
+	// Generation is the lease generation: it advances every time the
+	// lease changes hands (a takeover, or an acquisition after a
+	// release), never on a renewal. Writes fenced with an older
+	// generation are refused (see WithWriteFence).
+	Generation uint64
 	// Cursor is the persisted resume cursor (0 = none saved).
 	Cursor uint64
+}
+
+// WriteFence binds projection writes to one lease tenure: every write a
+// driver performs under a context carrying a fence checks, in the same
+// transaction as the write, that the lease row still names Holder at
+// Generation, and refuses with ErrLeaseNotHeld otherwise. A paused or
+// slow former holder therefore cannot write after a takeover, whatever
+// its own clock believes. Renewal alone cannot provide this.
+type WriteFence struct {
+	Holder     string
+	Generation uint64
+}
+
+type writeFenceKey struct{}
+
+// WithWriteFence returns ctx carrying the lease write fence.
+func WithWriteFence(ctx context.Context, f WriteFence) context.Context {
+	return context.WithValue(ctx, writeFenceKey{}, f)
+}
+
+// WriteFenceFrom returns the write fence ctx carries, if any. Drivers
+// implementing MaterializerStore honour it on AppendTurnIf, UpdateTurnIf,
+// SealTurnIf, SaveCheckpoint, RepairTurnIdentity and
+// SaveMaterializerCursor.
+func WriteFenceFrom(ctx context.Context) (WriteFence, bool) {
+	f, ok := ctx.Value(writeFenceKey{}).(WriteFence)
+	return f, ok
 }
 
 // IdentityRepairKey addresses one flagged row; it is also the keyset

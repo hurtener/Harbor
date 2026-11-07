@@ -159,7 +159,10 @@ func (m *Materializer) convergeQueued(ctx context.Context) error {
 		return nil // standby: the lease holder owns the projection
 	}
 	if len(m.pending) > 0 {
-		if err := m.convergePending(ctx, &Result{}); err != nil {
+		if err := m.convergePending(m.fencedCtx(ctx), &Result{}); err != nil {
+			if m.leaseLostLocked(ctx, err) {
+				return nil
+			}
 			return err
 		}
 	}

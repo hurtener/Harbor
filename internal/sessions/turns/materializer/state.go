@@ -323,3 +323,20 @@ func containsRune(s string, r rune) bool {
 	}
 	return false
 }
+
+// rootTaskOf returns the root task id taskID folds into when its ancestry
+// is known ("" otherwise).
+func (s *sessionState) rootTaskOf(taskID string) string {
+	cur := taskID
+	for range 128 {
+		parent, ok := s.tasks[cur]
+		if !ok {
+			return ""
+		}
+		if parent == "" {
+			return cur
+		}
+		cur = parent
+	}
+	return ""
+}

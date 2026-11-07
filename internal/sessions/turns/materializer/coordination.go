@@ -65,7 +65,8 @@ var errSpawnDeferred = errors.New("materializer: root spawn deferred until its t
 //     events after the saved cursor instead of the whole log. The saved
 //     cursor is held back to just before the oldest still-open turn
 //     (within a bounded lookback) so that turn's accumulators rebuild;
-//     an older open turn adopts its durable row on its next event;
+//     an older open turn is recovered from its persisted routes, durable
+//     row and pending-completion mark;
 //   - the bounded IDENTITY REPAIR pass over rows flagged with an
 //     unavailable query / agent.
 //
@@ -151,11 +152,15 @@ func (m *Materializer) ensureLeaseLocked(ctx context.Context) (bool, error) {
 		}
 		return false, nil
 	}
-	if !m.held {
+	if !m.held || lease.Generation != m.fence.Generation {
+		// A new tenure (first acquisition, or the lease changed hands in
+		// between): whatever this instance held in memory may be stale.
 		m.resetStateLocked(lease.Cursor)
 		m.held = true
+		m.fence = turns.WriteFence{Holder: m.holder, Generation: lease.Generation}
+		m.restorePending = true
 		m.log(ctx, slog.LevelInfo, "turns materializer acquired lease",
-			slog.String("holder", m.holder), slog.Uint64("resume_cursor", lease.Cursor))
+			slog.String("holder", m.holder), slog.Uint64("generation", lease.Generation), slog.Uint64("resume_cursor", lease.Cursor))
 	}
 	m.lastRenew = now
 	return true, nil
@@ -166,6 +171,7 @@ func (m *Materializer) ensureLeaseLocked(ctx context.Context) (bool, error) {
 // rebuilt from the persisted cursor if it ever takes the lease again.
 func (m *Materializer) loseLeaseLocked(ctx context.Context, holder string) {
 	m.held = false
+	m.fence = turns.WriteFence{}
 	m.resetStateLocked(0)
 	m.log(ctx, slog.LevelWarn, "turns materializer lost lease; standing by",
 		slog.String("holder", m.holder), slog.String("current_holder", holder))
@@ -199,7 +205,28 @@ func (m *Materializer) releaseLease() {
 		m.log(ctx, slog.LevelWarn, "turns materializer lease release failed", slog.Any("error", err))
 	}
 	m.held = false
+	m.fence = turns.WriteFence{}
 	m.resetStateLocked(0)
+}
+
+// fencedCtx binds ctx to the current lease tenure so every projection
+// write is refused by the store once the lease changed hands.
+func (m *Materializer) fencedCtx(ctx context.Context) context.Context {
+	if m.coord == nil || !m.held {
+		return ctx
+	}
+	return turns.WithWriteFence(ctx, m.fence)
+}
+
+// leaseLostLocked steps down when err reports a fenced-out write.
+func (m *Materializer) leaseLostLocked(ctx context.Context, err error) bool {
+	if m.coord == nil || !errors.Is(err, turns.ErrLeaseNotHeld) {
+		return false
+	}
+	if m.held {
+		m.loseLeaseLocked(ctx, "")
+	}
+	return true
 }
 
 // leaseTick is Run's lease cadence: renew (or, in standby, try to
@@ -256,7 +283,7 @@ func (m *Materializer) persistCursorLocked(ctx context.Context) (lost bool, err 
 	if r <= m.savedCursor {
 		return false, nil
 	}
-	if err := m.coord.SaveMaterializerCursor(ctx, m.holder, r); err != nil {
+	if err := m.coord.SaveMaterializerCursor(m.fencedCtx(ctx), m.holder, r); err != nil {
 		if errors.Is(err, turns.ErrLeaseNotHeld) {
 			m.loseLeaseLocked(ctx, "")
 			return true, nil
@@ -311,76 +338,199 @@ func (m *Materializer) clearSpawnMissLocked(id identity.Identity, taskID string)
 // adoption of open turns spawned before the resume cursor
 // ---------------------------------------------------------------------------
 
-// preRoute resolves the root turn an event folds into and, when this
-// instance resumed from a persisted cursor and the event names a root
-// task it never observed, ADOPTS the durable row as that turn: routing
-// is rebuilt from the row's own task/run binding and the accumulators
-// are seeded from the row (an overflowed activity window or a dropped
-// reasoning tail is frozen instead — the row keeps its exact stored
-// totals rather than recomputing them from a partial feed). Events at
-// or below the adopted row's last applied sequence are already
-// reflected in it. Returns the resolved turn (nil when unroutable).
+// canAdopt reports whether events may name tasks this instance never
+// observed spawning: it resumed from a persisted cursor.
+func (m *Materializer) canAdopt() bool { return m.coord != nil && m.resumeFloor > 0 }
+
+// saveRoute persists one task routing binding (coordinated only), so a
+// later instance resuming past the spawn still routes exactly.
+func (m *Materializer) saveRoute(ctx context.Context, sess *sessionState, r turns.TaskRoute) error {
+	if m.coord == nil {
+		return nil
+	}
+	if err := m.coord.SaveTaskRoute(ctx, sess.id, r); err != nil {
+		return fmt.Errorf("materializer: save route %s: %w", r.TaskID, err)
+	}
+	return nil
+}
+
+// markPending durably marks a deferred complete seal (coordinated only)
+// so a restart or takeover rebuilds the pending queue from the store.
+func (m *Materializer) markPending(ctx context.Context, sess *sessionState, ts *turnState) error {
+	if m.coord == nil {
+		return nil
+	}
+	if err := m.coord.MarkPendingCompletion(ctx, sess.id, turns.TurnID(ts.taskID)); err != nil {
+		if errors.Is(err, turns.ErrTurnNotFound) {
+			return nil
+		}
+		return fmt.Errorf("materializer: mark pending %s: %w", ts.taskID, err)
+	}
+	return nil
+}
+
+// preRoute resolves the root turn an event folds into. When this instance
+// resumed from a persisted cursor and the event names a task or run it
+// never observed spawning, the task's DURABLE ancestry is recovered first
+// (the persisted routes: task -> parent, run -> task), so child and
+// explicit-run events route exactly as they did before the restart. A
+// root row is adopted only through its persisted route or its own stored
+// run binding — never by guessing. Events at or below an adopted row's
+// last applied sequence are already reflected in it. Returns the resolved
+// turn (nil when unroutable).
 func (m *Materializer) preRoute(ctx context.Context, sess *sessionState, kind routeKind, key string) (*turnState, error) {
 	if key == "" {
 		return nil, nil
 	}
-	var candidate string
-	start := key
 	if kind == routeRun {
-		taskID, ok := sess.runs[key]
-		if !ok {
-			candidate = key // the stock root run id IS the root task id
-		} else {
-			start = taskID
+		if taskID, ok := sess.runs[key]; ok {
+			return m.resolveTask(ctx, sess, taskID)
 		}
-	}
-	if candidate == "" {
-		cur := start
-		for range 128 {
-			parent, ok := sess.tasks[cur]
-			if !ok {
-				candidate = cur
-				break
+		if !m.canAdopt() || sess.adoptMiss["run:"+key] {
+			return nil, nil
+		}
+		r, ok, err := m.coord.LoadRunRoute(ctx, sess.id, key)
+		if err != nil {
+			return nil, fmt.Errorf("materializer: load run route %s: %w", key, err)
+		}
+		if ok {
+			ts, err := m.ensureKnownTask(ctx, sess, r.TaskID, 0, false)
+			if err != nil || ts == nil {
+				return ts, err
 			}
+			if _, bound := sess.runs[key]; !bound {
+				if err := sess.validateTaskRoute(r.TaskID, sess.tasks[r.TaskID], key, false); err == nil {
+					sess.commitTaskRoute(r.TaskID, sess.tasks[r.TaskID], key, false)
+				}
+			}
+			return ts, nil
+		}
+		// A root row persisted before routes existed: adopt it only when
+		// its OWN stored run binding is exactly this run.
+		ts, err := m.adoptRootRow(ctx, sess, key, key)
+		if err == nil && ts == nil {
+			m.noteAdoptMiss(sess, "run:"+key)
+		}
+		return ts, err
+	}
+	return m.resolveTask(ctx, sess, key)
+}
+
+// resolveTask walks the task's known ancestry to its root turn,
+// recovering an unknown ancestor's durable route when allowed.
+func (m *Materializer) resolveTask(ctx context.Context, sess *sessionState, taskID string) (*turnState, error) {
+	cur := taskID
+	for range 128 {
+		parent, ok := sess.tasks[cur]
+		if !ok {
+			if !m.canAdopt() {
+				return nil, nil
+			}
+			return m.ensureKnownTask(ctx, sess, taskID, 0, false)
+		}
+		if parent == "" {
+			return sess.turns[turns.TurnID(cur)], nil
+		}
+		cur = parent
+	}
+	return nil, nil
+}
+
+// ensureKnownTask registers taskID and its ancestors in the session's
+// routing index from their persisted routes and adopts the root turn's
+// durable row. force skips the resumed-from-cursor precondition (the
+// pending-queue restore). Returns the root turn (nil when the ancestry or
+// the row cannot be proven).
+func (m *Materializer) ensureKnownTask(ctx context.Context, sess *sessionState, taskID string, depth int, force bool) (*turnState, error) {
+	if depth > 128 || taskID == "" || m.coord == nil || (!force && !m.canAdopt()) {
+		return nil, nil
+	}
+	if _, ok := sess.tasks[taskID]; ok {
+		cur := taskID
+		for range 128 {
+			parent := sess.tasks[cur]
 			if parent == "" {
 				return sess.turns[turns.TurnID(cur)], nil
 			}
+			if _, ok := sess.tasks[parent]; !ok {
+				return m.ensureKnownTask(ctx, sess, parent, depth+1, force)
+			}
 			cur = parent
 		}
-	}
-	if candidate == "" || m.resumeFloor == 0 || hasPipe(candidate) {
 		return nil, nil
 	}
-	if ts, ok := sess.turns[turns.TurnID(candidate)]; ok {
-		return ts, nil
-	}
-	if sess.adoptMiss[candidate] {
+	if sess.adoptMiss[taskID] {
 		return nil, nil
 	}
-	row, err := m.proj.Get(ctx, sess.id, turns.TurnID(candidate))
+	r, ok, err := m.coord.LoadTaskRoute(ctx, sess.id, taskID)
 	if err != nil {
-		if errors.Is(err, turns.ErrTurnNotFound) {
-			m.noteAdoptMiss(sess, candidate)
+		return nil, fmt.Errorf("materializer: load task route %s: %w", taskID, err)
+	}
+	if ok && r.ParentTaskID != "" {
+		root, err := m.ensureKnownTask(ctx, sess, r.ParentTaskID, depth+1, force)
+		if err != nil {
+			return nil, err
+		}
+		if _, known := sess.tasks[r.ParentTaskID]; !known {
+			m.noteAdoptMiss(sess, taskID)
 			return nil, nil
 		}
-		return nil, fmt.Errorf("materializer: adopt turn %s: %w", candidate, err)
+		if err := sess.validateTaskRoute(taskID, r.ParentTaskID, r.RunID, false); err != nil {
+			m.noteAdoptMiss(sess, taskID)
+			return nil, nil
+		}
+		sess.commitTaskRoute(taskID, r.ParentTaskID, r.RunID, false)
+		return root, nil
 	}
-	if row.TaskID != "" && row.TaskID != candidate {
-		m.noteAdoptMiss(sess, candidate)
+	wantRun := ""
+	if ok {
+		wantRun = r.RunID
+	}
+	ts, err := m.adoptRootRow(ctx, sess, taskID, wantRun)
+	if err == nil && ts == nil {
+		m.noteAdoptMiss(sess, taskID)
+	}
+	return ts, err
+}
+
+// adoptRootRow adopts the durable row of a root turn this instance never
+// observed spawning. The row must exist under its own task id, and when
+// wantRun is set its stored run binding must be exactly wantRun. Routing
+// is rebuilt from the row's own binding and the accumulators are seeded
+// from the row (an overflowed activity window or a dropped reasoning tail
+// is frozen at the stored exact totals rather than recomputed from a
+// partial feed).
+func (m *Materializer) adoptRootRow(ctx context.Context, sess *sessionState, taskID, wantRun string) (*turnState, error) {
+	if hasPipe(taskID) {
+		return nil, nil
+	}
+	if ts, ok := sess.turns[turns.TurnID(taskID)]; ok {
+		return ts, nil
+	}
+	row, err := m.proj.Get(ctx, sess.id, turns.TurnID(taskID))
+	if err != nil {
+		if errors.Is(err, turns.ErrTurnNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("materializer: adopt turn %s: %w", taskID, err)
+	}
+	if row.TaskID != "" && row.TaskID != taskID {
 		return nil, nil
 	}
 	runID := row.RunID
 	if runID == "" {
-		runID = candidate
+		runID = taskID // a legacy row without a run binding: the stock derivation
 	}
-	derived := runID == candidate
-	if err := sess.validateTaskRoute(candidate, "", runID, derived); err != nil {
-		m.noteAdoptMiss(sess, candidate)
+	if wantRun != "" && runID != wantRun {
 		return nil, nil
 	}
-	sess.commitTaskRoute(candidate, "", runID, derived)
+	derived := runID == taskID
+	if err := sess.validateTaskRoute(taskID, "", runID, derived); err != nil {
+		return nil, nil
+	}
+	sess.commitTaskRoute(taskID, "", runID, derived)
 	ts := &turnState{
-		taskID:         candidate,
+		taskID:         taskID,
 		runID:          runID,
 		sealed:         row.Sealed,
 		adoptedThrough: row.LastAppliedEventSeq,
@@ -402,8 +552,41 @@ func (m *Materializer) preRoute(ctx context.Context, sess *sessionState, kind ro
 			}
 		}
 	}
-	sess.turns[turns.TurnID(candidate)] = ts
+	sess.turns[turns.TurnID(taskID)] = ts
 	return ts, nil
+}
+
+// restorePendingLocked rebuilds the deferred-complete queue of a new
+// tenure from the durable pending marks, so a completion whose events are
+// behind the resume cursor still converges when its answer appears.
+func (m *Materializer) restorePendingLocked(ctx context.Context) error {
+	var after turns.IdentityRepairKey
+	for {
+		keys, err := m.coord.ListPendingCompletions(ctx, after, 256)
+		if err != nil {
+			return fmt.Errorf("materializer: list pending completions: %w", err)
+		}
+		for _, k := range keys {
+			after = k
+			sess, err := m.sessionForLocked(ctx, k.Identity)
+			if err != nil {
+				return err
+			}
+			if sess.fenced {
+				continue
+			}
+			ts, err := m.ensureKnownTask(ctx, sess, string(k.TurnID), 0, true)
+			if err != nil {
+				return err
+			}
+			if ts != nil && !ts.terminal() {
+				m.enqueuePending(sess, ts)
+			}
+		}
+		if len(keys) < 256 {
+			return nil
+		}
+	}
 }
 
 func (m *Materializer) noteAdoptMiss(sess *sessionState, taskID string) {
@@ -448,7 +631,11 @@ func (m *Materializer) repairPassLocked(ctx context.Context) {
 			return
 		}
 		m.repairAfter = k
-		if err := m.repairOne(ctx, k); err != nil && !errors.Is(err, turns.ErrErasureFenced) && !errors.Is(err, turns.ErrTurnNotFound) {
+		err := m.repairOne(m.fencedCtx(ctx), k)
+		if m.leaseLostLocked(ctx, err) {
+			return
+		}
+		if err != nil && !errors.Is(err, turns.ErrErasureFenced) && !errors.Is(err, turns.ErrTurnNotFound) {
 			m.log(ctx, slog.LevelWarn, "turns identity repair failed",
 				slog.String("session_id", k.Identity.SessionID), slog.String("task_id", string(k.TurnID)), slog.Any("error", err))
 		}

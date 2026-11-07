@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
@@ -182,6 +183,35 @@ func fieldNested(m map[string]any, key string) map[string]any {
 // (unrecognised type, incomplete identity, unknown session, fenced
 // session, sealed turn, unroutable run), or a wrapped error for a hard
 // failure that must abort the pass.
+// sessionForLocked returns the session's working state, creating it on
+// first contact. The durable erasure probe is consulted ONCE at creation:
+// an erased session is never re-materialized merely because the
+// in-memory state restarted (the restart gate mirroring the projector's
+// Reconcile); it is returned fenced.
+func (m *Materializer) sessionForLocked(ctx context.Context, id identity.Identity) (*sessionState, error) {
+	if sess := m.sessions[id]; sess != nil {
+		return sess, nil
+	}
+	if m.probe != nil {
+		erased, perr := m.probe.Erased(ctx, id)
+		if perr != nil {
+			return nil, fmt.Errorf("materializer: erasure probe for %s: %w", id.SessionID, perr)
+		}
+		if erased {
+			sess := &sessionState{id: id, fenced: true, runs: map[string]string{}, derivedRuns: map[string]bool{}, taskRuns: map[string]string{}, tasks: map[string]string{}, turns: map[turns.TurnID]*turnState{}}
+			m.sessions[id] = sess
+			return sess, nil
+		}
+	}
+	sess, err := m.newSessionState(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("materializer: open session %s: %w", id.SessionID, err)
+	}
+	m.sessions[id] = sess
+	m.passTouched++
+	return sess, nil
+}
+
 func (m *Materializer) applyEvent(ctx context.Context, ev events.Event) (applied, skipped bool, err error) {
 	if !recognizedType(ev.Type) {
 		return false, true, nil
@@ -195,32 +225,9 @@ func (m *Materializer) applyEvent(ctx context.Context, ev events.Event) (applied
 		return false, true, nil
 	}
 
-	sess := m.sessions[id]
-	if sess == nil {
-		// First contact with this session: materialize the root
-		// foreground spawn (which creates the session) or create the
-		// session for a routed child/tool event. The durable erasure
-		// probe is consulted ONCE at creation: an erased session is
-		// never re-materialized from sequence zero (the restart gate
-		// mirroring the projector's Reconcile).
-		if m.probe != nil {
-			erased, perr := m.probe.Erased(ctx, id)
-			if perr != nil {
-				return false, false, fmt.Errorf("materializer: erasure probe for %s: %w", id.SessionID, perr)
-			}
-			if erased {
-				sess = &sessionState{id: id, fenced: true, runs: map[string]string{}, tasks: map[string]string{}, turns: map[turns.TurnID]*turnState{}}
-				m.sessions[id] = sess
-				return false, true, nil
-			}
-		}
-		created, err := m.newSessionState(ctx, id)
-		if err != nil {
-			return false, false, fmt.Errorf("materializer: open session %s: %w", id.SessionID, err)
-		}
-		sess = created
-		m.sessions[id] = sess
-		m.passTouched++
+	sess, err := m.sessionForLocked(ctx, id)
+	if err != nil {
+		return false, false, err
 	}
 	if sess.fenced {
 		return false, true, nil
@@ -399,10 +406,20 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 		// run route is registered only when the event explicitly names it;
 		// the stock root-foreground TaskID-as-RunID derivation below is
 		// deliberately not generalized to other task executors.
+		if _, ok := sess.tasks[parent]; !ok && parent != "" {
+			// The parent was spawned before this instance's resume
+			// cursor: recover its durable ancestry first.
+			if _, err := m.ensureKnownTask(ctx, sess, parent, 0, false); err != nil {
+				return false, err
+			}
+		}
 		if err := sess.validateTaskRoute(taskID, parent, runID, false); err != nil {
 			return false, err
 		}
 		sess.commitTaskRoute(taskID, parent, runID, false)
+		if err := m.saveRoute(ctx, sess, turns.TaskRoute{TaskID: taskID, ParentTaskID: parent, RunID: runID, RootTaskID: sess.rootTaskOf(parent), EventSeq: ev.Sequence}); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 	if hasPipe(taskID) {
@@ -528,6 +545,9 @@ func (m *Materializer) applyTaskSpawned(ctx context.Context, sess *sessionState,
 	}
 
 	sess.commitTaskRoute(taskID, parent, runID, derivedRunID)
+	if err := m.saveRoute(ctx, sess, turns.TaskRoute{TaskID: taskID, RunID: runID, RootTaskID: taskID, EventSeq: ev.Sequence}); err != nil {
+		return false, err
+	}
 	ts := &turnState{taskID: taskID, runID: runID}
 	m.open = append(m.open, openRef{ts: ts, spawnSeq: ev.Sequence})
 	if snap.InputsPresent {
@@ -637,6 +657,9 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 			return true, nil
 		}
 		m.enqueuePending(sess, ts)
+		if err := m.markPending(ctx, sess, ts); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
 	sealed, stillPending, err := m.completeSealProjection(ctx, sess, ts, runIDFromIdentity(ev.Identity), ev.Sequence)
@@ -645,6 +668,9 @@ func (m *Materializer) applyTaskCompleted(ctx context.Context, sess *sessionStat
 	}
 	if stillPending {
 		m.enqueuePending(sess, ts)
+		if err := m.markPending(ctx, sess, ts); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
 	if sealed {

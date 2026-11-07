@@ -128,7 +128,7 @@ func truncateTurns(t *testing.T, dsn string) {
 	defer func() { _ = db.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
 	defer cancel()
-	for _, tbl := range []string{"turn_rows", "turn_sessions", "turn_materializer"} {
+	for _, tbl := range []string{"turn_rows", "turn_sessions", "turn_materializer", "turn_routes"} {
 		if _, err := db.ExecContext(ctx, "TRUNCATE TABLE "+tbl); err != nil {
 			// Tables may not exist yet on the very first call (the
 			// first driver New() creates them via migrations); ignore
