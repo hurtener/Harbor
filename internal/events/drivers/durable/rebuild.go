@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/hurtener/Harbor/internal/events"
@@ -29,6 +30,9 @@ type RebuildSessionIndexOptions struct {
 	// WriterDrained must be true for Apply: every event writer for the
 	// store is stopped.
 	WriterDrained bool
+	// Force rebuilds an index that is not in integrity failure (absent,
+	// legacy, or a verifying v2 index). Without it such a rebuild is refused.
+	Force bool
 }
 
 // RebuildSessionIndexReport is the content-free outcome of a rebuild.
@@ -63,6 +67,12 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 	if opts.Apply && !opts.WriterDrained {
 		return report, fmt.Errorf("%w: apply requires explicit writer-drained acknowledgement", ErrRebuildRefused)
 	}
+	fenceKind := durableFenceKind(id.Identity)
+	if _, err := store.Load(ctx, sequenceAuthorityIdentity, fenceKind); err == nil {
+		return report, fmt.Errorf("%w: the session is fenced (erased or being erased)", ErrRebuildRefused)
+	} else if !errors.Is(err, state.ErrNotFound) {
+		return report, fmt.Errorf("load session fence: %w", err)
+	}
 	headExpectation := state.SlotExpectation{Identity: id, Kind: kindHead}
 	head, err := store.Load(ctx, id, kindHead)
 	switch {
@@ -75,12 +85,26 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 		report.CurrentIndex = "legacy"
 		if isIndexV2(head.Bytes) {
 			report.CurrentIndex = "v2_ok"
-			if _, decodeErr := decodeHeader(head.Bytes); decodeErr != nil {
+			if hdr, decodeErr := decodeHeader(head.Bytes); decodeErr != nil {
 				report.CurrentIndex = "v2_integrity_failure"
+			} else {
+				// Walk the whole verified chain: a corrupt or missing chunk
+				// is an integrity failure even when the header verifies.
+				view := indexView{id: id, hdr: hdr, exists: true}
+				walker := &bus{store: store, clock: realClock{}, logger: slog.New(slog.DiscardHandler)}
+				if _, _, walkErr := walker.collectBelow(ctx, &view, 0, 0, nil); walkErr != nil {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return report, ctxErr
+					}
+					report.CurrentIndex = "v2_integrity_failure"
+				}
 			}
 		}
 	}
 
+	if report.CurrentIndex != "v2_integrity_failure" && !opts.Force {
+		return report, fmt.Errorf("%w: the index is %s, not in integrity failure (use force to rebuild anyway)", ErrRebuildRefused, report.CurrentIndex)
+	}
 	b := &bus{store: store, clock: realClock{}}
 	var through, trimmedCount uint64
 	if summary, _, err := b.loadRetentionSummary(ctx, id); err != nil {
@@ -115,7 +139,22 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Seq < rows[j].Seq })
+	// The rebuilt chain starts above every existing chunk slot, so no slot a
+	// live (or corrupt) header may reference is touched before the header
+	// CAS; a failed CAS rolls the new slots back and leaves the session as it
+	// was.
+	oldChunks, err := store.ListKindForIdentity(ctx, id, kindChunkPrefix)
+	if err != nil {
+		return report, fmt.Errorf("list chunk slots: %w", err)
+	}
+	var base uint64
+	for _, rec := range oldChunks {
+		if index, ok := parseChunkKind(rec.Kind); ok && index >= base {
+			base = index + 1
+		}
+	}
 	hdr := newIndexHeader()
+	hdr.FirstChunk, hdr.NextChunk = base, base
 	if trimmedCount > 0 {
 		hdr.Trimmed = indexTrimmed{Count: trimmedCount, ThroughSeq: through}
 		hdr.LastSeq = through
@@ -128,15 +167,18 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 	if err != nil {
 		return report, err
 	}
-	report.Retained, report.Chunks = len(rows), hdr.NextChunk
+	report.Retained, report.Chunks = len(rows), hdr.NextChunk-hdr.FirstChunk
 	report.TrimmedCount, report.TrimmedThrough, report.TrimmedBodies = trimmedCount, through, len(trimmedBodies)
 	if !opts.Apply {
 		return report, nil
 	}
 
-	// Writers are drained: chunk slots are overwritten in place (their
-	// current generation as the expectation), then the header flips with a
-	// CAS on the generation inspected above.
+	var written []state.StateRecord
+	rollback := func() {
+		for _, w := range written {
+			_, _ = store.DeleteIf(context.WithoutCancel(ctx), state.SlotExpectation{Identity: id, Kind: w.Kind, ExpectedEventID: w.ID})
+		}
+	}
 	for start := 0; start < len(sealed); start += migrationPrewriteBatch {
 		batch := sealed[start:min(start+migrationPrewriteBatch, len(sealed))]
 		expectations := make([]state.SlotExpectation, len(batch))
@@ -144,41 +186,35 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 		for i, c := range batch {
 			raw, err := encodeChunk(c)
 			if err != nil {
+				rollback()
 				return report, err
 			}
 			kind := chunkKind(c.Index)
 			expectations[i] = state.SlotExpectation{Identity: id, Kind: kind}
-			if existing, err := store.Load(ctx, id, kind); err == nil {
-				expectations[i].ExpectedEventID = existing.ID
-			} else if !errors.Is(err, state.ErrNotFound) {
-				return report, fmt.Errorf("load chunk slot %d: %w", c.Index, err)
-			}
 			writes[i] = state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kind, Bytes: raw}
 		}
 		if err := store.SaveBatchIf(ctx, expectations, writes); err != nil {
+			rollback()
 			return report, fmt.Errorf("write rebuilt chunks: %w", err)
 		}
+		written = append(written, writes...)
 	}
-	if err := store.SaveIf(ctx, []state.SlotExpectation{headExpectation},
+	fenceExpectation := state.InternalSlotExpectation(sequenceAuthorityIdentity, fenceKind, "")
+	if err := store.SaveIf(ctx, []state.SlotExpectation{headExpectation, fenceExpectation},
 		state.StateRecord{ID: state.NewEventID(), Identity: id, Kind: kindHead, Bytes: headerBytes}); err != nil {
+		rollback()
 		if errors.Is(err, state.ErrConditionFailed) {
-			return report, fmt.Errorf("%w: the head changed during the rebuild; are all writers stopped?", ErrRebuildRefused)
+			return report, fmt.Errorf("%w: the head changed or the session was fenced during the rebuild; are all writers stopped? (nothing was changed)", ErrRebuildRefused)
 		}
-		return report, fmt.Errorf("write rebuilt header: %w", err)
+		return report, fmt.Errorf("write rebuilt header (rolled back): %w", err)
 	}
-	// Remove chunk slots the new index does not reference and trimmed
-	// bodies the sweeper had not deleted yet.
-	chunkRecs, err := store.ListKindForIdentity(ctx, id, kindChunkPrefix)
-	if err != nil {
-		return report, fmt.Errorf("list chunk slots: %w", err)
-	}
-	for _, rec := range chunkRecs {
-		if index, ok := parseChunkKind(rec.Kind); ok && index >= hdr.NextChunk {
-			if _, err := store.DeleteIf(ctx, state.SlotExpectation{Identity: id, Kind: rec.Kind, ExpectedEventID: rec.ID}); err != nil {
-				return report, fmt.Errorf("remove stale chunk %d: %w", index, err)
-			}
-			report.StaleChunks++
+	// Remove the old chunk slots and trimmed bodies the sweeper had not
+	// deleted yet.
+	for _, rec := range oldChunks {
+		if _, err := store.DeleteIf(ctx, state.SlotExpectation{Identity: id, Kind: rec.Kind, ExpectedEventID: rec.ID}); err != nil {
+			return report, fmt.Errorf("remove old chunk slot: %w", err)
 		}
+		report.StaleChunks++
 	}
 	for _, rec := range trimmedBodies {
 		if _, err := store.DeleteIf(ctx, state.SlotExpectation{Identity: id, Kind: rec.Kind, ExpectedEventID: rec.ID}); err != nil {

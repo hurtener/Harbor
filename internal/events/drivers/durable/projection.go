@@ -92,6 +92,7 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 	}
 	var cands []candidate
 	retentionGap := false
+	skippedCorrupt := false
 	for _, rec := range recs {
 		if err := ctx.Err(); err != nil {
 			return events.ProjectionPage{}, err
@@ -116,6 +117,7 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 				// its own reads and publishes keep failing loudly.
 				b.skipCorruptSession(ctx, rec.Identity, "projection page")
 				retentionGap = true
+				skippedCorrupt = true
 				continue
 			}
 			return events.ProjectionPage{}, fmt.Errorf("durable: projection page: index head (id=%s): %w", rec.ID, err)
@@ -134,6 +136,7 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 			if errors.Is(classifyErr, ErrIndexIntegrity) {
 				b.skipCorruptSession(ctx, rec.Identity, "projection page")
 				retentionGap = true
+				skippedCorrupt = true
 				continue
 			}
 			if classifyErr != nil {
@@ -214,7 +217,10 @@ func (b *bus) pageDurable(ctx context.Context, after uint64, limit int) (events.
 	matches = kept
 
 	quality := events.ProjectionCurrent
-	if hadOverflow {
+	// A skipped corrupt session's events were not examined, so the page
+	// cannot prove it reached the watermark: never report Current, or a
+	// projector would advance its checkpoint past them.
+	if hadOverflow || skippedCorrupt {
 		quality = events.ProjectionCatchingUp
 	}
 	if len(matches) > limit {

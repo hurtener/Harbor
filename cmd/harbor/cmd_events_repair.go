@@ -52,6 +52,7 @@ type rebuildIndexFlags struct {
 	user      string
 	session   string
 	apply     bool
+	force     bool
 	freezeAck bool
 	timeout   time.Duration
 }
@@ -65,10 +66,22 @@ func newRebuildSessionIndexCmd() *cobra.Command {
 entry bodies — the recovery for a session quarantined for failing index
 integrity checks. The default inspects and prints a content-free report.
 --apply requires --freeze-ack after every event writer for the store is
-stopped. The audit-retention cut is taken from the session's retention
-summary; trimmed bodies still present are excluded and removed. Payloads are
-never printed. The command opens the StateStore directly and never boots a
-Runtime or EventBus writer.`,
+stopped. Only a session whose index fails integrity checks is rebuilt unless
+--force is given; a fenced (erased or being erased) session is refused. The
+audit-retention cut is taken from the session's retention summary; trimmed
+bodies still present are excluded and removed. The rebuilt chunks are written
+to fresh slots and the header flips with one conditional write, so a failed
+apply changes nothing. Payloads are never printed. The command opens the
+StateStore directly and never boots a Runtime or EventBus writer.
+
+Memory: the session's entry bodies are read and its index rebuilt in memory;
+budget roughly 2-3x the session's total event-body size (hundreds of MB for a
+session with 100k+ events).
+
+Projections: while the session was quarantined, projection pages skipped it
+(reported as RetentionGap, never as current). After a rebuild, rebuild the
+turns materializer and observability rollups if they must include that
+session's events.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRebuildSessionIndex(cmd, flags)
@@ -80,6 +93,7 @@ Runtime or EventBus writer.`,
 	cmd.Flags().StringVar(&flags.user, "user", "", "session user id")
 	cmd.Flags().StringVar(&flags.session, "session", "", "session id")
 	cmd.Flags().BoolVar(&flags.apply, "apply", false, "write the rebuilt index (default: inspect only)")
+	cmd.Flags().BoolVar(&flags.force, "force", false, "rebuild even if the current index passes integrity checks")
 	cmd.Flags().BoolVar(&flags.freezeAck, "freeze-ack", false, "acknowledge that every event writer for the selected store is stopped (required for --apply)")
 	cmd.Flags().DurationVar(&flags.timeout, "timeout", flags.timeout, "maximum operation duration")
 	return cmd
@@ -103,6 +117,11 @@ func runRebuildSessionIndex(cmd *cobra.Command, flags rebuildIndexFlags) error {
 	if flags.apply && !flags.freezeAck {
 		return emitCLIError(cmd, CLIError{Subcommand: sub, Message: "--apply requires --freeze-ack after every event writer is stopped", Code: codeLegacyRepairRefused})
 	}
+	if flags.apply && driver == "postgres" {
+		if err := durable.ValidateLegacyRepairApplyDSN(flags.dsn); err != nil {
+			return emitCLIError(cmd, CLIError{Subcommand: sub, Message: err.Error(), Code: codeLegacyRepairRefused, Hint: "use a direct/session-affine PostgreSQL port 5432 DSN; transaction-pooled 6432 is read-only"})
+		}
+	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), flags.timeout)
 	defer cancel()
 	store, cleanup, err := openLegacyRepairStore(driver, flags.dsn)
@@ -111,7 +130,7 @@ func runRebuildSessionIndex(cmd *cobra.Command, flags rebuildIndexFlags) error {
 	}
 	defer cleanup()
 	id := identity.Quadruple{Identity: identity.Identity{TenantID: flags.tenant, UserID: flags.user, SessionID: flags.session}}
-	report, err := durable.RebuildSessionIndex(ctx, store, id, durable.RebuildSessionIndexOptions{Apply: flags.apply, WriterDrained: flags.freezeAck})
+	report, err := durable.RebuildSessionIndex(ctx, store, id, durable.RebuildSessionIndexOptions{Apply: flags.apply, WriterDrained: flags.freezeAck, Force: flags.force})
 	if err != nil {
 		code := codeLegacyRepairInternal
 		if errors.Is(err, durable.ErrRebuildRefused) {

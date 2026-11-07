@@ -104,8 +104,13 @@ func (d *deleteBudget) take(ctx context.Context) error {
 	return nil
 }
 
+// rowQualifies reports whether audit retention may trim r. Only audit.*
+// rows that are also bus-internal notices qualify: readers that page canonical
+// (non-internal) events never need a trimmed row, so a trim can never remove a
+// row a projection or list page still has to serve. A future non-internal
+// audit.* type is therefore kept, never trimmed.
 func rowQualifies(r indexRow, cutoff int64) bool {
-	return isAuditType(r.Type) && r.OccurredAt < cutoff
+	return isAuditType(r.Type) && r.Internal && r.OccurredAt < cutoff
 }
 
 func allQualify(rows []indexRow, cutoff int64) bool {

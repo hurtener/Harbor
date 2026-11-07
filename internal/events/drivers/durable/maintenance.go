@@ -9,12 +9,12 @@ package durable
 
 import (
 	"context"
-
-	"github.com/hurtener/Harbor/internal/identity"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/identity"
 )
 
 const (
