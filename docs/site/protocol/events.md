@@ -1784,9 +1784,9 @@ Payload `ToolsCatalogChangedPayload` — safe payload (delivered typed, verbatim
 
 | Wire key | Go type | Notes |
 |---|---|---|
-| `AgentID` | `string` |  |
-| `Scope` | `string` |  |
-| `Reason` | `string` |  |
+| `agent_id` | `string` |  |
+| `scope` | `string` |  |
+| `reason` | `string` |  |
 
 ## `topology.changed`
 

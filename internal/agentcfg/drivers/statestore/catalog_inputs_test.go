@@ -2,6 +2,7 @@ package statestore_test
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -290,5 +291,27 @@ func TestCatalogInputs_DeletionGenerationSurvivesSlotDeletion(t *testing.T) {
 	}
 	if len(afterFence.Fences) != len(afterPointer.Fences) || afterFence.DeletionGeneration == afterPointer.DeletionGeneration {
 		t.Fatalf("fence cycle not visible: fences %d→%d deletion %q→%q", len(afterPointer.Fences), len(afterFence.Fences), afterPointer.DeletionGeneration, afterFence.DeletionGeneration)
+	}
+}
+
+// TestToolsCatalogChangedPayload_WireShape pins the documented snake_case
+// payload keys.
+func TestToolsCatalogChangedPayload_WireShape(t *testing.T) {
+	raw, err := json.Marshal(agentcfg.ToolsCatalogChangedPayload{AgentID: "a", Scope: agentcfg.CatalogChangeScopeUser, Reason: agentcfg.CatalogChangeReasonDiscovery})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"agent_id": "a", "scope": "user", "reason": "discovery"}
+	if len(got) != len(want) {
+		t.Fatalf("payload keys = %s, want exactly agent_id/scope/reason", raw)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("payload = %s, want %s=%v", raw, k, v)
+		}
 	}
 }

@@ -497,16 +497,17 @@ const (
 
 // ToolsCatalogChangedPayload is the typed payload for
 // EventTypeToolsCatalogChanged. SafePayload — an agent id and two closed
-// enum values; no tool names, descriptors, revisions or config content.
+// enum values; no tool names, descriptors, revisions or config content. The
+// wire keys are the documented snake_case `agent_id`, `scope`, `reason`.
 type ToolsCatalogChangedPayload struct {
 	events.SafeSealed
 	// AgentID is the agent whose catalog projection may have changed (a
 	// registration identity, NOT an isolation principal).
-	AgentID string
+	AgentID string `json:"agent_id"`
 	// Scope is CatalogChangeScopeAgent or CatalogChangeScopeUser.
-	Scope string
+	Scope string `json:"scope"`
 	// Reason is one of the CatalogChangeReason* values.
-	Reason string
+	Reason string `json:"reason"`
 }
 
 // CatalogChangeNotifier is the optional Registry surface that publishes the
