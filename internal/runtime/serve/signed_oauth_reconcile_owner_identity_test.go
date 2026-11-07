@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -8,13 +9,16 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,9 +28,11 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/state"
@@ -37,28 +43,73 @@ import (
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
-// TestSignedOAuthMCPReconcile_AgentPairPreparesAsOwnerUnderEndUserRun drives
-// the production attacher, provider builder and token-exchange driver against
-// a broker that, like a governing platform, refuses an ordinary mint whose
-// subject differs from the signed pair's actor. A run-start reconcile of an
-// agent-tier pair triggered by an END USER's run must prepare the private
-// connection as the frozen pair owner (subject == actor), so the attach
-// succeeds. A live planner call by that end user must still exchange as the
-// end user, receive the governed refusal, and retry with a bound operation.
-func TestSignedOAuthMCPReconcile_AgentPairPreparesAsOwnerUnderEndUserRun(t *testing.T) {
+const (
+	signedOwnerBearer   = "fixture-owner-bearer"
+	signedOwnerAudience = "owner-audience"
+)
+
+type signedOwnerSubject struct {
+	TenantID  string `json:"tenant_id"`
+	UserID    string `json:"user_id"`
+	SessionID string `json:"session_id"`
+}
+
+type signedOwnerExchange struct {
+	subject   signedOwnerSubject
+	actor     signedOwnerSubject
+	operation string
+	refused   bool
+}
+
+// signedOwnerFixture is a production-path graph: real attacher, provider
+// builder and token-exchange driver against a broker that, like a governing
+// platform, refuses an ordinary mint whose subject differs from the signed
+// pair's actor, and an MCP endpoint that requires the exchanged bearer.
+type signedOwnerFixture struct {
+	t        *testing.T
+	now      time.Time
+	owner    identity.Identity
+	endUser  identity.Identity
+	key      *rsa.PrivateKey
+	mcpURL   string
+	dsn      string
+	bus      events.EventBus
+	builder  config.ToolsConfig
+	redactor *auditpatterns.Driver
+
+	exchangeMu sync.Mutex
+	exchanges  []signedOwnerExchange
+
+	// stall, when armed, blocks every request to the /stall/ endpoint until
+	// it is closed (or the request ends).
+	stallMu sync.Mutex
+	stall   chan struct{}
+	stalled chan struct{}
+}
+
+type signedOwnerRuntime struct {
+	registry    agentcfg.Registry
+	store       state.StateStore
+	catalog     tools.ToolCatalog
+	mcpRegistry *mcpdrv.Registry
+	attacher    *MCPConnectionAttacher
+	installer   *OAuthProviderInstaller
+	reconciler  *agentcfgprotocol.SignedOAuthMCPReconciler
+	service     *agentcfgprotocol.Service
+}
+
+func newSignedOwnerFixture(t *testing.T) *signedOwnerFixture {
+	t.Helper()
 	t.Setenv("HARBOR_SIGNED_OWNER_KEK", "0303030303030303030303030303030303030303030303030303030303030303")
 	t.Setenv("HARBOR_SIGNED_OWNER_BROKER_AUTH", "fixture-owner-broker-auth")
-	const (
-		providerName   = "owner-provider"
-		connectionName = "owner-signed"
-		agentID        = "agent"
-		bearer         = "fixture-owner-bearer"
-	)
-	now := time.Now().UTC()
-	owner := identity.Identity{TenantID: "tenant", UserID: "pair-owner", SessionID: "owner-session"}
-	endUser := identity.Identity{TenantID: "tenant", UserID: "end-user", SessionID: "end-session"}
-	physicalName := mcpdrv.PhysicalServerName(connectionName, toolauth.Owner{Tenant: owner.TenantID, Agent: agentID})
-
+	f := &signedOwnerFixture{
+		t:       t,
+		now:     time.Now().UTC(),
+		owner:   identity.Identity{TenantID: "tenant", UserID: "pair-owner", SessionID: "owner-session"},
+		endUser: identity.Identity{TenantID: "tenant", UserID: "end-user", SessionID: "end-session"},
+		dsn:     filepath.Join(t.TempDir(), "signed-owner-identity.sqlite"),
+		stalled: make(chan struct{}, 8),
+	}
 	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "owner-fixture", Version: "v0"}, nil)
 	mcpsdk.AddTool(mcpServer, &mcpsdk.Tool{
 		Name: "echo", Description: "echo", InputSchema: map[string]any{"type": "object", "additionalProperties": false},
@@ -67,32 +118,34 @@ func TestSignedOAuthMCPReconcile_AgentPairPreparesAsOwnerUnderEndUserRun(t *test
 	})
 	mcpHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mcpServer }, nil)
 	tlsMCP := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/mcp" || req.Header.Get("Authorization") != "Bearer "+bearer {
+		if strings.HasPrefix(req.URL.Path, "/stall/") {
+			f.stallMu.Lock()
+			stall := f.stall
+			f.stallMu.Unlock()
+			if stall != nil {
+				select {
+				case f.stalled <- struct{}{}:
+				default:
+				}
+				select {
+				case <-stall:
+				case <-req.Context().Done():
+					return
+				}
+			}
+		}
+		if !strings.HasSuffix(req.URL.Path, "/mcp") || req.Header.Get("Authorization") != "Bearer "+signedOwnerBearer {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		mcpHandler.ServeHTTP(w, req)
 	}))
 	t.Cleanup(tlsMCP.Close)
+	f.mcpURL = tlsMCP.URL
 	oldDefaultTransport := http.DefaultTransport
 	http.DefaultTransport = tlsMCP.Client().Transport
 	t.Cleanup(func() { http.DefaultTransport = oldDefaultTransport })
 
-	type subjectClaims struct {
-		TenantID  string `json:"tenant_id"`
-		UserID    string `json:"user_id"`
-		SessionID string `json:"session_id"`
-	}
-	type exchange struct {
-		subject   subjectClaims
-		actor     subjectClaims
-		operation string
-		refused   bool
-	}
-	var (
-		exchangeMu sync.Mutex
-		exchanges  []exchange
-	)
 	brokerMux := http.NewServeMux()
 	brokerServer := httptest.NewServer(brokerMux)
 	t.Cleanup(brokerServer.Close)
@@ -111,14 +164,14 @@ func TestSignedOAuthMCPReconcile_AgentPairPreparesAsOwnerUnderEndUserRun(t *test
 			return
 		}
 		form := maps.Clone(req.Form)
-		var ex exchange
+		var ex signedOwnerExchange
 		if !decodeOwnerExchangeField(form.Get("subject_token"), &ex.subject) || !decodeOwnerExchangeField(form.Get("actor_token"), &ex.actor) {
 			http.Error(w, "invalid subject or actor", http.StatusBadRequest)
 			return
 		}
 		ex.operation = form.Get("app_operation")
-		response := map[string]any{"access_token": bearer, "token_type": "Bearer", "expires_in": 300,
-			"scope": "read", "audience": "owner-audience", "resource": tlsMCP.URL}
+		response := map[string]any{"access_token": signedOwnerBearer, "token_type": "Bearer", "expires_in": 300,
+			"scope": "read", "audience": signedOwnerAudience, "resource": tlsMCP.URL}
 		switch {
 		case ex.operation != "":
 			sum := sha256.Sum256([]byte(ex.operation))
@@ -127,9 +180,9 @@ func TestSignedOAuthMCPReconcile_AgentPairPreparesAsOwnerUnderEndUserRun(t *test
 		case ex.subject != ex.actor:
 			ex.refused = true
 		}
-		exchangeMu.Lock()
-		exchanges = append(exchanges, ex)
-		exchangeMu.Unlock()
+		f.exchangeMu.Lock()
+		f.exchanges = append(f.exchanges, ex)
+		f.exchangeMu.Unlock()
 		if ex.refused {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
@@ -138,23 +191,18 @@ func TestSignedOAuthMCPReconcile_AgentPairPreparesAsOwnerUnderEndUserRun(t *test
 		}
 		_ = json.NewEncoder(w).Encode(response)
 	})
-	snapshot := func() []exchange {
-		exchangeMu.Lock()
-		defer exchangeMu.Unlock()
-		return append([]exchange(nil), exchanges...)
-	}
 
-	redactor := auditpatterns.New()
+	f.redactor = auditpatterns.New()
 	bus, err := eventsinmem.New(config.EventsConfig{
 		Driver: "inmem", MaxSubscribersPerSession: 8, SubscriberBufferSize: 32,
 		IdleTimeout: time.Minute, DropWindow: time.Second,
-	}, redactor)
+	}, f.redactor)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-	dsn := filepath.Join(t.TempDir(), "signed-owner-identity.sqlite")
-	builderConfig := config.ToolsConfig{
+	f.bus = bus
+	f.builder = config.ToolsConfig{
 		OAuthTokenKEKEnv: "HARBOR_SIGNED_OWNER_KEK",
 		OAuthCredentialBrokers: []config.ToolOAuthCredentialBrokerConfig{{
 			Name: "broker", TokenURL: brokerServer.URL + "/token", CredentialURL: brokerServer.URL + "/credential",
@@ -162,142 +210,337 @@ func TestSignedOAuthMCPReconcile_AgentPairPreparesAsOwnerUnderEndUserRun(t *test
 			AllowedDownstreamHosts: []string{"boot-ceiling.invalid"},
 		}},
 	}
-	type runtimeGraph struct {
-		registry   agentcfg.Registry
-		store      state.StateStore
-		catalog    tools.ToolCatalog
-		attacher   *MCPConnectionAttacher
-		installer  *OAuthProviderInstaller
-		reconciler *agentcfgprotocol.SignedOAuthMCPReconciler
-	}
-	openRuntime := func() runtimeGraph {
-		store, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = store.Close(context.Background()) })
-		registry, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: store, Bus: bus})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = registry.Close(context.Background()) })
-		builder, err := toolauth.NewProviderBuilder(context.Background(), builderConfig, toolauth.BuildDeps{
-			State: store, Bus: bus, Redactor: redactor, Coordinator: pauseresume.New(pauseresume.WithBus(bus)),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		catalog := tools.NewCatalog()
-		providerSet := toolauth.NewProviderSet(nil)
-		attacher := NewMCPConnectionAttacher(catalog, mcpdrv.NewRegistry(), bus,
-			slog.New(slog.NewTextHandler(io.Discard, nil)), owner, nil, providerSet, nil)
-		t.Cleanup(func() { _ = attacher.Close(context.Background()) })
-		installer := NewOAuthProviderInstaller(builder, providerSet, false, nil)
-		reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(registry, store, attacher, attacher, installer)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return runtimeGraph{registry: registry, store: store, catalog: catalog, attacher: attacher, installer: installer, reconciler: reconciler}
-	}
-
-	// Runtime A: the owner registers the agent-tier pair (the initial push).
-	first := openRuntime()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	f.key, err = rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalURL, sink, err := agentcfg.CanonicalOAuthMCPURL(tlsMCP.URL + "/mcp")
+	return f
+}
+
+func (f *signedOwnerFixture) snapshot() []signedOwnerExchange {
+	f.exchangeMu.Lock()
+	defer f.exchangeMu.Unlock()
+	return append([]signedOwnerExchange(nil), f.exchanges...)
+}
+
+func (f *signedOwnerFixture) armStall() chan struct{} {
+	release := make(chan struct{})
+	f.stallMu.Lock()
+	f.stall = release
+	f.stallMu.Unlock()
+	return release
+}
+
+// openRuntime opens an independent runtime graph over the shared database.
+// wrap optionally decorates its state store (fault injection).
+func (f *signedOwnerFixture) openRuntime(wrap func(state.StateStore) state.StateStore) signedOwnerRuntime {
+	t := f.t
+	t.Helper()
+	base, err := statesqlite.New(config.StateConfig{Driver: "sqlite", DSN: f.dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close(context.Background()) })
+	store := base
+	if wrap != nil {
+		store = wrap(base)
+	}
+	registry, err := agentcfg.Open(context.Background(), agentcfg.Config{}, agentcfg.Deps{State: store, Bus: f.bus})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close(context.Background()) })
+	builder, err := toolauth.NewProviderBuilder(context.Background(), f.builder, toolauth.BuildDeps{
+		State: store, Bus: f.bus, Redactor: f.redactor, Coordinator: pauseresume.New(pauseresume.WithBus(f.bus)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := tools.NewCatalog()
+	providerSet := toolauth.NewProviderSet(nil)
+	mcpRegistry := mcpdrv.NewRegistry()
+	attacher := NewMCPConnectionAttacher(catalog, mcpRegistry, f.bus,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), f.owner, nil, providerSet, nil)
+	t.Cleanup(func() { _ = attacher.Close(context.Background()) })
+	installer := NewOAuthProviderInstaller(builder, providerSet, false, nil)
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(registry, store, attacher, attacher, installer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := agentcfgprotocol.NewService(registry,
+		agentcfgprotocol.WithBus(f.bus),
+		agentcfgprotocol.WithConnectionPreparer(attacher),
+		agentcfgprotocol.WithConnectionDetacher(attacher),
+		agentcfgprotocol.WithProviderInstaller(installer),
+		agentcfgprotocol.WithSignedOAuthMCPOperationState(store),
+		agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
+			"broker": {Broker: "broker", Issuer: "issuer", Keys: productionSignedCapabilityKeySet{key: &f.key.PublicKey},
+				ScopeCeiling: []string{"read"}, MaxAuthorityLifetime: 10 * time.Minute},
+		}),
+		agentcfgprotocol.WithClock(func() time.Time { return f.now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signedOwnerRuntime{registry: registry, store: store, catalog: catalog, mcpRegistry: mcpRegistry,
+		attacher: attacher, installer: installer, reconciler: reconciler, service: service}
+}
+
+// register pushes one agent-tier pair as the owner.
+func (f *signedOwnerFixture) register(rt signedOwnerRuntime, agentID, providerName, connectionName, path, jti string) error {
+	t := f.t
+	t.Helper()
+	canonicalURL, sink, err := agentcfg.CanonicalOAuthMCPURL(f.mcpURL + path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	connection := agentcfg.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL}
 	claims := agentcfg.SignedOAuthMCPAuthorityClaims{
-		TenantID: owner.TenantID, UserID: owner.UserID, SessionID: owner.SessionID, AgentID: agentID,
+		TenantID: f.owner.TenantID, UserID: f.owner.UserID, SessionID: f.owner.SessionID, AgentID: agentID,
 		Broker: "broker", ProviderName: providerName, CapabilityRevision: "capability-revision-1",
 		URLDigest: agentcfg.OAuthMCPURLDigest(canonicalURL), SinkDigest: agentcfg.OAuthMCPURLDigest(sink),
-		Audience: "owner-audience", Scopes: []string{"read"}, Connection: connection,
+		Audience: signedOwnerAudience, Scopes: []string{"read"}, Connection: connection,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: "issuer", ID: "jti-owner", IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+			Issuer: "issuer", ID: jti, IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(10 * time.Minute)),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = "kid"
-	envelope, err := token.SignedString(key)
+	envelope, err := token.SignedString(f.key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := agentcfgprotocol.NewService(first.registry,
-		agentcfgprotocol.WithBus(bus),
-		agentcfgprotocol.WithConnectionPreparer(first.attacher),
-		agentcfgprotocol.WithConnectionDetacher(first.attacher),
-		agentcfgprotocol.WithProviderInstaller(first.installer),
-		agentcfgprotocol.WithSignedOAuthMCPOperationState(first.store),
-		agentcfgprotocol.WithSignedOAuthMCPCapabilityAuthorities(map[string]agentcfgprotocol.SignedOAuthMCPCapabilityAuthority{
-			"broker": {Broker: "broker", Issuer: "issuer", Keys: productionSignedCapabilityKeySet{key: &key.PublicKey},
-				ScopeCeiling: []string{"read"}, MaxAuthorityLifetime: 10 * time.Minute},
-		}),
-		agentcfgprotocol.WithClock(func() time.Time { return now }),
-	)
+	ownerCtx, err := identity.WithVerified(context.Background(), f.owner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownerCtx, err := identity.WithVerified(context.Background(), owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.RegisterOAuthMCPCapability(ownerCtx, prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
-		Identity: prototypes.IdentityScope{Tenant: owner.TenantID, User: owner.UserID, Session: owner.SessionID},
+	_, err = rt.service.RegisterOAuthMCPCapability(ownerCtx, prototypes.AgentConfigRegisterOAuthMCPCapabilityRequest{
+		Identity: prototypes.IdentityScope{Tenant: f.owner.TenantID, User: f.owner.UserID, Session: f.owner.SessionID},
 		AgentID:  agentID, ProviderName: providerName, Broker: "broker", Audience: claims.Audience, Scopes: []string{"read"},
 		Connection:        prototypes.SignedOAuthMCPConnectionDescriptor{Name: connectionName, URL: canonicalURL},
 		AuthorityEnvelope: envelope,
-	}); err != nil {
-		t.Fatalf("owner registration: %v", err)
-	}
-	registered := len(snapshot())
+	})
+	return err
+}
 
-	// Runtime B has no local handle. Its run-start reconcile runs in an END
-	// USER's run context, exactly as the run loop builds it.
-	second := openRuntime()
-	endUserQuad := identity.Quadruple{Identity: endUser, RunID: "end-user-run"}
-	runCtx, err := identity.WithVerified(context.Background(), endUser)
+// endUserRun builds the run context the run loop builds for an end user.
+func (f *signedOwnerFixture) endUserRun() (context.Context, identity.Quadruple) {
+	t := f.t
+	t.Helper()
+	q := identity.Quadruple{Identity: f.endUser, RunID: "end-user-run"}
+	ctx, err := identity.WithVerified(context.Background(), f.endUser)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runCtx, err = identity.WithRun(runCtx, endUser, endUserQuad.RunID); err != nil {
+	if ctx, err = identity.WithRun(ctx, f.endUser, q.RunID); err != nil {
 		t.Fatal(err)
 	}
+	return ctx, q
+}
+
+// TestSignedOAuthMCPReconcile_AgentPairPreparesAsOwnerUnderEndUserRun: a
+// run-start reconcile of an agent-tier pair triggered by an END USER's run
+// must prepare the private connection as the frozen pair owner (subject ==
+// actor), so the attach succeeds. A live planner call by that end user must
+// still exchange as the end user, receive the governed refusal, and retry
+// with a bound operation.
+func TestSignedOAuthMCPReconcile_AgentPairPreparesAsOwnerUnderEndUserRun(t *testing.T) {
+	const agentID, connectionName = "agent", "owner-signed"
+	f := newSignedOwnerFixture(t)
+	first := f.openRuntime(nil)
+	if err := f.register(first, agentID, "owner-provider", connectionName, "/mcp", "jti-owner"); err != nil {
+		t.Fatalf("owner registration: %v", err)
+	}
+	registered := len(f.snapshot())
+
+	// Runtime B has no local handle; its run-start reconcile runs in an END
+	// USER's run context.
+	second := f.openRuntime(nil)
+	runCtx, endUserQuad := f.endUserRun()
 	if err := second.reconciler.ReconcileSignedOAuthMCPCapability(runCtx, endUserQuad, agentID); err != nil {
 		t.Fatalf("agent-tier reconcile under end-user run: %v", err)
 	}
-	preparation := snapshot()[registered:]
+	preparation := f.snapshot()[registered:]
 	if len(preparation) == 0 {
 		t.Fatal("reconcile made no preparation exchange")
 	}
 	for _, ex := range preparation {
-		if ex.refused || ex.operation != "" || ex.subject.UserID != owner.UserID || ex.subject.SessionID != owner.SessionID || ex.subject != ex.actor {
+		if ex.refused || ex.operation != "" || ex.subject.UserID != f.owner.UserID || ex.subject.SessionID != f.owner.SessionID || ex.subject != ex.actor {
 			t.Fatalf("preparation exchange = %+v, want subject == frozen owner actor", ex)
 		}
 	}
+	physicalName := mcpdrv.PhysicalServerName(connectionName, toolauth.Owner{Tenant: f.owner.TenantID, Agent: agentID})
 	tool, ok := second.catalog.Resolve(physicalName + "_echo")
 	if !ok {
 		t.Fatal("agent-tier pair did not attach under the end-user run")
 	}
 
-	// A live planner call keeps the end user's identity: the ordinary mint is
-	// refused as governed and the trusted invocation retries bound.
-	beforeLive := len(snapshot())
+	beforeLive := len(f.snapshot())
 	callCtx := appoperation.WithAgentInvocation(tools.WithEffectiveAgentConfig(runCtx, agentID), agentID)
 	if _, err := tool.Invoke(callCtx, json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("live end-user call: %v", err)
 	}
-	live := snapshot()[beforeLive:]
+	live := f.snapshot()[beforeLive:]
 	if len(live) != 2 || !live[0].refused || live[0].operation != "" || live[1].refused || live[1].operation == "" {
 		t.Fatalf("live exchanges = %+v, want governed refusal then bound operation", live)
 	}
 	for _, ex := range live {
-		if ex.subject.UserID != endUser.UserID || ex.subject.SessionID != endUser.SessionID {
+		if ex.subject.UserID != f.endUser.UserID || ex.subject.SessionID != f.endUser.SessionID {
 			t.Fatalf("live exchange subject = %+v, want the end user", ex.subject)
 		}
+	}
+}
+
+// fenceCommitFailingStore fails the activation fence's transition to
+// committed, the window in which a published pair is live while the logical
+// Active read still returns the prior revision.
+type fenceCommitFailingStore struct {
+	state.StateStore
+	fail atomic.Bool
+}
+
+func (s *fenceCommitFailingStore) SaveIf(ctx context.Context, expectations []state.SlotExpectation, next state.StateRecord) error {
+	if s.fail.Load() && strings.HasPrefix(next.Kind, "agentcfg.signed_oauth_mcp.activation_fence") &&
+		bytes.Contains(next.Bytes, []byte(`"phase":"`+string(agentcfg.SignedOAuthMCPFenceCommitted)+`"`)) {
+		return errors.New("injected activation fence commit failure")
+	}
+	return s.StateStore.SaveIf(ctx, expectations, next)
+}
+
+// TestSignedOAuthMCPReconcile_GenericLegNeverDetachesPendingFencePair: a
+// signed pair whose publication succeeded but whose fence commit failed is
+// live while the logical revision still hides it. The generic run-start
+// detach leg (which now runs even after a signed failure) must not tear it
+// down.
+func TestSignedOAuthMCPReconcile_GenericLegNeverDetachesPendingFencePair(t *testing.T) {
+	const agentID, connectionName = "agent", "pending-fence"
+	f := newSignedOwnerFixture(t)
+	var faulty *fenceCommitFailingStore
+	rt := f.openRuntime(func(base state.StateStore) state.StateStore {
+		faulty = &fenceCommitFailingStore{StateStore: base}
+		return faulty
+	})
+	faulty.fail.Store(true)
+	if err := f.register(rt, agentID, "pending-provider", connectionName, "/mcp", "jti-pending"); err == nil {
+		t.Fatal("fixture: fence commit failure did not surface")
+	}
+	ownerQuad := identity.Quadruple{Identity: f.owner}
+	if active, set, err := rt.registry.Active(context.Background(), ownerQuad, agentID, agentcfg.ConfigScopeAgent); err != nil {
+		t.Fatal(err)
+	} else if pairs, _ := active.Payload.EffectiveSignedOAuthMCPPairs(); set && len(pairs) != 0 {
+		t.Fatalf("fixture: logical Active already exposes the pair (%d)", len(pairs))
+	}
+	physicalName := mcpdrv.PhysicalServerName(connectionName, toolauth.Owner{Tenant: f.owner.TenantID, Agent: agentID})
+	if _, ok := rt.catalog.Resolve(physicalName + "_echo"); !ok {
+		t.Fatal("fixture: publication did not land before the fence failure")
+	}
+
+	runCtx, endUserQuad := f.endUserRun()
+	detacher := NewMCPConnectionDetacher(rt.catalog, rt.mcpRegistry, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	detached, _, err := projection.ReconcileConnections(runCtx, rt.registry, agentID, endUserQuad, detacher, nil, nil)
+	if err != nil {
+		t.Fatalf("generic reconcile: %v", err)
+	}
+	if detached != 0 {
+		t.Fatalf("generic leg detached %d connections", detached)
+	}
+	if _, ok := rt.catalog.Resolve(physicalName + "_echo"); !ok {
+		t.Fatal("generic leg tore down a published signed pair hidden by its pending fence")
+	}
+	// Defense in depth: even a direct generic deregister is refused.
+	if err := detacher.Detach(runCtx, connectionName, toolauth.Owner{Tenant: f.owner.TenantID, Agent: agentID}); !errors.Is(err, mcpdrv.ErrExactTeardownRequired) {
+		t.Fatalf("direct generic detach = %v, want exact-teardown refusal", err)
+	}
+	if _, ok := rt.catalog.Resolve(physicalName + "_echo"); !ok {
+		t.Fatal("direct generic detach tore down the signed pair")
+	}
+
+	// The signed reconciler still converges the fence once the store heals.
+	faulty.fail.Store(false)
+	if err := rt.reconciler.ReconcileSignedOAuthMCPCapability(runCtx, endUserQuad, agentID); err != nil {
+		t.Fatalf("signed reconcile after heal: %v", err)
+	}
+	if active, set, err := rt.registry.Active(context.Background(), ownerQuad, agentID, agentcfg.ConfigScopeAgent); err != nil || !set {
+		t.Fatalf("active after heal = %v %v", set, err)
+	} else if pairs, _ := active.Payload.EffectiveSignedOAuthMCPPairs(); len(pairs) != 1 {
+		t.Fatalf("healed active pairs = %d, want 1", len(pairs))
+	}
+}
+
+// TestSignedOAuthMCPReconcile_StalledOwnerDoesNotBlockOtherOwner: with the
+// production attacher, an owner whose downstream preparation stalls must not
+// hold up a different owner's reconcile, and a same-name waiter honours its
+// own cancellation.
+func TestSignedOAuthMCPReconcile_StalledOwnerDoesNotBlockOtherOwner(t *testing.T) {
+	const stalledAgent, healthyAgent = "agent-stalled", "agent-healthy"
+	f := newSignedOwnerFixture(t)
+	first := f.openRuntime(nil)
+	if err := f.register(first, stalledAgent, "stalled-provider", "stalled", "/stall/mcp", "jti-stalled"); err != nil {
+		t.Fatalf("register stalled: %v", err)
+	}
+	if err := f.register(first, healthyAgent, "healthy-provider", "healthy", "/mcp", "jti-healthy"); err != nil {
+		t.Fatalf("register healthy: %v", err)
+	}
+
+	second := f.openRuntime(nil)
+	release := f.armStall()
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	runCtx, endUserQuad := f.endUserRun()
+	stalledDone := make(chan error, 1)
+	go func() {
+		stalledDone <- second.reconciler.ReconcileSignedOAuthMCPCapability(runCtx, endUserQuad, stalledAgent)
+	}()
+	select {
+	case <-f.stalled:
+	case <-time.After(20 * time.Second):
+		t.Fatal("stalled owner's preparation never reached the downstream")
+	}
+
+	healthyDone := make(chan error, 1)
+	go func() {
+		healthyDone <- second.reconciler.ReconcileSignedOAuthMCPCapability(runCtx, endUserQuad, healthyAgent)
+	}()
+	select {
+	case err := <-healthyDone:
+		if err != nil {
+			t.Fatalf("healthy owner reconcile: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("healthy owner queued behind a stalled owner's preparation")
+	}
+	healthyName := mcpdrv.PhysicalServerName("healthy", toolauth.Owner{Tenant: f.owner.TenantID, Agent: healthyAgent})
+	if _, ok := second.catalog.Resolve(healthyName + "_echo"); !ok {
+		t.Fatal("healthy owner did not attach")
+	}
+
+	// A waiter for the SAME stalled connection honours its own deadline.
+	stalledOwner := toolauth.Owner{Tenant: f.owner.TenantID, Agent: stalledAgent}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := second.attacher.PrepareConnection(waitCtx, agentcfgprotocol.AttachRequest{
+		Identity: f.owner, AgentID: stalledAgent, Owner: stalledOwner, Name: "stalled",
+		Transport: agentcfg.MCPTransportHTTP, URL: f.mcpURL + "/stall/mcp",
+	}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("same-name waiter = %v, want its own deadline", err)
+	}
+
+	close(release)
+	released = true
+	select {
+	case err := <-stalledDone:
+		if err != nil {
+			t.Fatalf("stalled owner reconcile after release: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("stalled owner never finished after release")
+	}
+	if n := second.attacher.gates.len(); n != 0 {
+		t.Fatalf("attach gates retained = %d, want 0", n)
 	}
 }
 

@@ -612,9 +612,12 @@ func (p *PreparedAttachment) ActivateUnder(ctx context.Context, admit func(conte
 			Owner:                        p.deps.Owner,
 			LogicalName:                  p.deps.LogicalName,
 			DescriptorFingerprint:        p.deps.DescriptorFingerprint,
-			Catalog:                      p.deps.Catalog,
-			ToolAllowlist:                append([]string(nil), p.deps.ToolAllowlist...),
-			ToolDenylist:                 append([]string(nil), p.deps.ToolDenylist...),
+			// A connection-owned private credential binds this registration to
+			// its exact publisher lifecycle; generic teardown must not reach it.
+			ExactTeardownOnly: p.deps.OwnOAuthProvider && p.deps.OAuthProviderOverride != nil,
+			Catalog:           p.deps.Catalog,
+			ToolAllowlist:     append([]string(nil), p.deps.ToolAllowlist...),
+			ToolDenylist:      append([]string(nil), p.deps.ToolDenylist...),
 		}, p.descriptors)
 		if err != nil {
 			return fmt.Errorf("registry.StageRegistration: %w", err)

@@ -20,21 +20,30 @@ type identityRecordingPreparer struct {
 	*capabilityPreparer
 	mu         sync.Mutex
 	identities map[string][]identity.Identity
+	contexts   map[string][]preparationContext
 	fail       map[string]error
-	blockAgent string
-	entered    chan string
-	release    chan struct{}
+	// failSession, when set, refuses only preparations under that session.
+	failSession string
+	blockAgent  string
+	entered     chan string
+	release     chan struct{}
 }
 
 func newIdentityRecordingPreparer() *identityRecordingPreparer {
-	return &identityRecordingPreparer{capabilityPreparer: &capabilityPreparer{}, identities: map[string][]identity.Identity{}, fail: map[string]error{}}
+	return &identityRecordingPreparer{capabilityPreparer: &capabilityPreparer{}, identities: map[string][]identity.Identity{}, contexts: map[string][]preparationContext{}, fail: map[string]error{}}
 }
 
 func (p *identityRecordingPreparer) PrepareConnection(ctx context.Context, req agentcfgprotocol.AttachRequest) (agentcfgprotocol.PreparedConnection, error) {
 	id, _ := identity.From(ctx)
+	verified, hasVerified := identity.FromVerified(ctx)
+	run, hasRun := identity.QuadrupleFrom(ctx)
 	p.mu.Lock()
 	p.identities[req.Name] = append(p.identities[req.Name], id)
+	p.contexts[req.Name] = append(p.contexts[req.Name], preparationContext{verified: verified, hasVerified: hasVerified, run: run, hasRun: hasRun})
 	failErr := p.fail[req.Name]
+	if p.failSession != "" && id.SessionID == p.failSession {
+		failErr = errors.New("injected session refusal")
+	}
 	block := p.blockAgent != "" && req.AgentID == p.blockAgent
 	entered, release := p.entered, p.release
 	p.mu.Unlock()
@@ -50,6 +59,19 @@ func (p *identityRecordingPreparer) PrepareConnection(ctx context.Context, req a
 		return nil, failErr
 	}
 	return p.capabilityPreparer.PrepareConnection(ctx, req)
+}
+
+type preparationContext struct {
+	verified    identity.Identity
+	hasVerified bool
+	run         identity.Quadruple
+	hasRun      bool
+}
+
+func (p *identityRecordingPreparer) preparationContexts(name string) []preparationContext {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]preparationContext(nil), p.contexts[name]...)
 }
 
 func (p *identityRecordingPreparer) seen(name string) []identity.Identity {
@@ -151,15 +173,29 @@ func TestSignedOAuthMCPReconcile_OwnerIdentityIsolationAndBackoff(t *testing.T) 
 		if len(seen) != 1 || seen[0] != owner {
 			t.Fatalf("%s prepared under %+v, want exactly the frozen owner %+v", name, seen, owner)
 		}
+		// The owner is the ONLY identity: the end user's verified identity and
+		// run never ride the preparation, so attribution is consistent.
+		for _, pc := range preparer.preparationContexts(name) {
+			if pc.hasVerified || pc.hasRun {
+				t.Fatalf("%s preparation carried end-user context: %+v", name, pc)
+			}
+		}
 	}
 
-	// Inside the window: no preparation, a typed suppression, sibling stays.
+	// A sibling's successful preparation in the same pass may already have
+	// reset the owner's windows (it proves the broker healthy), depending on
+	// scan order. Once no other preparation succeeds, the window holds: no
+	// preparation, a typed suppression, the attached sibling stays put.
+	if err := reconciler.ReconcileSignedOAuthMCPCapability(ctx, q, testAgentID); err == nil {
+		t.Fatal("failing pair reported success")
+	}
+	attempts := len(preparer.seen("cap"))
 	err = reconciler.ReconcileSignedOAuthMCPCapability(ctx, q, testAgentID)
 	if !errors.Is(err, agentcfgprotocol.ErrSignedCapabilityAttachSuppressed) || errors.Is(err, brokerRefused) {
-		t.Fatalf("second reconcile = %v, want suppression only", err)
+		t.Fatalf("in-window reconcile = %v, want suppression only", err)
 	}
-	if got := len(preparer.seen("cap")); got != 1 {
-		t.Fatalf("suppressed pair prepared %d times, want 1", got)
+	if got := len(preparer.seen("cap")); got != attempts {
+		t.Fatalf("suppressed pair prepared %d times, want %d", got, attempts)
 	}
 	if got := len(preparer.seen("second")); got != 1 || preparer.activationCount() != 1 {
 		t.Fatalf("attached sibling re-prepared: prepares=%d activations=%d", got, preparer.activationCount())
@@ -174,8 +210,8 @@ func TestSignedOAuthMCPReconcile_OwnerIdentityIsolationAndBackoff(t *testing.T) 
 	if err := reconciler.ReconcileSignedOAuthMCPCapability(ctx, q, testAgentID); !errors.Is(err, agentcfgprotocol.ErrSignedCapabilityAttachSuppressed) {
 		t.Fatalf("doubled window reconcile = %v, want suppression", err)
 	}
-	if got := len(preparer.seen("cap")); got != 2 {
-		t.Fatalf("failing pair prepared %d times, want 2 bounded attempts", got)
+	if got := len(preparer.seen("cap")); got != attempts+1 {
+		t.Fatalf("failing pair prepared %d times, want %d bounded attempts", got, attempts+1)
 	}
 
 	// Healing: once the window lapses the pair attaches and the entry clears.
@@ -288,5 +324,44 @@ func TestSignedOAuthMCPReconcile_PerOwnerSerialization(t *testing.T) {
 	}
 	if gates, _ := agentcfgprotocol.SignedOAuthMCPReconcilerSizesForTest(reconciler); gates != 0 {
 		t.Fatalf("retained gates = %d, want 0", gates)
+	}
+}
+
+// A refusal for one session of a user-tier pair never suppresses a freshly
+// authenticated other session of the same user.
+func TestSignedOAuthMCPReconcile_UserBackoffIsSessionScoped(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	svc, key, reg, st, _ := signedCapabilityServiceWithRegistry(t, now)
+	idA := identity.Identity{TenantID: "t", UserID: "user-a", SessionID: "session-a"}
+	req := signedCapabilityRequestFor(t, key, now, prototypes.IdentityScope{Tenant: idA.TenantID, User: idA.UserID, Session: idA.SessionID}, testAgentID, "jti-user-session", "aud", "user-cap")
+	if _, err := svc.RegisterUserOAuthMCPCapability(verifiedUserCapabilityContext(t, idA, true, true), userRegisterRequest(req)); err != nil {
+		t.Fatalf("register user pair: %v", err)
+	}
+	preparer := newIdentityRecordingPreparer()
+	reconciler, err := agentcfgprotocol.NewSignedOAuthMCPReconciler(reg, st, preparer, preparer, capabilityInstaller{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1 := identity.Identity{TenantID: idA.TenantID, UserID: idA.UserID, SessionID: "session-1"}
+	s2 := identity.Identity{TenantID: idA.TenantID, UserID: idA.UserID, SessionID: "session-2"}
+	preparer.failSession = s1.SessionID
+	reconcile := func(id identity.Identity) error {
+		return reconciler.ReconcileSignedOAuthMCPCapabilityForScope(verifiedUserCapabilityContext(t, id, true, true), identity.Quadruple{Identity: id, RunID: "run-" + id.SessionID}, testAgentID, agentcfg.ConfigScopeUser)
+	}
+	if err := reconcile(s1); err == nil {
+		t.Fatal("session 1 preparation unexpectedly succeeded")
+	}
+	if err := reconcile(s1); !errors.Is(err, agentcfgprotocol.ErrSignedCapabilityAttachSuppressed) {
+		t.Fatalf("session 1 retry = %v, want suppression", err)
+	}
+	if err := reconcile(s2); err != nil {
+		t.Fatalf("session 2 was suppressed by session 1's refusal: %v", err)
+	}
+	seen := preparer.seen("user-cap")
+	if len(seen) != 2 || seen[1] != s2 {
+		t.Fatalf("preparations = %+v, want S1 then S2", seen)
+	}
+	if pcs := preparer.preparationContexts("user-cap"); !pcs[1].hasVerified || pcs[1].verified != s2 {
+		t.Fatalf("user-tier preparation context = %+v, want the acting session's verified identity", pcs[1])
 	}
 }

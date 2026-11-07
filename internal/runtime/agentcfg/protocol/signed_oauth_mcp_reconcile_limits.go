@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
 )
@@ -25,7 +27,7 @@ const (
 	signedAttachBackoffBase = 30 * time.Second
 	// signedAttachBackoffMax caps exponential growth so a persistently
 	// failing pair is still retried periodically without operator action.
-	signedAttachBackoffMax = 15 * time.Minute
+	signedAttachBackoffMax = 5 * time.Minute
 	// signedAttachBackoffEntries bounds the per-pair failure memory. At the cap
 	// the entry closest to (or past) its retry time is evicted, which can only
 	// make a pair retry sooner, never suppress it longer.
@@ -50,6 +52,7 @@ type signedAttachBackoffKey struct {
 	tenant   string
 	agent    string
 	user     string
+	session  string
 	provider string
 }
 
@@ -138,6 +141,21 @@ func (b *signedAttachBackoff) succeed(key signedAttachBackoffKey) {
 	b.mu.Unlock()
 }
 
+// ownerPrepared clears every retry window of the same owner slot after a
+// successful private preparation for any of its pairs.
+func (b *signedAttachBackoff) ownerPrepared(slot signedAttachBackoffKey) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for key := range b.entries {
+		if key.scope == slot.scope && key.tenant == slot.tenant && key.agent == slot.agent && key.user == slot.user && key.session == slot.session {
+			delete(b.entries, key)
+		}
+	}
+}
+
 // evictLocked drops every expired entry, or failing that the entry whose retry
 // is due soonest. Eviction only shortens a suppression.
 func (b *signedAttachBackoff) evictLocked(now time.Time) {
@@ -172,7 +190,9 @@ func (b *signedAttachBackoff) len() int {
 func signedAttachSlot(ctx context.Context, q identity.Quadruple, agentID string, pair *agentcfg.SignedOAuthMCPPair) signedAttachBackoffKey {
 	key := signedAttachBackoffKey{scope: signedOAuthMCPConfigScope(ctx), tenant: q.TenantID, agent: agentID, provider: pair.ProviderName}
 	if key.scope == agentcfg.ConfigScopeUser {
-		key.user = q.UserID
+		// A user-tier preparation is the acting session's exchange: a refusal
+		// for one session is no evidence about a freshly authenticated other.
+		key.user, key.session = q.UserID, q.SessionID
 	}
 	return key
 }
@@ -280,4 +300,30 @@ func (c *signedReconcileContinuations) set(key, continuation string) {
 		}
 	}
 	c.entries[key] = continuation
+}
+
+// signedOwnerPreparationContext returns a context whose only identity is the
+// frozen pair owner. It is detached from the triggering run's values (its
+// verified identity, run quadruple and per-call capabilities) but keeps the
+// caller's cancellation, deadline, trace span and signed config scope.
+func signedOwnerPreparationContext(ctx context.Context, owner identity.Identity) (context.Context, context.CancelFunc, error) {
+	base := trace.ContextWithSpan(context.Background(), trace.SpanFromContext(ctx))
+	base = withSignedOAuthMCPConfigScope(base, signedOAuthMCPConfigScope(ctx))
+	var cancel context.CancelFunc
+	if deadline, ok := ctx.Deadline(); ok {
+		base, cancel = context.WithDeadline(base, deadline)
+	} else {
+		base, cancel = context.WithCancel(base)
+	}
+	stop := context.AfterFunc(ctx, cancel)
+	release := func() {
+		stop()
+		cancel()
+	}
+	ownerCtx, err := identity.With(base, owner)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return ownerCtx, release, nil
 }

@@ -30,19 +30,36 @@ Two versions move independently in Harbor (RFC §5.3):
 - One failing signed pair no longer aborts reconciliation of the remaining
   pairs, the user tier, or the provider, connection and discovery-allowance
   legs. Each per-pair failure is logged separately.
+- The generic run-start connection detach can no longer tear down a signed
+  pair whose publication succeeded while its activation fence is still
+  pending (the logical revision hides it in that window). Registrations
+  backed by a connection-owned private credential are omitted from the
+  generic reconcile view and refused by generic deregistration; the paired
+  catalog withdrawal now runs only after the registry admits the removal.
 
 ### Changed
 
 - A signed pair whose private preparation fails is retried under a bounded
-  per-pair window (30 s doubling to 15 min, reset by any revision, receipt or
-  phase change; at most 1024 tracked pairs). Suppressed attempts make no
-  credential exchange or durable write and log at debug level. Expiry, fence
-  commits and removals are never suppressed.
+  per-pair window (30 s doubling to 5 min, reset by any revision, receipt or
+  phase change and by a successful preparation of another pair of the same
+  owner; user-tier windows are per acting session; at most 1024 tracked
+  pairs). Suppressed attempts make no credential exchange or durable write
+  and log at debug level. Expiry, fence commits and removals are never
+  suppressed.
+- Agent-tier preparation runs in a context carrying only the pair owner's
+  identity (no end-user verified identity or run), so its events, audit and
+  any consent park are attributed to the owner consistently.
 - Signed-capability reconciliation is serialized per owner slot (tenant and
   agent, plus user for user-tier pairs) instead of runtime-wide, so runs for
   different tenants or agents no longer queue behind each other. Gate entries
-  are released with their last waiter and scan cursors are capped at 4096.
-- An already-attached published pair skips durable revalidation on run start.
+  are released with their last waiter; agent-tier scan cursors are keyed by
+  (tenant, agent) rather than the triggering end user and capped at 4096.
+- The runtime MCP connection attacher serializes attaches per physical
+  connection name with a cancellable gate instead of one process-wide lock
+  held across network preparation, so a stalled downstream for one owner no
+  longer blocks other owners, and a waiter honours its own cancellation.
+- An already-attached published pair skips durable revalidation on run-start
+  reconcile (registration replay keeps the full re-check).
 
 ## [1.38.0] — 2026-11-07
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/identity"
 )
 
 func TestSignedAttachBackoff_BoundedAndFingerprintScoped(t *testing.T) {
@@ -45,5 +46,40 @@ func TestSignedReconcileContinuations_Bounded(t *testing.T) {
 	c.set("done", "")
 	if _, ok := c.entries["done"]; ok {
 		t.Fatal("completed scan cursor retained")
+	}
+}
+
+func TestSignedAttachBackoff_OwnerSuccessResetsSiblingWindows(t *testing.T) {
+	b := newSignedAttachBackoff()
+	owner := signedAttachBackoffKey{scope: agentcfg.ConfigScopeAgent, tenant: "t", agent: "a", provider: "p1"}
+	sibling := owner
+	sibling.provider = "p2"
+	other := owner
+	other.agent = "b"
+	for _, key := range []signedAttachBackoffKey{owner, other} {
+		b.fail(key, "fp")
+	}
+	b.ownerPrepared(sibling)
+	if err := b.admit(owner, "fp"); err != nil {
+		t.Fatalf("same-owner window survived a successful sibling preparation: %v", err)
+	}
+	if err := b.admit(other, "fp"); !errors.Is(err, ErrSignedCapabilityAttachSuppressed) {
+		t.Fatalf("another owner's window was reset: %v", err)
+	}
+}
+
+func TestSignedReconcileCursorKey_AgentTierIgnoresTriggeringRun(t *testing.T) {
+	a := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "end-a", SessionID: "s-a"}}
+	b := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "end-b", SessionID: "s-b"}}
+	if signedReconcileCursorKey(agentcfg.ConfigScopeAgent, a, "agent") != signedReconcileCursorKey(agentcfg.ConfigScopeAgent, b, "agent") {
+		t.Fatal("agent-tier scan cursor keyed by the triggering end user")
+	}
+	if signedReconcileCursorKey(agentcfg.ConfigScopeUser, a, "agent") == signedReconcileCursorKey(agentcfg.ConfigScopeUser, b, "agent") {
+		t.Fatal("user-tier scan cursors of different users collided")
+	}
+	a2 := a
+	a2.SessionID = "s-a2"
+	if signedReconcileCursorKey(agentcfg.ConfigScopeUser, a, "agent") != signedReconcileCursorKey(agentcfg.ConfigScopeUser, a2, "agent") {
+		t.Fatal("user-tier scan cursor restarted for a new session")
 	}
 }

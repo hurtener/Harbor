@@ -137,7 +137,11 @@ func (d *MCPConnectionDetacher) AttachedSources(_ context.Context, owner toolaut
 	if d.registry == nil {
 		return nil
 	}
-	return d.registry.RuntimeAddedSources(owner)
+	// Exact-publisher registrations (signed pairs) are omitted: the generic
+	// desired-state read can lag their lifecycle (an activation fence still
+	// pending hides a freshly published pair), so only their own exact
+	// teardown may remove them.
+	return d.registry.GenericRuntimeAddedSources(owner)
 }
 
 // SetOAuthDiscoveryOrigins re-applies a runtime-added connection's
@@ -191,21 +195,38 @@ func detachSource(ctx context.Context, catalog tools.ToolCatalog, registry *mcpd
 	if registry != nil {
 		physical = registry.PhysicalSourceForOwner(source, owner)
 	}
-	if dc, ok := catalog.(tools.CatalogSourceDeregisterer); ok {
-		removed := dc.DeregisterSource(tools.ToolSourceID(physical))
-		if logger != nil {
-			logger.InfoContext(ctx, reason,
-				slog.String("source", source), slog.Int("tools_deregistered", removed))
-		}
-	}
+	dc, deregisters := catalog.(tools.CatalogSourceDeregisterer)
 	if registry == nil {
+		if deregisters {
+			removed := dc.DeregisterSource(tools.ToolSourceID(physical))
+			if logger != nil {
+				logger.InfoContext(ctx, reason, slog.String("source", source), slog.Int("tools_deregistered", removed))
+			}
+		}
 		return nil
 	}
-	if err := registry.Deregister(ctx, source, owner); err != nil {
+	// The catalog withdrawal runs inside the registry's admitted removal, so a
+	// refused deregister (another owner, an exact-publisher registration)
+	// never strips a live connection's tools.
+	var withdraw func() int
+	if deregisters {
+		withdraw = func() int { return dc.DeregisterSource(tools.ToolSourceID(physical)) }
+	}
+	removed, err := registry.DeregisterWithCatalog(ctx, source, owner, withdraw)
+	if err != nil {
 		if errors.Is(err, mcpdrv.ErrServerNotFound) {
+			// Not registered for this owner. Withdraw orphaned catalog entries
+			// only when no registration holds the physical name at all, so a
+			// name held by another owner keeps its tools.
+			if _, held := registry.OwnerOf(physical); deregisters && !held {
+				dc.DeregisterSource(tools.ToolSourceID(physical))
+			}
 			return nil
 		}
 		return err
+	}
+	if logger != nil && deregisters {
+		logger.InfoContext(ctx, reason, slog.String("source", source), slog.Int("tools_deregistered", removed))
 	}
 	return nil
 }

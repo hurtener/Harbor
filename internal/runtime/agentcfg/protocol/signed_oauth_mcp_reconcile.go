@@ -124,15 +124,13 @@ func (r *SignedOAuthMCPReconciler) ReconcileSignedOAuthMCPCapability(ctx context
 		return err
 	}
 	defer release()
-	// The durable user attachment is keyed by (tenant, user, agent). Session
-	// is only the audit/run subject that originally authorized the pair, so a
-	// new session must continue the same bounded scan rather than start a new
-	// ownership slot (and potentially miss the old receipt).
-	cursorParts := []string{string(scope), q.TenantID, q.UserID, agentID}
-	if scope == agentcfg.ConfigScopeAgent {
-		cursorParts = append(cursorParts, q.SessionID)
-	}
-	cursorKey := strings.Join(cursorParts, "\x00")
+	// The cursor names the durable slot the scan converges, never the run
+	// that happens to trigger it: agent-tier pairs are (tenant, agent) scoped,
+	// so every end user's run advances one shared bounded scan; user-tier
+	// pairs are keyed by (tenant, user, agent), so a new session continues the
+	// same scan rather than restarting it (and potentially missing the old
+	// receipt).
+	cursorKey := signedReconcileCursorKey(scope, q, agentID)
 	ops, continuation, err := r.operations.ScanTenantPage(ctx, q.TenantID, state.MaxStateScanLimit, r.continuations.get(cursorKey))
 	if err != nil {
 		return err
@@ -553,7 +551,9 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	// just loaded, so another runtime's takeover or any pair change misses it
 	// and falls through to the full revalidated path below. Nothing is
 	// published on this path.
-	if op.Phase == agentcfg.SignedOAuthMCPPhasePublished && op.PublisherEpoch != "" &&
+	// Only the run-start reconciler (which carries a retry window) takes it;
+	// registration replay keeps the full durable re-check.
+	if r.attachBackoff != nil && op.Phase == agentcfg.SignedOAuthMCPPhasePublished && op.PublisherEpoch != "" &&
 		r.matcher.ConnectionMatches(owner, pair.Connection.Name, signedCapabilityPairAttachmentFingerprint(pair, op.PublisherEpoch)) {
 		return op, nil
 	}
@@ -580,17 +580,20 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	}
 	// Private preparation is the owner's connection mint. For an agent-tier
 	// pair, q is the frozen registrar slot (never the end user whose run
-	// triggered this pass), so seat it as the working identity: the exchange
-	// subject then matches the signed actor binding exactly as it did on the
-	// initial registration push. A user-tier pair keeps the acting user, who
-	// is its owner. Live tool calls never take this path and keep their own
-	// run identity.
+	// triggered this pass): preparation runs in a context that carries ONLY
+	// that owner as its identity (no end-user verified identity or run), so
+	// the exchange subject matches the signed actor binding exactly as on the
+	// initial registration push, and every preparation event, audit record or
+	// consent park is attributed to the owner. A user-tier pair keeps the
+	// acting user, who is its owner. Live tool calls never take this path and
+	// keep their own run identity.
 	attachCtx := ctx
 	if signedOAuthMCPConfigScope(ctx) == agentcfg.ConfigScopeAgent {
-		ownerCtx, idErr := identity.With(ctx, q.Identity)
+		ownerCtx, cancelOwner, idErr := signedOwnerPreparationContext(ctx, q.Identity)
 		if idErr != nil {
 			return agentcfg.SignedOAuthMCPOperation{}, errors.Join(idErr, closePreparedSignedCapability(ctx, nil, provider))
 		}
+		defer cancelOwner()
 		attachCtx = ownerCtx
 	}
 	attachCtx = tools.WithEffectiveAgentConfig(tools.WithInvokingAgent(attachCtx, agentID), agentID)
@@ -605,6 +608,9 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	if err != nil {
 		return agentcfg.SignedOAuthMCPOperation{}, &signedPreparationError{err: errors.Join(err, closePreparedSignedCapability(ctx, nil, provider))}
 	}
+	// The broker and downstream accepted this owner's preparation, so any
+	// open retry window of the same owner is evidence of a healed condition.
+	r.attachBackoff.ownerPrepared(signedAttachSlot(ctx, q, agentID, pair))
 	authorityPrepared, ok := prepared.(AuthorityBoundPreparedConnection)
 	if !ok {
 		return agentcfg.SignedOAuthMCPOperation{}, errors.Join(
@@ -1010,4 +1016,12 @@ func (r *SignedOAuthMCPReconciler) advanceOperation(ctx context.Context, current
 		return latest, nil
 	}
 	return agentcfg.SignedOAuthMCPOperation{}, errors.Join(err, loadErr)
+}
+
+func signedReconcileCursorKey(scope agentcfg.ConfigScope, q identity.Quadruple, agentID string) string {
+	parts := []string{string(scope), q.TenantID, agentID}
+	if scope == agentcfg.ConfigScopeUser {
+		parts = append(parts, q.UserID)
+	}
+	return strings.Join(parts, "\x00")
 }

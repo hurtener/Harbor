@@ -134,8 +134,17 @@ func (a *MCPConnectionAttacher) Reattach(ctx context.Context, owner toolauth.Own
 	// refused descriptor never reaches a transport.
 	gateErr := a.gateReattach(desc)
 
+	// The per-name attach gate serialises this key's whole attempt (check,
+	// dial, publish) against every other attach of the same physical name;
+	// mu is held only around the backoff table and closer list, never across
+	// the dial, so other names and owners are not stalled by this one.
+	release, err := a.gates.acquire(ctx, mcpdrv.PhysicalServerName(desc.Name, owner))
+	if err != nil {
+		return false, fmt.Errorf("run-start re-attach of %q: wait for attach gate: %w", desc.Name, err)
+	}
 	var out reattachOutcome
 	func() {
+		defer release()
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		out = a.reattachLocked(ctx, owner, desc, key, fingerprint, gateErr)
@@ -179,8 +188,9 @@ func (a *MCPConnectionAttacher) gateReattach(desc agentcfg.MCPConnectionDescript
 
 // reattachLocked is the whole-attach-lock body: the retry-window check, the
 // under-lock live-registry re-check, the bounded attach, and the backoff update.
-// The caller holds a.mu; every read and write of a.reattachBackoff and
-// a.closers happens here.
+// The caller holds this key's attach gate and a.mu; every read and write of
+// a.reattachBackoff and a.closers happens under a.mu, which is released only
+// across the bounded dial itself.
 func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolauth.Owner, desc agentcfg.MCPConnectionDescriptor, key reattachKey, fingerprint string, gateErr error) reattachOutcome {
 	st := a.reattachBackoff[key]
 	if st != nil && st.fingerprint != fingerprint {
@@ -205,7 +215,7 @@ func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolau
 	// The under-lock idempotency re-check (the stale-view window closer). The
 	// reconcile's AttachedSources read happened before this call; a concurrent run
 	// start for the SAME owner may have attached the name in between. Re-reading
-	// here — inside the lock that serialises the whole attach — makes the pair
+	// here — inside the per-name gate that serialises the whole attach — makes the pair
 	// (check, attach) atomic, so two concurrent run starts dial exactly once.
 	if priorOwner, liveFingerprint, exists := a.registry.RegistrationIdentityForOwner(desc.Name, owner); exists {
 		if priorOwner == owner {
@@ -239,7 +249,11 @@ func (a *MCPConnectionAttacher) reattachLocked(ctx context.Context, owner toolau
 	var local []func(context.Context) error
 	deps := a.reattachAttachDeps(owner, &local)
 	deps.DescriptorFingerprint = fingerprint
+	// Dial without a.mu: the per-name gate already excludes every other attach
+	// of this key, and holding the shared lock here would stall other owners.
+	a.mu.Unlock()
 	err := mcpdrv.Attach(actx, ms, deps)
+	a.mu.Lock()
 	// Merge whatever closers Attach appended even on failure (a successful
 	// Connect appends the provider's Close before a later step can fail — drain
 	// it on teardown).

@@ -264,6 +264,12 @@ type Cursor struct {
 var (
 	// ErrServerNotFound — the named server is not registered.
 	ErrServerNotFound = fmt.Errorf("mcp: server not found")
+	// ErrExactTeardownRequired — a generic (name + owner) deregister reached a
+	// registration whose lifetime is owned by an exact publisher generation.
+	// Only the exact-fingerprint teardown of its owning lifecycle may remove
+	// it; a generic desired-state view can be stale relative to that
+	// lifecycle and must never tear it down.
+	ErrExactTeardownRequired = fmt.Errorf("mcp: registration requires exact-publisher teardown")
 	// ErrRegistryIdentityMissing — the read ctx had no identity triple.
 	// Identity is mandatory (AGENTS.md §6 rule 9); the read fails closed.
 	ErrRegistryIdentityMissing = fmt.Errorf("mcp: identity missing from ctx")
@@ -349,6 +355,11 @@ type serverEntry struct {
 	// runtime-added descriptor that produced this registration. Empty for
 	// boot-declared registrations. Read-only after registration.
 	descriptorFingerprint string
+	// exactTeardownOnly marks a registration whose lifetime is owned by an
+	// exact publisher generation (a privately prepared, connection-owned
+	// credential). Generic Deregister refuses it and the generic reconcile
+	// view omits it. Read-only after registration.
+	exactTeardownOnly bool
 	// appVisible is the per-server App dispatch catalog: the App-visible
 	// callbacks (provider-authored `_meta.ui.visibility` containing `app`)
 	// discovered on THIS server, keyed by their full Harbor catalog name
@@ -596,6 +607,9 @@ type ServerRegistration struct {
 	// DescriptorFingerprint is the canonical digest of the complete
 	// NON-SECRET runtime-added descriptor. Empty for boot registrations.
 	DescriptorFingerprint string
+	// ExactTeardownOnly marks a registration that only its exact-publisher
+	// lifecycle may tear down (see ErrExactTeardownRequired).
+	ExactTeardownOnly bool
 	// Catalog is the ordinary planner/model projection paired with this
 	// registration, allowing refresh to reconcile both views together.
 	Catalog tools.ToolCatalog
@@ -759,6 +773,7 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 		oauthAllowedOrigins:   append([]string(nil), reg.OAuthDiscoveryAllowedOrigins...),
 		owner:                 reg.Owner,
 		descriptorFingerprint: reg.DescriptorFingerprint,
+		exactTeardownOnly:     reg.ExactTeardownOnly,
 		catalog:               reg.Catalog,
 		toolAllowlist:         append([]string(nil), reg.ToolAllowlist...),
 		toolDenylist:          append([]string(nil), reg.ToolDenylist...),
@@ -1871,6 +1886,26 @@ type genericCloseReceipt struct {
 }
 
 func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner) error {
+	_, err := r.DeregisterWithCatalog(ctx, name, owner, nil)
+	return err
+}
+
+// DeregisterWithCatalog is [Registry.Deregister] with the paired catalog
+// withdrawal run under the registry write lock, only after the owner and
+// exact-teardown checks admit the removal. A refused deregister therefore
+// never leaves a live registration without its catalog tools. It returns the
+// withdrawn tool count (zero when withdrawCatalog is nil or on a close retry).
+func (r *Registry) DeregisterWithCatalog(ctx context.Context, name string, owner auth.Owner, withdrawCatalog func() int) (int, error) {
+	removed := 0
+	err := r.deregister(ctx, name, owner, func() {
+		if withdrawCatalog != nil {
+			removed = withdrawCatalog()
+		}
+	})
+	return removed, err
+}
+
+func (r *Registry) deregister(ctx context.Context, name string, owner auth.Owner, withdraw func()) error {
 	name = r.physicalNameForOwner(name, owner)
 	r.mu.Lock()
 	if _, staged := r.pending[name]; staged {
@@ -1890,6 +1925,11 @@ func (r *Registry) Deregister(ctx context.Context, name string, owner auth.Owner
 			r.mu.Unlock()
 			return fmt.Errorf("%w: %q", ErrServerNotFound, name)
 		}
+		if e.exactTeardownOnly {
+			r.mu.Unlock()
+			return fmt.Errorf("%w: %q", ErrExactTeardownRequired, name)
+		}
+		withdraw()
 		delete(r.servers, name)
 		r.bumpLocked()
 		withdrawn = true
@@ -2139,13 +2179,25 @@ func (r *Registry) SourceIDs() []string {
 // stay process-global and untouched, so boot servers remain visible to every
 // session regardless of the reconciling owner.
 func (r *Registry) RuntimeAddedSources(owner auth.Owner) []string {
+	return r.runtimeAddedSources(owner, true)
+}
+
+// GenericRuntimeAddedSources is [Registry.RuntimeAddedSources] without the
+// registrations whose lifetime is owned by an exact publisher generation. It
+// is the view a generic desired-state reconcile may detach from: those
+// exact-owned registrations converge only through their own lifecycle.
+func (r *Registry) GenericRuntimeAddedSources(owner auth.Owner) []string {
+	return r.runtimeAddedSources(owner, false)
+}
+
+func (r *Registry) runtimeAddedSources(owner auth.Owner, includeExact bool) []string {
 	if owner.IsZero() {
 		return nil
 	}
 	r.mu.RLock()
 	out := make([]string, 0, len(r.servers))
 	for name, e := range r.servers {
-		if e.owner == owner {
+		if e.owner == owner && (includeExact || !e.exactTeardownOnly) {
 			logical := e.logicalName
 			if logical == "" {
 				logical = name
