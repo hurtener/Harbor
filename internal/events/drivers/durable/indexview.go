@@ -58,15 +58,20 @@ func (e *indexMissError) Unwrap() error { return e.wrapped }
 // noteIntegrity counts and logs an index integrity failure. It returns err so
 // call sites can wrap and return in one expression.
 func (b *bus) noteIntegrity(ctx context.Context, id identity.Quadruple, err error) error {
+	b.recordIntegrity(ctx, id, err)
+	return err
+}
+
+// recordIntegrity counts and logs err when it is an index integrity failure.
+func (b *bus) recordIntegrity(ctx context.Context, id identity.Quadruple, err error) {
 	if err == nil || !errors.Is(err, ErrIndexIntegrity) {
-		return err
+		return
 	}
 	b.indexIntegrityFailures.Add(1)
-	b.logger.ErrorContext(ctx, "durable: event index integrity failure; the session's index is refused until an operator restore",
+	b.logger.ErrorContext(ctx, "durable: event index integrity failure; the session's index is refused until it is rebuilt (harbor events rebuild-session-index)",
 		slog.String("driver", "durable"),
 		slog.String("head_identity_hash", headIdentityHash(id)),
 		slog.String("error", err.Error()))
-	return err
 }
 
 // skipCorruptSession records that a fleet-wide read (projection page or admin

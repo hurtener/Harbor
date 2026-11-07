@@ -150,7 +150,7 @@ func jittered(d time.Duration) time.Duration {
 	if spread <= 0 {
 		return d
 	}
-	return d - time.Duration(spread/2) + time.Duration(rand.Int64N(spread+1))
+	return d - time.Duration(spread/2) + time.Duration(rand.Int64N(spread+1)) //nolint:gosec // scheduling jitter, not a security value
 }
 
 func (b *bus) maintenanceLoop(ctx context.Context) {
@@ -179,7 +179,12 @@ func (b *bus) maintenanceLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-m.nudge:
+			// A nudge can bring a pass forward, but never ahead of the boot
+			// quiet period or within the debounce gap of the last pass.
 			earliest := lastMigrate.Add(migrationNudgeMinGap)
+			if quiet := start.Add(m.initialDelay); earliest.Before(quiet) {
+				earliest = quiet
+			}
 			if earliest.Before(time.Now()) {
 				earliest = time.Now()
 			}

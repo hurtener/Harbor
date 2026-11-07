@@ -166,7 +166,7 @@ func (b *bus) runRetentionPass(ctx context.Context) (retentionStats, error) {
 	horizonExact := true
 	var oldest int64
 	deferred := false
-	for n := 0; n < len(heads); n++ {
+	for n := range heads {
 		if err := ctx.Err(); err != nil {
 			return stats, err
 		}
@@ -181,7 +181,7 @@ func (b *bus) runRetentionPass(ctx context.Context) (retentionStats, error) {
 		}
 		hdr, err := decodeHeader(rec.Bytes)
 		if err != nil {
-			_ = b.noteIntegrity(ctx, rec.Identity, err)
+			b.recordIntegrity(ctx, rec.Identity, err)
 			horizonExact = false
 			continue
 		}
@@ -192,7 +192,7 @@ func (b *bus) runRetentionPass(ctx context.Context) (retentionStats, error) {
 				return stats, ctx.Err()
 			case err != nil:
 				if errors.Is(err, ErrIndexIntegrity) {
-					_ = b.noteIntegrity(ctx, rec.Identity, err)
+					b.recordIntegrity(ctx, rec.Identity, err)
 				} else {
 					b.logger.WarnContext(ctx, "durable: audit retention skipped a session this pass",
 						slog.String("driver", "durable"),
@@ -214,15 +214,16 @@ func (b *bus) runRetentionPass(ctx context.Context) (retentionStats, error) {
 		} else if hdr.Trimmed.CleanupPending {
 			budget.beginSession(b.maint.deleteSlice)
 			if err := b.cleanupSession(ctx, rec.Identity, budget, &stats); err != nil {
-				if errors.Is(err, errDeleteBudgetExhausted) || errors.Is(err, errSessionSliceExhausted) {
+				switch {
+				case errors.Is(err, errDeleteBudgetExhausted) || errors.Is(err, errSessionSliceExhausted):
 					if errors.Is(err, errDeleteBudgetExhausted) && !deferred {
 						b.maint.resumeKey = sessionMapKey(rec.Identity)
 						deferred = true
 					}
 					stats.DeletesDeferred = true
-				} else if ctx.Err() != nil {
+				case ctx.Err() != nil:
 					return stats, ctx.Err()
-				} else {
+				default:
 					b.logger.WarnContext(ctx, "durable: audit retention cleanup deferred for a session",
 						slog.String("driver", "durable"),
 						slog.String("head_identity_hash", headIdentityHash(rec.Identity)),

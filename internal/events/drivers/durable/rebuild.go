@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/state"
 )
@@ -108,7 +107,7 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 	b := &bus{store: store, clock: realClock{}}
 	var through, trimmedCount uint64
 	if summary, _, err := b.loadRetentionSummary(ctx, id); err != nil {
-		return report, fmt.Errorf("%w: retention summary: %v", ErrRebuildRefused, err)
+		return report, fmt.Errorf("%w: retention summary: %w", ErrRebuildRefused, err)
 	} else if summary.TrimmedCount > 0 {
 		through, trimmedCount = summary.LastTrimmedSeq, summary.TrimmedCount
 	}
@@ -125,7 +124,7 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 		if err != nil {
 			return report, fmt.Errorf("%w: entry %s is malformed", ErrRebuildRefused, rec.Kind)
 		}
-		if rec.Kind != kindEntryPrefix+seqToken(ev.Sequence) || ev.Identity.Identity != id.Identity || !events.IsValidEventType(ev.Type) {
+		if rec.Kind != kindEntryPrefix+seqToken(ev.Sequence) || ev.Identity.Identity != id.Identity || !readableEventType(ev.Type) {
 			return report, fmt.Errorf("%w: entry %s disagrees with its slot or identity", ErrRebuildRefused, rec.Kind)
 		}
 		if trimmedCount > 0 && ev.Sequence <= through {
@@ -134,7 +133,7 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 		}
 		row, err := rowFromEvent(ev)
 		if err != nil {
-			return report, fmt.Errorf("%w: entry %s: %v", ErrRebuildRefused, rec.Kind, err)
+			return report, fmt.Errorf("%w: entry %s: %w", ErrRebuildRefused, rec.Kind, err)
 		}
 		rows = append(rows, row)
 	}
@@ -161,7 +160,7 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 	}
 	sealed, err := hdr.appendRows(rows)
 	if err != nil {
-		return report, fmt.Errorf("%w: %v", ErrRebuildRefused, err)
+		return report, fmt.Errorf("%w: %w", ErrRebuildRefused, err)
 	}
 	headerBytes, err := encodeHeader(hdr)
 	if err != nil {
@@ -176,6 +175,7 @@ func RebuildSessionIndex(ctx context.Context, store state.StateStore, id identit
 	var written []state.StateRecord
 	rollback := func() {
 		for _, w := range written {
+			//nolint:errcheck // best-effort rollback of unreferenced new slots; the caller reports the original failure
 			_, _ = store.DeleteIf(context.WithoutCancel(ctx), state.SlotExpectation{Identity: id, Kind: w.Kind, ExpectedEventID: w.ID})
 		}
 	}

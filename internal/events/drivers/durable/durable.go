@@ -1965,8 +1965,8 @@ func (b *bus) ensureHeadMetadata(ctx context.Context, id identity.Quadruple, hea
 		if m.Sequence == 0 || m.Type == "" {
 			return headRecord{}, fmt.Errorf("invalid metadata sequence=%d type=%q", m.Sequence, m.Type)
 		}
-		if !events.IsValidEventType(m.Type) {
-			return headRecord{}, fmt.Errorf("metadata sequence=%d has unknown event type %q", m.Sequence, m.Type)
+		if !readableEventType(m.Type) {
+			return headRecord{}, fmt.Errorf("metadata sequence=%d has malformed event type %q", m.Sequence, m.Type)
 		}
 		if m.Internal != events.IsBusInternalNotice(m.Type) {
 			return headRecord{}, fmt.Errorf("metadata sequence=%d internal marker disagrees with type %q", m.Sequence, m.Type)
@@ -2059,8 +2059,8 @@ func (b *bus) ensureHeadMetadata(ctx context.Context, id identity.Quadruple, hea
 		if ev.Sequence != seq || ev.Identity.Identity != id.Identity {
 			return headRecord{}, fmt.Errorf("backfill sequence=%d: payload identity/sequence mismatch", seq)
 		}
-		if !events.IsValidEventType(ev.Type) {
-			return headRecord{}, fmt.Errorf("backfill sequence=%d: unknown event type %q", seq, ev.Type)
+		if !readableEventType(ev.Type) {
+			return headRecord{}, fmt.Errorf("backfill sequence=%d: malformed event type %q", seq, ev.Type)
 		}
 		canonical, err := metadataRecordFromEvent(ev)
 		if err != nil {
@@ -2083,14 +2083,6 @@ func (b *bus) ensureHeadMetadata(ctx context.Context, id identity.Quadruple, hea
 		}
 	}
 	return head, nil
-}
-
-func metadataFromHead(head headRecord) []events.EventMetadata {
-	out := make([]events.EventMetadata, 0, len(head.Metadata))
-	for _, m := range head.Metadata {
-		out = append(out, m.metadata())
-	}
-	return out
 }
 
 func validateMetadataEvent(meta events.EventMetadata, ev events.Event) error {

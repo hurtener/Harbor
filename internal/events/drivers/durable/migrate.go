@@ -123,9 +123,8 @@ func (b *bus) runMigrationPass(ctx context.Context) (migrationStats, error) {
 		}
 		cands = append(cands, candidate{id: rec.Identity, size: len(rec.Bytes), key: sessionMapKey(rec.Identity)})
 	}
-	// Keep only identities and sizes: the scan returned every legacy head's
-	// full bytes, which must not stay referenced for the whole pass.
-	recs = nil
+	// Only identities and sizes are kept: the scanned head bytes (every
+	// legacy head in full) are not referenced past this point.
 	sort.Slice(cands, func(i, j int) bool {
 		if cands[i].size != cands[j].size {
 			return cands[i].size < cands[j].size
@@ -227,7 +226,7 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (flippe
 	// large legacy head just to read its generation costs a second full
 	// copy, and the CAS checks the generation anyway.
 	expected := rec.ID
-	rows, err := b.loadLegacyRows(ctx, id, rec.Bytes, nil)
+	rows, err := b.loadLegacyRows(id, rec.Bytes, nil)
 	rec.Bytes = nil // release the raw head as soon as it is decoded
 	if errors.Is(err, errLegacyNeedsBackfill) {
 		// The canonical backfill wrote checkpoints, so the generation moved.
@@ -267,7 +266,7 @@ func (b *bus) migrateSession(ctx context.Context, id identity.Quadruple) (flippe
 				return false, nil
 			}
 			expected = current.ID
-			grown, err := b.loadLegacyRows(ctx, id, current.Bytes, rows)
+			grown, err := b.loadLegacyRows(id, current.Bytes, rows)
 			current.Bytes = nil
 			if errors.Is(err, errLegacyNeedsBackfill) {
 				return false, fmt.Errorf("legacy head lost its authenticated metadata before the flip")
@@ -341,7 +340,7 @@ const legacyRowsSpare = 4 * indexChunkRows
 // loadLegacyRows authenticates raw legacy head bytes and returns its rows,
 // streaming when the shape allows (legacystream.go) and otherwise through the
 // ordinary decoder. With prefix, the head must extend prefix unchanged.
-func (b *bus) loadLegacyRows(ctx context.Context, id identity.Quadruple, raw []byte, prefix []indexRow) ([]indexRow, error) {
+func (b *bus) loadLegacyRows(id identity.Quadruple, raw []byte, prefix []indexRow) ([]indexRow, error) {
 	rows, err := streamLegacyRows(raw, id, prefix, legacyRowsSpare)
 	if err == nil || !errors.Is(err, errLegacyStreamUnsupported) {
 		return rows, err
@@ -463,7 +462,7 @@ func (b *bus) verifyFlippedHeader(ctx context.Context, id identity.Quadruple) er
 					return nil
 				}
 			}
-			return b.noteIntegrity(ctx, id, fmt.Errorf("%w: migrated header's newest chunk: %v", ErrIndexIntegrity, err))
+			return b.noteIntegrity(ctx, id, fmt.Errorf("%w: migrated header's newest chunk: %w", ErrIndexIntegrity, err))
 		}
 	}
 	return nil
@@ -491,7 +490,7 @@ func (b *bus) prewriteChunks(ctx context.Context, id identity.Quadruple, chunks 
 		end := min(start+migrationPrewriteBatch, len(chunks))
 		batch := chunks[start:end]
 		encoded := make([][]byte, len(batch))
-		expectations := make([]state.SlotExpectation, len(batch))
+		expectations := make([]state.SlotExpectation, len(batch), len(batch)+2)
 		writes := make([]state.StateRecord, len(batch))
 		for i, c := range batch {
 			raw, err := encodeChunk(c)

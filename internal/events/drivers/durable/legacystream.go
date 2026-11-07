@@ -234,7 +234,7 @@ func unsupportedOr(err error) error {
 	if errors.Is(err, errLegacyStreamUnsupported) {
 		return err
 	}
-	return fmt.Errorf("%w: %v", errLegacyStreamUnsupported, err)
+	return fmt.Errorf("%w: %w", errLegacyStreamUnsupported, err)
 }
 
 func internType(table map[string]events.EventType, t events.EventType) events.EventType {

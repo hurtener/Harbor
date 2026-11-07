@@ -221,8 +221,8 @@ func validateIndexRow(r indexRow) error {
 	if r.Seq == 0 {
 		return fmt.Errorf("row has zero sequence")
 	}
-	if r.Type == "" || !events.IsValidEventType(r.Type) {
-		return fmt.Errorf("row seq=%d has unknown event type %q", r.Seq, r.Type)
+	if !readableEventType(r.Type) {
+		return fmt.Errorf("row seq=%d has malformed event type %q", r.Seq, r.Type)
 	}
 	if r.Internal != events.IsBusInternalNotice(r.Type) {
 		return fmt.Errorf("row seq=%d internal marker disagrees with type %q", r.Seq, r.Type)
@@ -615,7 +615,7 @@ func sealedChunksFor(rows []indexRow) ([]indexChunk, error) {
 	full := len(rows) / indexChunkRows
 	out := make([]indexChunk, 0, full)
 	prev := genesisDigest
-	for i := 0; i < full; i++ {
+	for i := range full {
 		c, err := sealChunk(uint64(i), prev, rows[i*indexChunkRows:(i+1)*indexChunkRows])
 		if err != nil {
 			return nil, err
@@ -628,4 +628,43 @@ func sealedChunksFor(rows []indexRow) ([]indexChunk, error) {
 
 func isAuditType(t events.EventType) bool {
 	return strings.HasPrefix(string(t), "audit.")
+}
+
+// maxEventTypeLen bounds an opaque event type read from storage.
+const maxEventTypeLen = 128
+
+// readableEventType reports whether a persisted event type may be read. A type
+// registered in this binary always is. An unregistered type that is well
+// formed — dot-separated lowercase segments of [a-z0-9_], at least two, at most
+// maxEventTypeLen bytes — is read as an opaque type: a newer release may have
+// persisted it, and refusing it would make every session that contains it
+// unreadable after a rollback (a v1.35.0 binary failed exactly this way on
+// v1.36.0's tools.catalog.changed). Publishing still requires a registered
+// type (events.ValidateEvent); only the read and index-validation paths accept
+// opaque types. An opaque type is never a bus-internal notice.
+func readableEventType(t events.EventType) bool {
+	if events.IsValidEventType(t) {
+		return true
+	}
+	s := string(t)
+	if s == "" || len(s) > maxEventTypeLen {
+		return false
+	}
+	segments, segLen := 1, 0
+	for i := range len(s) {
+		c := s[i]
+		switch {
+		case c == '.':
+			if segLen == 0 {
+				return false
+			}
+			segments++
+			segLen = 0
+		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_':
+			segLen++
+		default:
+			return false
+		}
+	}
+	return segLen > 0 && segments >= 2
 }
