@@ -340,7 +340,16 @@ func (p *CatalogProjector) configurationInventory(ctx context.Context, id identi
 	if descriptors, hit := p.structural.get(key, revision); hit {
 		return descriptors, revision, nil
 	}
-	results := p.structural.group.DoChan(key.flight(revision), func() (any, error) {
+	led := false
+	results := p.structural.group.DoChan(key.flight(revision), func() (value any, err error) {
+		led = true
+		// A panicking build must not crash the process: singleflight would
+		// re-panic it on a fresh goroutine. Recover it into an error.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				value, err = nil, fmt.Errorf("%w: structural build panicked: %v", ErrMisconfigured, recovered)
+			}
+		}()
 		if descriptors, hit := p.structural.get(key, revision); hit {
 			return descriptors, nil
 		}
@@ -364,6 +373,13 @@ func (p *CatalogProjector) configurationInventory(ctx context.Context, id identi
 		return nil, "", ctx.Err()
 	case result := <-results:
 		if result.Err != nil {
+			if !led {
+				// The shared build ran for another caller's identity (its
+				// session, its context values). Its failure is not this
+				// caller's outcome: build once with this caller's own
+				// context and identity, uncached.
+				return p.uncachedInventory(ctx, build, revision)
+			}
 			return nil, "", result.Err
 		}
 		descriptors, ok := result.Val.([]tools.Tool)
@@ -372,6 +388,22 @@ func (p *CatalogProjector) configurationInventory(ctx context.Context, id identi
 		}
 		return descriptors, revision, nil
 	}
+}
+
+// uncachedInventory builds with the caller's own context and reports the
+// caller's pre-build revision; nothing is stored. A panic is recovered into an
+// error so a misbehaving resolver cannot crash the process.
+func (p *CatalogProjector) uncachedInventory(ctx context.Context, build func(context.Context) ([]tools.Tool, error), revision string) (descriptors []tools.Tool, rev string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			descriptors, rev, err = nil, "", fmt.Errorf("%w: structural build panicked: %v", ErrMisconfigured, recovered)
+		}
+	}()
+	descriptors, err = build(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	return descriptors, revision, nil
 }
 
 // ListConfigurationToolsWithRevision implements RevisionedConfigurationProjector.

@@ -15,7 +15,8 @@ import (
 // identities — the agent active pointer (the lifecycle slot), the activation
 // fence records, and the acting user's active pointer — never revision
 // bodies, so its cost is four small reads regardless of config size: the
-// agent pointer, the deletion generation, the fence list and the user pointer.
+// deletion generation, then the agent pointer, the fence list and the user
+// pointer it guards.
 //
 // The fence projection Active applies (applySignedOAuthMCPFence) is a pure
 // function of the active revision and these fence records; it has no clock
@@ -33,10 +34,16 @@ func (r *registry) CatalogInputs(ctx context.Context, id identity.Quadruple, age
 	}
 	agentQuad := syntheticQuad(id.TenantID, agentID)
 	var out agentcfg.CatalogInputs
-	if out.AgentActive, err = r.slotEventID(ctx, agentQuad, kindActive); err != nil {
+	// The deletion generation MUST be read before every slot it guards.
+	// A deleting writer rewrites it before its delete; reading it first
+	// means a touch that lands after this read is seen by the next stamp,
+	// while a touch that landed before it orders the guarded write before
+	// the slot reads below. Reading a slot first would let a cycle's touch
+	// fall between the two reads and leave both stamps equal.
+	if out.DeletionGeneration, err = r.slotEventID(ctx, agentQuad, agentcfg.CatalogDeletionGenerationKind); err != nil {
 		return agentcfg.CatalogInputs{}, err
 	}
-	if out.DeletionGeneration, err = r.slotEventID(ctx, agentQuad, agentcfg.CatalogDeletionGenerationKind); err != nil {
+	if out.AgentActive, err = r.slotEventID(ctx, agentQuad, kindActive); err != nil {
 		return agentcfg.CatalogInputs{}, err
 	}
 	records, err := r.state.ListKindForIdentity(ctx, agentQuad, agentcfg.SignedOAuthMCPActivationFenceKind())

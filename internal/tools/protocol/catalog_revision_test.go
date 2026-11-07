@@ -953,23 +953,45 @@ func TestCatalogRevision_EmptyDiscoveryKeepsRevision(t *testing.T) {
 }
 
 // Review regression (P1): if_revision cannot be combined with filters on
-// per-request annotations, whose membership the revision does not cover.
+// per-request annotations, whose membership the revision does not cover. The
+// projector has a real annotator wired, so the facet filters are otherwise
+// admitted and the refusal is the conditional-read rule, not the
+// annotator-missing gate.
 func TestCatalogRevision_IfRevisionRejectsAnnotationFacetFilters(t *testing.T) {
 	f := newCatalogFixture(t, newInmemStore(t), "tenant-facets")
 	f.registerBootTools(1)
+	projector, err := NewCatalogProjector(f.catalog, WithCatalogViewResolver(f.resolver), WithLogicalSourceResolver(f.mcp), WithAnnotator(probeAnnotator{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(projector)
+	if err != nil {
+		t.Fatal(err)
+	}
 	id := f.id("admin", "session")
-	warm := f.mustList(id, nil)
-	for name, mutate := range map[string]func(*prototypes.ToolListRequest){
+	list := func(mutate func(*prototypes.ToolListRequest)) (prototypes.ToolListResponse, error) {
+		req := prototypes.ToolListRequest{View: prototypes.ToolCatalogViewConfiguration, AgentID: revAgent,
+			Identity: prototypes.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}}
+		mutate(&req)
+		return service.ListForView(context.Background(), req, true, revAgent)
+	}
+	facets := map[string]func(*prototypes.ToolListRequest){
 		"approval": func(r *prototypes.ToolListRequest) {
 			r.Filter.ApprovalPolicies = []prototypes.ToolApprovalPolicy{prototypes.ToolApprovalGated}
 		},
 		"oauth": func(r *prototypes.ToolListRequest) {
 			r.Filter.OAuthStatuses = []prototypes.ToolOAuthStatus{prototypes.ToolOAuthRequired}
 		},
-	} {
+	}
+	for name, facet := range facets {
 		t.Run(name, func(t *testing.T) {
+			// Without if_revision the facet is honoured over real annotations.
+			plain, err := list(facet)
+			if err != nil || len(plain.Tools) != 1 || plain.Revision == "" {
+				t.Fatalf("annotated facet list rows=%d revision=%q err=%v", len(plain.Tools), plain.Revision, err)
+			}
 			before := f.store.reads.Load()
-			_, err := f.list(id, func(r *prototypes.ToolListRequest) { r.IfRevision = warm.Revision; mutate(r) })
+			_, err = list(func(r *prototypes.ToolListRequest) { r.IfRevision = plain.Revision; facet(r) })
 			if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "if_revision") {
 				t.Fatalf("err=%v, want invalid_request naming if_revision", err)
 			}
@@ -977,6 +999,75 @@ func TestCatalogRevision_IfRevisionRejectsAnnotationFacetFilters(t *testing.T) {
 				t.Fatal("refused conditional read touched the store")
 			}
 		})
+	}
+}
+
+// panicResolver panics inside the structural build.
+type panicResolver struct{ *countingResolver }
+
+func (panicResolver) ConfigurationCatalogView(context.Context, identity.Identity, string) (tools.PlannerCatalogView, error) {
+	panic("resolver exploded")
+}
+
+// A panic in the shared structural build is recovered into an error rather
+// than crashing the process.
+func TestCatalogRevision_BuildPanicRecovered(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-panic")
+	f.registerBootTools(1)
+	f.projector.view = panicResolver{f.resolver}
+	_, err := f.list(f.id("admin", "session"), nil)
+	if err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("err=%v, want a recovered panic error", err)
+	}
+}
+
+// failLeaderResolver fails the first build (after the follower has joined)
+// with a leader-specific error and succeeds afterwards.
+type failLeaderResolver struct {
+	*countingResolver
+	joined chan struct{}
+	calls  atomic.Int64
+}
+
+func (r *failLeaderResolver) ConfigurationCatalogView(ctx context.Context, id identity.Identity, agent string) (tools.PlannerCatalogView, error) {
+	if r.calls.Add(1) == 1 {
+		<-r.joined
+		return nil, errors.New("leader-specific failure")
+	}
+	return r.countingResolver.ConfigurationCatalogView(ctx, id, agent)
+}
+
+// A follower that joined a shared build which failed for the leader's own
+// reasons builds once for itself instead of inheriting that failure.
+func TestCatalogRevision_FollowerFallsBackOnLeaderError(t *testing.T) {
+	f := newCatalogFixture(t, newInmemStore(t), "tenant-leader-error")
+	f.registerBootTools(2)
+	resolver := &failLeaderResolver{countingResolver: f.resolver, joined: make(chan struct{})}
+	f.projector.view = resolver
+	id := f.id("admin", "session")
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, _, err := f.projector.configurationInventory(context.Background(), id, revAgent)
+		leaderDone <- err
+	}()
+	for resolver.calls.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	followerDone := make(chan error, 1)
+	go func() {
+		rows, _, err := f.projector.configurationInventory(context.Background(), id, revAgent)
+		if err == nil && len(rows) != 2 {
+			err = fmt.Errorf("rows=%d", len(rows))
+		}
+		followerDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond) // let the follower join the flight
+	close(resolver.joined)
+	if err := <-leaderDone; err == nil || !strings.Contains(err.Error(), "leader-specific") {
+		t.Fatalf("leader err=%v, want its own failure", err)
+	}
+	if err := <-followerDone; err != nil {
+		t.Fatalf("follower inherited the leader's failure: %v", err)
 	}
 }
 

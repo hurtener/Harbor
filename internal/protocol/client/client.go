@@ -164,8 +164,6 @@ type Client interface {
 	Identity() types.IdentityScope
 }
 
-// RuntimeClient is the additive Runtime inspection/control client consumed by
-// the native TUI. Narrow projection consumers continue to depend on Client.
 // RetentionClient is the optional admin-only retention read. It is a separate
 // interface so adding it does not change the method set of Client or
 // RuntimeClient that external implementations and test doubles satisfy. The
@@ -176,6 +174,8 @@ type RetentionClient interface {
 
 var _ RetentionClient = (*client)(nil)
 
+// RuntimeClient is the additive Runtime inspection/control client consumed by
+// the native TUI. Narrow projection consumers continue to depend on Client.
 type RuntimeClient interface {
 	Client
 	RuntimeInfoForAgent(context.Context, string) (types.RuntimeInfo, error)

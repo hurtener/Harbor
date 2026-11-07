@@ -150,10 +150,11 @@ func (s *statePolicyStore) Policies(ctx context.Context, id identity.Identity) (
 		}
 		policy, err := decodePolicy(rec.Bytes)
 		if err != nil {
-			// One corrupt override must not fail every list for this identity.
-			// Skipping it projects the tool's default (auto), exactly what the
-			// single-tool read reports for the same record; the corruption is
-			// logged (kind only, never the bytes). Store errors still fail.
+			// A corrupt override fails only its own tool: it is skipped, so
+			// that tool projects the default (auto), the same value the
+			// annotator's single-tool read reports for it. The skip is
+			// logged with the record kind only, never its bytes. A store
+			// error still fails the whole read (above).
 			slog.WarnContext(ctx, "approval: skipping corrupt approval-policy override",
 				slog.String("kind", rec.Kind), slog.String("error", err.Error()))
 			continue

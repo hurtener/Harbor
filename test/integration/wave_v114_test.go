@@ -56,6 +56,7 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/sessions"
@@ -252,11 +253,12 @@ func (s *waveV114Stack) enrichRow(t *testing.T, id identity.Identity) prototypes
 	return row
 }
 
-// sessionsHorizon returns the (tenant-scoped) sessions retention horizon
-// observed on runtime.health for id.
+// sessionsHorizon returns the runtime-wide sessions retention horizon. Since
+// D-490, runtime.health reports only the events horizon; task and session
+// horizons come from the explicit, audited admin-only runtime.retention read.
 func (s *waveV114Stack) sessionsHorizon(t *testing.T, id identity.Identity) prototypes.RetentionHorizon {
 	t.Helper()
-	m := healthRetention(t, s.posture, fleetIdentityCtx(t, id), id)
+	m := runtimeRetention(t, s.posture, auth.WithScopes(fleetIdentityCtx(t, id), []auth.Scope{auth.ScopeAdmin}), id)
 	h, ok := m["sessions"]
 	if !ok {
 		t.Fatalf("sessions retention horizon missing for %s: %+v", id.SessionID, m)
@@ -289,6 +291,10 @@ func TestE2E_WaveV114_ComposedSurfaceStableAcrossReopen(t *testing.T) {
 
 	openedA := s.open(t, idA)
 	openedB := s.open(t, idB)
+	oldest := openedA
+	if openedB.Before(oldest) {
+		oldest = openedB
+	}
 
 	// Session A substrate: $4.50 over two cost events, 1800 tokens, 3 tool runs.
 	s.publishCost(t, idA, 3.00, 1200)
@@ -305,12 +311,14 @@ func TestE2E_WaveV114_ComposedSurfaceStableAcrossReopen(t *testing.T) {
 		if row.TotalCostCents != 450 || row.TotalTokens != 1800 {
 			t.Fatalf("[%s] A enrichment = %dc / %d tok, want 450 / 1800", phase, row.TotalCostCents, row.TotalTokens)
 		}
+		// The runtime-wide horizon is the oldest OpenedAt across sessions:
+		// A was opened first, so it is A's, and reopen must not move it.
 		h := s.sessionsHorizon(t, idA)
-		if h.Scope != prototypes.RetentionScopeTenant {
-			t.Fatalf("[%s] A sessions horizon scope = %q, want tenant", phase, h.Scope)
+		if h.Scope != prototypes.RetentionScopeRuntime {
+			t.Fatalf("[%s] sessions horizon scope = %q, want runtime", phase, h.Scope)
 		}
-		if h.OldestRetainedAt == nil || !h.OldestRetainedAt.Equal(openedA) {
-			t.Fatalf("[%s] A retention horizon = %v, want session OpenedAt %v", phase, h.OldestRetainedAt, openedA)
+		if h.OldestRetainedAt == nil || !h.OldestRetainedAt.Equal(oldest) {
+			t.Fatalf("[%s] retention horizon = %v, want oldest session OpenedAt %v", phase, h.OldestRetainedAt, oldest)
 		}
 		if got := s.toolInvocations(t, idA); got != 3 {
 			t.Fatalf("[%s] A tool invocations = %d, want 3", phase, got)
@@ -341,9 +349,9 @@ func TestE2E_WaveV114_ComposedSurfaceStableAcrossReopen(t *testing.T) {
 	if rowB.TotalCostCents != 100 || rowB.TotalTokens != 100 {
 		t.Fatalf("B enrichment = %dc / %d tok, want 100 / 100 (A's 450c must not bleed)", rowB.TotalCostCents, rowB.TotalTokens)
 	}
-	hB := s.sessionsHorizon(t, idB)
-	if hB.OldestRetainedAt == nil || !hB.OldestRetainedAt.Equal(openedB) {
-		t.Fatalf("B retention horizon = %v, want B OpenedAt %v (A's horizon must not bleed)", hB.OldestRetainedAt, openedB)
+	// The horizon is runtime-wide: the same for any admin caller.
+	if hB := s.sessionsHorizon(t, idB); hB.OldestRetainedAt == nil || !hB.OldestRetainedAt.Equal(oldest) {
+		t.Fatalf("runtime retention horizon via B = %v, want oldest OpenedAt %v", hB.OldestRetainedAt, oldest)
 	}
 	if got := s.toolInvocations(t, idB); got != 1 {
 		t.Fatalf("B tool invocations = %d, want 1 (A's 3 must not bleed)", got)
@@ -428,6 +436,13 @@ func TestE2E_WaveV114_ComposeConcurrency(t *testing.T) {
 		exp[i] = expect{id: id, opened: opened, cents: int64((i + 1) * 100), tokens: int64(tokens), toolRuns: runs}
 	}
 
+	oldest := exp[0].opened
+	for _, e := range exp[1:] {
+		if e.opened.Before(oldest) {
+			oldest = e.opened
+		}
+	}
+
 	const iterations = 5
 	var wg sync.WaitGroup
 	errs := make(chan string, sessionsN*4*iterations)
@@ -478,18 +493,20 @@ func TestE2E_WaveV114_ComposeConcurrency(t *testing.T) {
 				}
 			}
 		}()
-		// Retention reader: sessions horizon == its own OpenedAt throughout.
+		// Retention reader: the runtime-wide sessions horizon (admin
+		// runtime.retention) stays the oldest OpenedAt while every session
+		// is closed and reopened concurrently.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for range iterations {
 				h := s.sessionsHorizon(t, e.id)
-				if h.OldestRetainedAt == nil || !h.OldestRetainedAt.Equal(e.opened) {
-					errs <- "retention horizon bleed on " + e.id.SessionID
+				if h.OldestRetainedAt == nil || !h.OldestRetainedAt.Equal(oldest) {
+					errs <- "retention horizon moved during reopen via " + e.id.SessionID
 					return
 				}
-				if h.Scope == prototypes.RetentionScopeRuntime {
-					errs <- "ordinary caller saw runtime-wide horizon on " + e.id.SessionID
+				if h.Scope != prototypes.RetentionScopeRuntime {
+					errs <- "runtime.retention returned a non-runtime scope via " + e.id.SessionID
 					return
 				}
 			}

@@ -54,7 +54,7 @@ type registryGenerationReporter interface {
 // a revision.
 //
 // The cost is eight small StateStore reads: four agent-config identities
-// (agent pointer, deletion generation, fence list, user pointer) and four for
+// (deletion generation, agent pointer, fence list, user pointer) and four for
 // session admission plus the overlay (agent lifecycle, erasure pending and
 // tombstone, overlay slot). An erased session or inactive agent lifecycle is
 // returned as an error, exactly as an uncached projection would fail. ok=false (with a nil error) means
@@ -94,8 +94,12 @@ func (a CatalogViewResolver) CatalogStamp(ctx context.Context, id identity.Ident
 	}
 
 	// Process-local generations are read first; the durable reads follow.
-	// Order does not affect correctness: a structural cache re-stamps after
-	// building and only inserts when both stamps agree.
+	// The process-local counters are bumped under the same lock as the
+	// mutation they describe, and a structural cache re-stamps after building
+	// and inserts only when both stamps agree. Within the durable reads,
+	// order matters: CatalogInputs reads the deletion generation before the
+	// slots it guards, and the session fences are read before the overlay
+	// slot, so a delete cycle between two stamps is always visible.
 	catEpoch, catGeneration := catalogGen.Epoch(), catalogGen.Generation()
 	regEpoch, regGeneration := registryGen.RegistryEpoch(), registryGen.RegistryGeneration()
 

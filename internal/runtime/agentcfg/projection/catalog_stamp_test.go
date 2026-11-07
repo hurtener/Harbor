@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -371,4 +372,75 @@ func newRegistryOver(t *testing.T, st state.StateStore) agentcfg.Registry {
 		_ = bus.Close(context.Background())
 	})
 	return reg
+}
+
+// afterLoadHookStore runs hook once, right after the first Load of
+// (quad, kind) returns, to land writes between two of the stamp's reads.
+type afterLoadHookStore struct {
+	state.StateStore
+	quad  identity.Quadruple
+	kind  string
+	fired atomic.Bool
+	hook  func()
+}
+
+func (s *afterLoadHookStore) Load(ctx context.Context, q identity.Quadruple, kind string) (state.StateRecord, error) {
+	rec, err := s.StateStore.Load(ctx, q, kind)
+	// CompareAndSwap, not sync.Once: the hook itself loads this slot.
+	if q == s.quad && kind == s.kind && s.hook != nil && s.fired.CompareAndSwap(false, true) {
+		s.hook()
+	}
+	return rec, err
+}
+
+// TestCatalogStamp_DeletionGenerationReadBeforeGuardedSlots is the verifier's
+// hooked-store regression: the agent pointer is read absent, then a writer
+// creates it and rewrites the deletion generation (its pre-delete touch)
+// before the stamp's next read; the delete lands later. Unless the deletion
+// generation is read before the agent pointer, both stamps are identical
+// although the slot cycled absent → present → absent between them.
+func TestCatalogStamp_DeletionGenerationReadBeforeGuardedSlots(t *testing.T) {
+	ctx := context.Background()
+	base, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close(ctx) })
+	agentQuad, kind, err := agentcfg.LifecycleSlot(projTenant, projAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &afterLoadHookStore{StateStore: base, quad: agentQuad, kind: kind}
+	reg := newRegistryOver(t, st)
+	// No session overlay store: the agent lifecycle refusal would otherwise
+	// mask the agent-scope cycle, and embedders may run without one.
+	resolver := projection.CatalogViewResolver{Registry: reg, Catalog: tools.NewCatalog(), OwnerResolver: mcp.NewRegistry()}
+	operator := identity.Quadruple{Identity: identity.Identity{TenantID: projTenant, UserID: "operator", SessionID: "op"}}
+	st.hook = func() {
+		if _, err := reg.SetRevision(ctx, operator, projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+			t.Error(err)
+		}
+		if err := agentcfg.TouchCatalogDeletionGeneration(ctx, base, projTenant, projAgent); err != nil {
+			t.Error(err)
+		}
+	}
+	first, _, ok, err := resolver.CatalogStamp(ctx, projID().Identity, projAgent, "configuration")
+	if err != nil || !ok {
+		t.Fatalf("first stamp ok=%v err=%v", ok, err)
+	}
+	// The writer's delete (its touch already happened inside the hook).
+	rec, err := base.Load(ctx, agentQuad, kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := base.DeleteIf(ctx, state.SlotExpectation{Identity: agentQuad, Kind: kind, ExpectedEventID: rec.ID}); err != nil || !changed {
+		t.Fatalf("delete changed=%v err=%v", changed, err)
+	}
+	second, _, ok, err := resolver.CatalogStamp(ctx, projID().Identity, projAgent, "configuration")
+	if err != nil || !ok {
+		t.Fatalf("second stamp ok=%v err=%v", ok, err)
+	}
+	if first == second {
+		t.Fatal("an absent → present → absent agent-pointer cycle left both stamps equal")
+	}
 }
