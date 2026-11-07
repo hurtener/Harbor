@@ -16426,7 +16426,9 @@ format and nudges an always-on background migrator (two minutes after boot,
 then hourly, smallest heads first). The migrator authenticates the head against
 bodies when needed, pre-writes the deterministic chunks expected-absent in
 batches of 16 outside the publish lock (byte-identical slots are reused, 50 ms
-pause between batches, 1 s after each large session), then flips with one small
+pause between batches, 1 s after each large session; the legacy JSON is
+streamed and authenticated incrementally, so the conversion holds only compact
+rows, not the decoded document), then flips with one small
 header CAS conditioned on the legacy generation, retried when a concurrent
 legacy append wins. Every pre-write and the flip are also conditioned, in the
 same transaction, on the session fence being absent and the erasure epoch

@@ -70,9 +70,12 @@ Two versions move independently in Harbor (RFC §5.3):
 - Migration of a very large legacy session (about 100k events) costs a
   one-time CPU burst of under a second; on a 2-core host other publishes in the
   same process can see a few hundred milliseconds of extra latency meanwhile.
-  The conversion also allocates roughly 100–200 MB of transient memory per
-  20 MB legacy index: check container memory limits (and `GOMEMLIMIT`) on small
-  runtimes before upgrading.
+  The conversion streams the legacy index, so converting a 20 MB / 105k-row
+  index holds about 20–30 MiB of live heap and peaks at about 55 MiB (SQLite)
+  to 100 MiB (Postgres, mostly the driver's read of the head) of heap including
+  collectable garbage. On small runtimes (around 512 MB) set `GOMEMLIMIT`
+  (for example 400MiB) so the collector reclaims that garbage before the
+  container limit.
 - With retention on, the logical trim of an audit backlog is immediate, but
   physical cleanup is throttled: a single session's 105k-row audit backlog
   (about 105k entry records plus their chunks) takes roughly two days, at most
