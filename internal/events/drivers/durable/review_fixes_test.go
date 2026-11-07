@@ -190,6 +190,9 @@ func TestBoot_CorruptHeaderQuarantinesOnlyThatSession(t *testing.T) {
 	if err != nil || len(page.Events) != 601 || !page.RetentionGap {
 		t.Fatalf("projection page with a quarantined session: %d events gap=%v err=%v", len(page.Events), page.RetentionGap, err)
 	}
+	if page.Quality == events.ProjectionCurrent {
+		t.Fatal("a page that skipped a corrupt session claimed Current; a projector would checkpoint past its events")
+	}
 	admin, err := b.ListWindow(context.Background(), events.EventListQuery{Admin: true, Limit: 2000})
 	if err != nil || len(admin.Events) != 601 || !admin.Truncated {
 		t.Fatalf("admin list with a quarantined session: %d events truncated=%v err=%v", len(admin.Events), admin.Truncated, err)
@@ -366,5 +369,97 @@ func TestMigration_NoNudgeForSessionsInBackoff(t *testing.T) {
 	case <-b.maint.nudge:
 		t.Fatal("a session in migration backoff nudged the migrator")
 	default:
+	}
+}
+
+// liveWriterStore publishes through a live bus just before the rebuild's
+// header flip, so the flip's CAS fails.
+type liveWriterStore struct {
+	state.StateStore
+	once    sync.Once
+	publish func()
+}
+
+func (s *liveWriterStore) SaveIf(ctx context.Context, exps []state.SlotExpectation, next state.StateRecord) error {
+	if next.Kind == kindHead {
+		s.once.Do(s.publish)
+	}
+	return s.StateStore.SaveIf(ctx, exps, next)
+}
+
+// TestRebuildSessionIndex_RefusalsAndLiveWriterRollback (verification N2/N3).
+func TestRebuildSessionIndex_RefusalsAndLiveWriterRollback(t *testing.T) {
+	inner := newInmemTestStore(t)
+	b := openIndexBus(t, inner, 0)
+	id := sid("healthy")
+	publishN(t, b, id, 700, events.EventTypeRuntimeWarning, indexEpoch)
+	drained := RebuildSessionIndexOptions{Apply: true, WriterDrained: true}
+	if _, err := RebuildSessionIndex(context.Background(), inner, id, drained); !errors.Is(err, ErrRebuildRefused) {
+		t.Fatalf("rebuild of a verifying index without force = %v, want refused", err)
+	}
+
+	// A live writer publishes during a forced rebuild: the flip's CAS fails,
+	// the new slots roll back and the session stays healthy.
+	before := sessionIndexSeqs(t, inner, id)
+	hdrBefore, _ := loadHeaderV2(t, inner, id)
+	store := &liveWriterStore{StateStore: inner, publish: func() {
+		mustf(t, b.Publish(context.Background(), testEvent(id, events.EventTypeRuntimeWarning, indexEpoch)), "live publish")
+	}}
+	forced := drained
+	forced.Force = true
+	if _, err := RebuildSessionIndex(context.Background(), store, id, forced); !errors.Is(err, ErrRebuildRefused) {
+		t.Fatalf("rebuild racing a live writer = %v, want refused", err)
+	}
+	after := sessionIndexSeqs(t, inner, id)
+	if len(after) != len(before)+1 {
+		t.Fatalf("session after the failed rebuild has %d rows, want %d", len(after), len(before)+1)
+	}
+	hdrAfter, _ := loadHeaderV2(t, inner, id)
+	for _, kind := range listKinds(t, inner, id, kindChunkPrefix) {
+		index, _ := parseChunkKind(kind)
+		if index < hdrAfter.FirstChunk || index >= hdrAfter.NextChunk {
+			t.Fatalf("failed rebuild left unreferenced chunk slot %d (index [%d,%d))", index, hdrAfter.FirstChunk, hdrAfter.NextChunk)
+		}
+	}
+	if hdrAfter.FirstChunk != hdrBefore.FirstChunk {
+		t.Fatal("failed rebuild changed the live index")
+	}
+	if got, err := b.Replay(context.Background(), events.Cursor{SessionID: id.SessionID}, filterFor(id)); err != nil || len(got) != 701 {
+		t.Fatalf("session unhealthy after the failed rebuild: %d, %v", len(got), err)
+	}
+
+	// A forced rebuild without a live writer succeeds and preserves reads.
+	snap := snapshotReaders(t, b, id, after[100])
+	if _, err := RebuildSessionIndex(context.Background(), inner, id, forced); err != nil {
+		t.Fatalf("forced rebuild: %v", err)
+	}
+	if !reflect.DeepEqual(snap, snapshotReaders(t, b, id, after[100])) {
+		t.Fatal("forced rebuild changed reads")
+	}
+	if left := listKinds(t, inner, id, kindChunkPrefix); len(left) != 2 {
+		t.Fatalf("old chunk slots not removed after rebuild: %d", len(left))
+	}
+
+	// A fenced session is refused even with force.
+	mustf(t, b.Fence(context.Background(), id.Identity), "Fence")
+	if _, err := RebuildSessionIndex(context.Background(), inner, id, forced); !errors.Is(err, ErrRebuildRefused) {
+		t.Fatalf("rebuild of a fenced session = %v, want refused", err)
+	}
+}
+
+// TestRetention_NonInternalAuditRowsAreNeverTrimmed (verification latent
+// P1-2): only bus-internal audit notices qualify, so a trim can never remove a
+// row a canonical reader still needs.
+func TestRetention_NonInternalAuditRowsAreNeverTrimmed(t *testing.T) {
+	cutoff := retentionNow.UnixNano()
+	internal := indexRow{Seq: 1, Type: events.EventTypeAdminScopeUsed, Internal: true, OccurredAt: 1}
+	canonical := indexRow{Seq: 2, Type: events.EventType("audit.hypothetical_canonical"), Internal: false, OccurredAt: 1}
+	if !rowQualifies(internal, cutoff) || rowQualifies(canonical, cutoff) {
+		t.Fatal("retention must trim only bus-internal audit.* rows")
+	}
+	for _, typ := range events.EventTypes() {
+		if strings.HasPrefix(string(typ), "audit.") && !events.IsBusInternalNotice(typ) {
+			t.Errorf("registered audit type %q is not a bus-internal notice; audit retention will keep it (update D-493 if it should be trimmable)", typ)
+		}
 	}
 }
