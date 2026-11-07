@@ -491,14 +491,13 @@ func h1SeedDurableHead(t *testing.T, st state.StateStore) (events.EventBus, even
 		MetadataValidatedCount    int               `json:"metadata_validated_count,omitempty"`
 		MetadataIntegrityChecksum string            `json:"metadata_integrity_checksum,omitempty"`
 	}
-	if err := json.Unmarshal(headRecord.Bytes, &head); err != nil {
-		t.Fatal(err)
-	}
-	if len(head.Metadata) != 1 || !head.MetadataReady {
-		t.Fatalf("canonical metadata fixture not ready: %+v", head)
-	}
+	// Since D-492 a new session's head is the chunked v2 index. This fixture
+	// needs a large legacy (v1) head, so it writes the v1 shape directly: one
+	// metadata row per body in the exact form the legacy writer produced.
+	head.MetadataReady = true
 	start := time.Now()
-	metadataTemplate := head.Metadata[0]
+	metadataTemplate := json.RawMessage(fmt.Sprintf(`{"type":%q,"tenant_id":%q,"user_id":%q,"session_id":%q,"occurred_at":%d,"sequence":1}`,
+		event.Type, event.Identity.TenantID, event.Identity.UserID, event.Identity.SessionID, event.OccurredAt.UnixNano()))
 	head.Sequences = make([]uint64, 50000)
 	head.Metadata = make([]json.RawMessage, 50000)
 	for i := range head.Sequences {

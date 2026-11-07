@@ -280,7 +280,7 @@ type legacyWriter struct {
 	head   headRecord
 }
 
-func (w *legacyWriter) load(t *testing.T) error {
+func (w *legacyWriter) load() error {
 	rec, err := w.store.Load(context.Background(), w.id, kindHead)
 	if err != nil {
 		return err
@@ -316,7 +316,7 @@ func TestMigration_AC7_OldWriterHoldingPreMigrationCASFailsWithoutWriting(t *tes
 	seedLegacySession(t, store, seedSpec{id: id, n: 3000, at: indexEpoch, bodies: true})
 	b := openIndexBus(t, store, 0)
 	old := &legacyWriter{store: store, id: id}
-	mustf(t, old.load(t), "old writer load")
+	mustf(t, old.load(), "old writer load")
 	flipped, err := b.migrateSession(context.Background(), id)
 	if err != nil || !flipped {
 		t.Fatalf("migrate = %v, %v", flipped, err)
@@ -326,7 +326,7 @@ func TestMigration_AC7_OldWriterHoldingPreMigrationCASFailsWithoutWriting(t *tes
 	if err := old.commit(9001); !errors.Is(err, state.ErrConditionFailed) {
 		t.Fatalf("old writer CAS after flip = %v, want ErrConditionFailed", err)
 	}
-	if err := old.load(t); err == nil {
+	if err := old.load(); err == nil {
 		t.Fatal("old writer decoded a v2 header; it must fail loudly")
 	}
 	after, err := store.Load(context.Background(), id, kindHead)
@@ -515,7 +515,7 @@ func runLargeMigration(t *testing.T, inner, peer state.StateStore, name string) 
 		var firstErr error
 		stop := time.Now().Add(d)
 		var wg sync.WaitGroup
-		for p := 0; p < publishers; p++ {
+		for p := range publishers {
 			wg.Add(1)
 			go func(p int) {
 				defer wg.Done()
@@ -641,7 +641,7 @@ migrated:
 	}
 	// Post-flip publishes to the migrated session are fast.
 	var lat []time.Duration
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		start := time.Now()
 		mustf(t, b.Publish(ctx, testEvent(id, events.EventTypeRuntimeWarning, indexEpoch.Add(2*time.Hour))), "post-flip publish")
 		lat = append(lat, time.Since(start))

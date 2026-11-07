@@ -119,7 +119,7 @@ func seedLegacySession(t testing.TB, store state.StateStore, spec seedSpec) []ev
 }
 
 // seedV2Session writes a v2 header plus sealed chunks directly.
-func seedV2Session(t testing.TB, store state.StateStore, spec seedSpec) []events.Event {
+func seedV2Session(t testing.TB, store state.StateStore, spec seedSpec) {
 	t.Helper()
 	evs := seedBodies(t, store, spec)
 	hdr := newIndexHeader()
@@ -152,14 +152,13 @@ func seedV2Session(t testing.TB, store state.StateStore, spec seedSpec) []events
 		t.Fatalf("seed header: %v", err)
 	}
 	floorAuthority(t, store, spec.startSeq+uint64(spec.n))
-	return evs
 }
 
 // floorAuthority raises the global sequence authority to at least seq.
 func floorAuthority(t testing.TB, store state.StateStore, seq uint64) {
 	t.Helper()
 	b := &bus{store: store}
-	for attempt := 0; attempt < 16; attempt++ {
+	for range 16 {
 		current, exp, err := b.loadSequenceAuthority(context.Background())
 		if err != nil {
 			t.Fatalf("load authority: %v", err)

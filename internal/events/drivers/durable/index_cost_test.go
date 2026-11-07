@@ -45,7 +45,7 @@ func TestIndexV2_AC1_PerAppendCostIndependentOfHistory(t *testing.T) {
 func measureAppendP50(t testing.TB, b *bus, ids []identity.Quadruple, rounds int) []time.Duration {
 	lat := make([][]time.Duration, len(ids))
 	ctx := context.Background()
-	for r := 0; r < rounds; r++ {
+	for r := range rounds {
 		for i, id := range ids {
 			ev := testEvent(id, events.EventTypeRuntimeWarning, indexEpoch.Add(time.Duration(r)*time.Second))
 			began := time.Now()
@@ -73,7 +73,7 @@ func BenchmarkIndexV2_PublishByRetainedHistory(b *testing.B) {
 			seedV2Session(b, store, seedSpec{id: id, n: n, at: indexEpoch})
 			bb := openIndexBus(b, store, 0)
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				if err := bb.Publish(context.Background(), testEvent(id, events.EventTypeRuntimeWarning, indexEpoch)); err != nil {
 					b.Fatal(err)
 				}

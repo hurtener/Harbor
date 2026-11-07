@@ -53,7 +53,7 @@ func TestMigration_MemoryPeakLargeHead(t *testing.T) {
 				var worst time.Duration
 				n := 0
 				var wg sync.WaitGroup
-				for p := 0; p < 4; p++ {
+				for p := range 4 {
 					wg.Add(1)
 					go func(p int) {
 						defer wg.Done()
@@ -243,7 +243,7 @@ func TestStreamLegacyRows_MatchesFullDecodeAndFallsBack(t *testing.T) {
 		t.Fatalf("changed prefix on the stream = %v, want a decline", err)
 	}
 	b := &bus{store: store, clock: realClock{}, logger: discardTestLogger()}
-	if _, err := b.loadLegacyRows(context.Background(), id, rec.Bytes, bad); !errors.Is(err, ErrIndexIntegrity) {
+	if _, err := b.loadLegacyRows(id, rec.Bytes, bad); !errors.Is(err, ErrIndexIntegrity) {
 		t.Fatalf("changed prefix through the full path = %v, want ErrIndexIntegrity", err)
 	}
 	declines := func(name string, raw []byte) {

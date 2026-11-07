@@ -98,7 +98,7 @@ func TestIndexV2_NewSessionsWriteV2AndAllReadersAgree(t *testing.T) {
 		id := sid("fresh")
 		other := sid("other")
 		var published []events.Event
-		for i := 0; i < 700; i++ {
+		for i := range 700 {
 			typ := events.EventTypeRuntimeWarning
 			if i%7 == 0 {
 				typ = events.EventTypeAdminScopeUsed
@@ -224,7 +224,7 @@ func corruptHeader(t *testing.T, store state.StateStore, id identity.Quadruple, 
 
 func publishN(t *testing.T, b *bus, id identity.Quadruple, n int, typ events.EventType, at time.Time) {
 	t.Helper()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		mustf(t, b.Publish(context.Background(), testEvent(id, typ, at.Add(time.Duration(i)*time.Millisecond))), "publish %d", i)
 	}
 }
@@ -408,12 +408,12 @@ func TestIndexV2_AC8_TwoBusesPostgresConcurrentPublishers(t *testing.T) {
 	errCh := make(chan error, 2*publishersPerBus*perPublisher)
 	start := make(chan struct{})
 	for busIdx, bb := range []*bus{left, right} {
-		for p := 0; p < publishersPerBus; p++ {
+		for p := range publishersPerBus {
 			wg.Add(1)
 			go func(bb *bus, p int) {
 				defer wg.Done()
 				<-start
-				for i := 0; i < perPublisher; i++ {
+				for i := range perPublisher {
 					id := sid(fmt.Sprintf("s%d", (p+i+busIdx)%sessions))
 					errCh <- bb.Publish(context.Background(), testEvent(id, events.EventTypeRuntimeWarning, indexEpoch.Add(time.Duration(i)*time.Second)))
 				}
@@ -430,7 +430,7 @@ func TestIndexV2_AC8_TwoBusesPostgresConcurrentPublishers(t *testing.T) {
 	}
 	total := 2 * publishersPerBus * perPublisher
 	var all []uint64
-	for s := 0; s < sessions; s++ {
+	for s := range sessions {
 		id := sid(fmt.Sprintf("s%d", s))
 		seqs := sessionIndexSeqs(t, store, id)
 		entries, err := store.ListKindForIdentity(context.Background(), id, kindEntryPrefix)

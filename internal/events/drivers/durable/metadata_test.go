@@ -432,8 +432,10 @@ func TestDurable_MetadataIndex_RestartIsIdempotentAndMalformedRowsFailLoudly(t *
 	}
 	_ = second.Close(context.Background())
 
-	// An unknown type is a malformed projection and must refuse boot rather
-	// than letting an unrelated event ledger satisfy the index contract.
+	// A malformed type is a corrupt projection and must refuse boot rather
+	// than letting an unrelated event ledger satisfy the index contract. (A
+	// well-formed but unregistered type is read as opaque — see
+	// TestDurable_ForwardCompatibleOpaqueEventType.)
 	rec, err := store.Load(context.Background(), metadataIdentity(), kindHead)
 	if err != nil {
 		t.Fatalf("load head: %v", err)
@@ -442,7 +444,7 @@ func TestDurable_MetadataIndex_RestartIsIdempotentAndMalformedRowsFailLoudly(t *
 	if err != nil {
 		t.Fatalf("decode head: %v", err)
 	}
-	head.Metadata[0].Type = events.EventType("events.unknown.test")
+	head.Metadata[0].Type = events.EventType("Not A Type!")
 	bytes, err := encodeHead(head)
 	if err != nil {
 		t.Fatalf("encode malformed head: %v", err)
@@ -451,7 +453,7 @@ func TestDurable_MetadataIndex_RestartIsIdempotentAndMalformedRowsFailLoudly(t *
 		t.Fatalf("save malformed head: %v", err)
 	}
 	if _, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store); err == nil {
-		t.Fatal("New accepted metadata with an unknown event type")
+		t.Fatal("New accepted metadata with a malformed event type")
 	}
 }
 
@@ -563,12 +565,12 @@ func TestDurable_MetadataIndex_LegacyBackfillRejectsIdentitySequenceAndMalformed
 			want: "payload identity/sequence mismatch",
 		},
 		{
-			name: "unknown event type",
+			name: "malformed event type",
 			event: events.Event{
-				Type: events.EventType("events.unknown.v1292"), Identity: storageID,
+				Type: events.EventType("Events Unknown"), Identity: storageID,
 				OccurredAt: base, Sequence: 1, Payload: events.BusDroppedPayload{},
 			},
-			want: "unknown event type",
+			want: "malformed event type",
 		},
 		{
 			name: "user mismatch",

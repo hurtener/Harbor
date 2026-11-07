@@ -386,7 +386,7 @@ func TestRetention_AC6_ConcurrentPublishDuringTrimPostgres(t *testing.T) {
 	const sessions = 4
 	var ids []identity.Quadruple
 	var start uint64
-	for s := 0; s < sessions; s++ {
+	for s := range sessions {
 		id := sid(fmt.Sprintf("busy-%d", s))
 		ids = append(ids, id)
 		seedV2Session(t, store, seedSpec{id: id, startSeq: start, n: 3 * indexChunkRows, at: oldAt(), bodies: true,
@@ -404,11 +404,11 @@ func TestRetention_AC6_ConcurrentPublishDuringTrimPostgres(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1024)
 	for i, bb := range []*bus{left, right} {
-		for p := 0; p < 6; p++ {
+		for p := range 6 {
 			wg.Add(1)
 			go func(bb *bus, p int) {
 				defer wg.Done()
-				for k := 0; k < 25; k++ {
+				for k := range 25 {
 					id := ids[(p+k+i)%sessions]
 					if err := bb.Publish(ctx, testEvent(id, events.EventTypeRuntimeWarning, recentAt())); err != nil {
 						errCh <- err
@@ -422,7 +422,7 @@ func TestRetention_AC6_ConcurrentPublishDuringTrimPostgres(t *testing.T) {
 		wg.Add(1)
 		go func(bb *bus) {
 			defer wg.Done()
-			for k := 0; k < 4; k++ {
+			for range 4 {
 				if _, err := bb.runRetentionPass(ctx); err != nil {
 					errCh <- err
 					return
@@ -485,7 +485,7 @@ func (s *countingDeleteStore) ListKind(ctx context.Context, scope state.ListScop
 func TestRetention_AC7_ScaleBudgetAndResume(t *testing.T) {
 	inner := newInmemTestStore(t)
 	const sessions = 12_000
-	for i := 0; i < sessions; i++ {
+	for i := range sessions {
 		id := sid(fmt.Sprintf("audit-%05d", i))
 		ev := testEvent(id, events.EventTypeAdminScopeUsed, oldAt())
 		ev.Sequence = uint64(i + 1)
@@ -506,7 +506,7 @@ func TestRetention_AC7_ScaleBudgetAndResume(t *testing.T) {
 	trimmed := 0
 	cleaned := func() int {
 		n := 0
-		for i := 0; i < sessions; i++ {
+		for i := range sessions {
 			hdr, _ := loadHeaderV2(t, inner, sid(fmt.Sprintf("audit-%05d", i)))
 			if !hdr.Trimmed.CleanupPending && hdr.Trimmed.Count == 1 {
 				n++

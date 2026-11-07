@@ -118,7 +118,7 @@ func TestProjection_RaceWithTrimKeepsRetainedEvents(t *testing.T) {
 			var first events.ProjectionPage
 			done := make(chan error, 1)
 			go func() {
-				for i := 0; i < 50; i++ {
+				for i := range 50 {
 					page, err := reader.Page(context.Background(), checkpoint, limit)
 					if err != nil {
 						done <- err
@@ -306,7 +306,7 @@ func TestRetention_LargeBacklogDoesNotStarveOtherSessions(t *testing.T) {
 	publishN(t, b, big, 8*indexChunkRows, events.EventTypeAdminScopeUsed, oldAt())
 	publishN(t, b, big, 5, events.EventTypeRuntimeWarning, recentAt())
 	var small []identity.Quadruple
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		id := sid(fmt.Sprintf("zzz-small-%02d", i))
 		small = append(small, id)
 		mustf(t, b.Publish(context.Background(), testEvent(id, events.EventTypeAdminScopeUsed, oldAt())), "publish")
@@ -321,7 +321,7 @@ func TestRetention_LargeBacklogDoesNotStarveOtherSessions(t *testing.T) {
 	if hdr, _ := loadHeaderV2(t, store, big); hdr.Trimmed.Count != 8*indexChunkRows || !hdr.Trimmed.CleanupPending {
 		t.Fatalf("large session: %+v", hdr.Trimmed)
 	}
-	for pass := 0; pass < 10; pass++ {
+	for range 10 {
 		runPass(t, b)
 	}
 	if left := listKinds(t, store, big, kindChunkPrefix); len(left) != 0 {
@@ -342,7 +342,7 @@ func TestRetention_CleanupProvesExhaustionBeyondListingBound(t *testing.T) {
 		m.deleteSlice = 1 << 20
 	}))
 	mustf(t, b.Publish(context.Background(), testEvent(id, events.EventTypeRuntimeWarning, recentAt())), "recent row")
-	for pass := 0; pass < 3; pass++ {
+	for range 3 {
 		runPass(t, b)
 	}
 	hdr, _ := loadHeaderV2(t, store, id)
@@ -462,4 +462,76 @@ func TestRetention_NonInternalAuditRowsAreNeverTrimmed(t *testing.T) {
 			t.Errorf("registered audit type %q is not a bus-internal notice; audit retention will keep it (update D-493 if it should be trimmable)", typ)
 		}
 	}
+}
+
+// TestMigration_NudgeRespectsBootQuietPeriod: a publish-path nudge never runs
+// the migrator before the initial boot delay.
+func TestMigration_NudgeRespectsBootQuietPeriod(t *testing.T) {
+	store := newInmemTestStore(t)
+	id := sid("early")
+	seedLegacySession(t, store, seedSpec{id: id, n: inlineMigrationMaxRows + 1, at: indexEpoch, bodies: true})
+	opened, err := New(context.Background(), metadataCfg(), auditpatterns.New(), store, WithLogger(discardTestLogger()), withMaintenance(func(m *maintenance) {
+		m.initialDelay = time.Hour
+	}))
+	mustf(t, err, "New")
+	t.Cleanup(func() { _ = opened.Close(context.Background()) })
+	mustf(t, opened.Publish(context.Background(), testEvent(id, events.EventTypeRuntimeWarning, indexEpoch)), "publish")
+	time.Sleep(300 * time.Millisecond)
+	if isV2Head(t, store, id) {
+		t.Fatal("a nudge ran the migrator inside the boot quiet period")
+	}
+}
+
+// TestDurable_ForwardCompatibleOpaqueEventType: a session holding an event
+// type this binary does not register (persisted by a newer release) stays
+// readable on every path — legacy adoption at boot, the v2 index, migration,
+// Replay/Window/list/projection — instead of failing. Malformed types are
+// still refused.
+func TestDurable_ForwardCompatibleOpaqueEventType(t *testing.T) {
+	const future = events.EventType("tools.future_feature.changed")
+	if events.IsValidEventType(future) {
+		t.Fatal("fixture type is registered")
+	}
+	for _, malformed := range []events.EventType{"", "nodots", "Upper.Case", "a..b", ".a", "a.", "a.b c", events.EventType(strings.Repeat("a.", 70))} {
+		if readableEventType(malformed) {
+			t.Fatalf("malformed type %q accepted", malformed)
+		}
+	}
+	store := newInmemTestStore(t)
+	legacy := sid("legacy-future")
+	seedLegacySession(t, store, seedSpec{id: legacy, n: 600, at: indexEpoch, bodies: true, typeOf: func(i int) events.EventType {
+		if i%10 == 0 {
+			return future
+		}
+		return events.EventTypeRuntimeWarning
+	}})
+	b := openIndexBus(t, store, 0) // boot adopts the legacy head
+	v2 := sid("v2-future")
+	seedV2Session(t, store, seedSpec{id: v2, startSeq: 600, n: 600, at: indexEpoch, bodies: true, typeOf: func(i int) events.EventType {
+		if i%10 == 0 {
+			return future
+		}
+		return events.EventTypeRuntimeWarning
+	}})
+	for _, id := range []identity.Quadruple{legacy, v2} {
+		got, err := b.Replay(context.Background(), events.Cursor{SessionID: id.SessionID}, filterFor(id))
+		if err != nil || len(got) != 600 || got[0].Type != future {
+			t.Fatalf("Replay of a session with an opaque type: %d, %v", len(got), err)
+		}
+		if w, err := b.Window(context.Background(), 0, 1000, filterFor(id)); err != nil || len(w) != 600 {
+			t.Fatalf("Window: %d, %v", len(w), err)
+		}
+	}
+	page, err := b.Page(context.Background(), 0, 2000)
+	if err != nil || len(page.Events) != 1200 {
+		t.Fatalf("projection page: %d, %v", len(page.Events), err)
+	}
+	// The legacy session migrates with its opaque rows intact.
+	if flipped, err := b.migrateSession(context.Background(), legacy); err != nil || !flipped {
+		t.Fatalf("migrate: %v %v", flipped, err)
+	}
+	if rows := sessionIndexRows(t, store, legacy); rows[0].Type != future {
+		t.Fatalf("migrated row type %q", rows[0].Type)
+	}
+	mustf(t, b.Publish(context.Background(), testEvent(legacy, events.EventTypeRuntimeWarning, indexEpoch)), "publish after migration")
 }
