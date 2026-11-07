@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.39.0] — 2026-11-07
+
 ### Security
 
 - `tool_search`, `tool_get` and `declarative_action` now answer strictly
@@ -64,6 +66,31 @@ Two versions move independently in Harbor (RFC §5.3):
   artifact write, and the run's `<skills_context>` directory includes the
   run's deferred tools, matching the `skill_*` tools.
 
+- Run-start reconciliation of an agent-tier signed OAuth MCP pair now prepares
+  the private connection as the pair's frozen owner instead of the end user
+  whose run triggered the pass, matching the initial registration. Previously
+  the credential exchange during preparation carried the end user as subject,
+  a governing broker refused it, the pair never attached and every run paid
+  for a failed retry. User-tier pairs keep the acting user, and live planner
+  tool calls keep the end user's identity and the existing refusal to
+  bound-operation retry.
+- One failing signed pair no longer aborts reconciliation of the remaining
+  pairs, the user tier, or the provider, connection and discovery-allowance
+  legs. Each per-pair failure is logged separately.
+- The generic run-start connection detach can no longer tear down a signed
+  pair whose publication succeeded while its activation fence is still
+  pending (the logical revision hides it in that window). Registrations
+  backed by a connection-owned private credential are omitted from the
+  generic reconcile view and refused by generic deregistration; the paired
+  catalog withdrawal now runs only after the registry admits the removal, and
+  orphaned-catalog cleanup checks for any live, staged or closing
+  registration atomically under the registry lock, so it can never strip a
+  concurrently published connection's tools.
+- Closing the runtime MCP connection attacher now refuses new attaches,
+  cancels and joins in-flight preparations and re-attaches, and refuses a
+  late activation, so no connection is published or left undrained after
+  close.
+
 ### Changed
 
 - **Breaking (`sdk/tools`):** `ToolCatalog.Search` now takes a
@@ -82,6 +109,29 @@ Two versions move independently in Harbor (RFC §5.3):
   config). The unreachable `LoadingResolver` / `WithLoadingResolver` path
   (effective loading already comes from the resolved view) is removed.
 
+- A signed pair whose private preparation fails is retried under a bounded
+  per-pair window (30 s doubling to 5 min, reset by any revision, receipt or
+  phase change; a successful preparation of another pair of the same owner
+  through the same broker heals only windows opened by a shared broker
+  outage, never a pair-specific refusal; user-tier windows are per acting
+  session; at most 1024 tracked pairs). Suppressed attempts make no credential exchange or durable write
+  and log at debug level. Expiry, fence commits and removals are never
+  suppressed.
+- Agent-tier preparation runs in a context carrying only the pair owner's
+  identity (no end-user verified identity or run), so its events, audit and
+  any consent park are attributed to the owner consistently.
+- Signed-capability reconciliation is serialized per owner slot (tenant and
+  agent, plus user for user-tier pairs) instead of runtime-wide, so runs for
+  different tenants or agents no longer queue behind each other. Gate entries
+  are released with their last waiter; agent-tier scan cursors are keyed by
+  (tenant, agent) rather than the triggering end user and capped at 4096.
+- The runtime MCP connection attacher serializes attaches per physical
+  connection name with a cancellable gate instead of one process-wide lock
+  held across network preparation, so a stalled downstream for one owner no
+  longer blocks other owners, and a waiter honours its own cancellation.
+- An already-attached published pair skips durable revalidation on run-start
+  reconcile (registration replay keeps the full re-check).
+
 ### Added
 
 - MCP tools carry their server's self-declared display metadata
@@ -89,6 +139,7 @@ Two versions move independently in Harbor (RFC §5.3):
   server's instructions), indexed for search so a server-name query matches.
   `tool_search` and `tool_get` results include a `server` label. Model-visible
   tool names are unchanged.
+
 
 ## [1.38.0] — 2026-11-07
 

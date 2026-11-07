@@ -29,6 +29,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
+	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/runsnapshot"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -856,5 +857,47 @@ func TestRunOne_ToolDispatch_IncrementsToolCount(t *testing.T) {
 	}
 	if got.ToolCount != 1 {
 		t.Errorf("ToolCount = %d, want 1 (the dispatch hook must have fired once)", got.ToolCount)
+	}
+}
+
+// failingSignedReconciler models one failing pair (plus one parked by its
+// retry window) on both tiers.
+type failingSignedReconciler struct{ agentCalls, userCalls atomic.Int32 }
+
+func (r *failingSignedReconciler) ReconcileSignedOAuthMCPCapability(context.Context, identity.Quadruple, string) error {
+	r.agentCalls.Add(1)
+	return errors.Join(errors.New("pair a: preparation refused"),
+		fmt.Errorf("pair b: %w", agentcfgprotocol.ErrSignedCapabilityAttachSuppressed))
+}
+
+func (r *failingSignedReconciler) ReconcileSignedOAuthMCPCapabilityForScope(context.Context, identity.Quadruple, string, agentcfg.ConfigScope) error {
+	r.userCalls.Add(1)
+	return errors.New("user pair: preparation refused")
+}
+
+// TestRunLoopDriver_Reconcile_SignedPairFailureDoesNotSkipLaterLegs — a
+// failing signed pair is logged, but the user tier and the connection detach
+// leg still run.
+func TestRunLoopDriver_Reconcile_SignedPairFailureDoesNotSkipLaterLegs(t *testing.T) {
+	q := identity.Quadruple{Identity: runLoopDriverTestID, RunID: "r"}
+	ctx, err := identity.With(context.Background(), q.Identity)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	signed := &failingSignedReconciler{}
+	det := &staleSourceDetacher{}
+	d := &RunLoopDriver{
+		logger:                   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		signedOAuthMCPReconciler: signed,
+		connectionDetacher:       det,
+		agentConfig:              &countingFailRegistry{failAt: 0},
+		agentConfigID:            "reconcile-agent",
+	}
+	d.reconcileConnections(ctx, d.agentConfigID, q)
+	if signed.agentCalls.Load() != 1 || signed.userCalls.Load() != 1 {
+		t.Fatalf("signed tiers called agent=%d user=%d, want both", signed.agentCalls.Load(), signed.userCalls.Load())
+	}
+	if det.detached.Load() != 1 {
+		t.Fatalf("detach leg ran %d times after a signed pair failure, want 1", det.detached.Load())
 	}
 }
