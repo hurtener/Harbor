@@ -16440,6 +16440,14 @@ publish path. Readers reload the header when a chunk or body disappears mid-read
 and classify the miss as trimmed (D-493) or a genuine gap. The legacy repair
 command reports v2 heads as `not_legacy_v2` and never mutates them.
 
+Forward compatibility: durable reads accept an unregistered but well-formed
+event type (dot-separated lowercase `[a-z0-9_]` segments, at least two, at most
+128 bytes) as opaque, never a bus-internal notice. A v1.35.0 binary rejected
+v1.36.0's `tools.catalog.changed` while adopting durable metadata, which made
+every session containing it unreadable to projections on the older binary;
+treating such types as opaque keeps future rollbacks to this release readable.
+Publishing still requires a registered type.
+
 Known limitation: readers reach an old position by walking the verified chain
 back from the tail, one chunk load per 256 rows. Steady-state reads near the
 tail are cheap, but a deep `Window`/`events.list` page or a projection rebuild

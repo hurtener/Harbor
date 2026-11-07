@@ -51,7 +51,25 @@ Two versions move independently in Harbor (RFC §5.3):
   `ErrCursorTooOld`, list pages set `truncated`, and projection pages set
   `RetentionGap`. New gauge `harbor_events_retention_heads`.
 
+- Durable event reads accept an unregistered but well-formed event type
+  (dot-separated lowercase segments) as opaque instead of failing: legacy head
+  adoption, the v2 index, migration and every reader keep working on sessions
+  that hold events from a newer release. Malformed types are still refused, and
+  publishing still requires a registered type.
+
 ### Upgrade notes
+
+- **Correction to the v1.36.0 notes:** a plain image revert from v1.36.0 to
+  v1.35.0 is not fully safe. v1.36.0 persists the new `tools.catalog.changed`
+  event in durable session logs, and a v1.35.0 binary rejects that unknown
+  event type while adopting durable metadata, so its turns materializer fails
+  with `metadata sequence=N has unknown event type "tools.catalog.changed"` for
+  any session containing it. This was observed on the outgoing v1.35.0 instance
+  during a rolling deploy overlap (transient; it cleared when the old instance
+  stopped). After a rollback below v1.36.0, such sessions stay unreadable by
+  projections until the runtime moves forward again. From this release on,
+  unknown well-formed event types are read as opaque, so a later rollback to
+  this release does not repeat the problem for future event types.
 
 - **Forward-only storage change.** Each durable-log session migrates to the v2
   index once. Binaries below this release cannot decode a migrated header: their
