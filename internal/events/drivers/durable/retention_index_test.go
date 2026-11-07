@@ -53,6 +53,11 @@ func TestRetention_AC1_PrefixTrimWholeChunksAndExactSummary(t *testing.T) {
 		publishN(t, b, id, 10, events.EventTypeRuntimeWarning, recentAt())
 		rows := sessionIndexRows(t, store, id)
 		stats := runPass(t, b)
+		// 771 deletes exceed one session's per-pass slice (514); the
+		// second pass finishes the cleanup.
+		if again := runPass(t, b); again.RowsTrimmed != 0 {
+			t.Fatalf("second pass trimmed again: %+v", again)
+		}
 		if stats.ChunksTrimmed != 3 || stats.RowsTrimmed != 768 {
 			t.Fatalf("pass trimmed %d chunks / %d rows, want 3 / 768 (only whole qualifying chunks)", stats.ChunksTrimmed, stats.RowsTrimmed)
 		}
@@ -161,8 +166,8 @@ func TestRetention_AC3_TailRuleTrimsOneRowAuditSession(t *testing.T) {
 		if summary.TrimmedCount != 1 || summary.FirstTrimmedSeq != seq || summary.LastTrimmedSeq != seq {
 			t.Fatalf("summary %+v", summary)
 		}
-		if _, _, _, err := b.Bounds(context.Background(), filterFor(id)); !errors.Is(err, events.ErrNoHistory) {
-			t.Fatalf("Bounds on an emptied session = %v, want ErrNoHistory", err)
+		if lo, hi, truncated, err := b.Bounds(context.Background(), filterFor(id)); err != nil || lo != 0 || hi != 0 || !truncated {
+			t.Fatalf("Bounds on an emptied session = %d %d %v %v, want an empty truncated window", lo, hi, truncated, err)
 		}
 		// The session keeps working: new events append after the cut.
 		mustf(t, b.Publish(context.Background(), testEvent(id, events.EventTypeRuntimeWarning, recentAt())), "publish after trim")
@@ -499,20 +504,38 @@ func TestRetention_AC7_ScaleBudgetAndResume(t *testing.T) {
 	b := retentionBus(t, store)
 	var resumes []string
 	trimmed := 0
-	for pass := 1; pass <= 10 && trimmed < sessions; pass++ {
+	cleaned := func() int {
+		n := 0
+		for i := 0; i < sessions; i++ {
+			hdr, _ := loadHeaderV2(t, inner, sid(fmt.Sprintf("audit-%05d", i)))
+			if !hdr.Trimmed.CleanupPending && hdr.Trimmed.Count == 1 {
+				n++
+			}
+		}
+		return n
+	}
+	for pass := 1; pass <= 10; pass++ {
 		before := store.deletes.Load()
 		stats := runPass(t, b)
 		if got := store.deletes.Load() - before; got > retentionDeleteBudget {
 			t.Fatalf("pass %d issued %d deletes, budget is %d", pass, got, retentionDeleteBudget)
 		}
-		if stats.SessionsScanned == 0 || b.retentionHeads.Load() != sessions {
-			t.Fatalf("pass %d scanned %d (heads gauge %d)", pass, stats.SessionsScanned, b.retentionHeads.Load())
+		if stats.SessionsScanned != sessions || b.retentionHeads.Load() != sessions {
+			t.Fatalf("pass %d scanned %d (heads gauge %d); every pass must traverse every head", pass, stats.SessionsScanned, b.retentionHeads.Load())
 		}
 		trimmed += stats.RowsTrimmed
+		if pass == 1 && trimmed != sessions {
+			// The delete budget must not starve trim commits: every
+			// eligible session is trimmed in the first pass.
+			t.Fatalf("pass 1 trimmed %d of %d sessions", trimmed, sessions)
+		}
 		resumes = append(resumes, b.maint.resumeKey)
+		if b.maint.resumeKey == "" {
+			break
+		}
 	}
-	if trimmed != sessions {
-		t.Fatalf("trimmed %d of %d sessions within 10 passes", trimmed, sessions)
+	if got := cleaned(); got != sessions {
+		t.Fatalf("%d of %d sessions fully cleaned within 10 passes", got, sessions)
 	}
 	for i := 1; i < len(resumes)-1; i++ {
 		if resumes[i] <= resumes[i-1] {
@@ -520,7 +543,7 @@ func TestRetention_AC7_ScaleBudgetAndResume(t *testing.T) {
 		}
 	}
 	if len(resumes) < 6 {
-		t.Fatalf("12k one-row sessions finished in %d passes; the 2,000-delete budget was not applied", len(resumes))
+		t.Fatalf("12k one-row sessions were cleaned in %d passes; the 2,000-delete budget was not applied", len(resumes))
 	}
 	// Every session ends empty, cleaned, with its entry gone.
 	for _, i := range []int{0, 1, 5999, sessions - 1} {

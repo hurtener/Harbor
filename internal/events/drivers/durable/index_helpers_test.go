@@ -92,6 +92,8 @@ func openIndexBus(t testing.TB, store state.StateStore, auditMaxAge time.Duratio
 	all := append([]Option{withMaintenance(func(m *maintenance) {
 		m.disabled = true
 		m.deleteInterval = 0
+		m.prewritePause = 0
+		m.sessionPause = 0
 	}), WithLogger(discardTestLogger())}, opts...)
 	opened, err := New(context.Background(), cfg, auditpatterns.New(), store, all...)
 	if err != nil {
