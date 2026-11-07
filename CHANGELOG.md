@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.38.0] — 2026-11-07
+
 ### Added
 
 - Content-free structured model-call timing logs separate time to first

@@ -38,7 +38,7 @@ import (
 // binary always resolves to it), so a bump regenerates them:
 //
 //	go test ./cmd/harbor -run TestScaffold_Golden -update
-const FallbackModuleVersion = "v1.37.0"
+const FallbackModuleVersion = "v1.38.0"
 
 // releaseVersionRE matches the version strings that name a real,
 // proxy-resolvable Harbor MODULE version: the canonical three-component
