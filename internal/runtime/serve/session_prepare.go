@@ -14,7 +14,9 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
@@ -61,13 +63,50 @@ type sessionPrepareKey struct {
 	tenant, user, agent string
 }
 
+// sessionPrepareAdmission is the sealed reach-admission subject a record was
+// prepared under, minus the session (reconcile state is slot-scoped). Only a
+// run whose own restored admission names the same runtime, tenant, user and
+// agent may consume the record.
+type sessionPrepareAdmission struct {
+	runtime, tenant, user, agent string
+}
+
+func admissionOf(subject tasks.AgentReachAdmissionSubject) sessionPrepareAdmission {
+	return sessionPrepareAdmission{runtime: subject.RuntimeID, tenant: subject.TenantID, user: subject.UserID, agent: subject.EffectiveAgentID}
+}
+
 type sessionPrepareEntry struct {
-	done chan struct{}
+	done      chan struct{}
+	admission sessionPrepareAdmission // immutable after creation
 	// The fields below are guarded by sessionPreparer.mu.
 	completed   bool
 	completedAt time.Time
-	ok          bool
-	stamp       string
+	// observedAt is when the final pass's input observation (its leading
+	// stamp read) began; freshness is measured from it, never from
+	// completion, so a slow pass cannot extend the reuse window.
+	observedAt time.Time
+	ok         bool
+	stamp      string
+}
+
+// ErrSessionPrepareUnadmitted is returned when the preparer is called without
+// the admitted authority the control surface seats (verified identity, reach
+// narrowed to the agent, sealed reach admission for exactly the subject).
+var ErrSessionPrepareUnadmitted = errors.New("session prepare: request context carries no matching admitted authority")
+
+// admittedSubject checks ctx carries the exact admitted authority for
+// (id, agentID) and returns its admission subject.
+func admittedSubject(ctx context.Context, id identity.Identity, agentID string) (sessionPrepareAdmission, bool) {
+	verified, present := identity.FromVerified(ctx)
+	if !present || verified != id {
+		return sessionPrepareAdmission{}, false
+	}
+	subject, ok := tasks.AgentReachAdmissionSubjectFrom(ctx)
+	if !ok || subject.TenantID != id.TenantID || subject.UserID != id.UserID ||
+		subject.SessionID != id.SessionID || subject.EffectiveAgentID != agentID {
+		return sessionPrepareAdmission{}, false
+	}
+	return admissionOf(subject), true
 }
 
 // sessionPreparer runs run-start preparation ahead of a `start` and lets the
@@ -121,15 +160,23 @@ func newSessionPreparer(logger *slog.Logger, limits sessionPrepareLimits, route 
 
 var _ protocol.SessionPreparer = (*sessionPreparer)(nil)
 
-// PrepareSession implements protocol.SessionPreparer. ctx is the admitted
-// request context (verified identity, runtime and narrowed Agent reach); the
-// background work runs under a detached copy of exactly that authority.
+// PrepareSession implements protocol.SessionPreparer. ctx must be the admitted
+// request context the control surface seats: the verified identity equal to
+// req.Identity, Agent reach narrowed to exactly the target agent, and a sealed
+// reach admission for exactly that subject (only the admission authority can
+// mint one). Anything else is refused with ErrSessionPrepareUnadmitted and
+// creates no record. The background work runs under a detached copy of
+// exactly that authority, and the record carries the admission subject.
 func (p *sessionPreparer) PrepareSession(ctx context.Context, req protocol.SessionPrepareRequest) (types.PrepareState, error) {
 	if err := identity.Validate(req.Identity); err != nil {
 		return "", fmt.Errorf("session prepare: %w", err)
 	}
 	if strings.TrimSpace(req.EffectiveAgentID) == "" {
 		return "", errors.New("session prepare: effective agent is empty")
+	}
+	admission, admitted := admittedSubject(ctx, req.Identity, req.EffectiveAgentID)
+	if reach, present := auth.AgentReachFrom(ctx); !admitted || !present || len(reach) != 1 || reach[0] != req.EffectiveAgentID {
+		return "", ErrSessionPrepareUnadmitted
 	}
 	key := sessionPrepareKey{tenant: req.Identity.TenantID, user: req.Identity.UserID, agent: req.EffectiveAgentID}
 	routeReq, needRoute := p.routeRequest(req)
@@ -151,8 +198,8 @@ func (p *sessionPreparer) PrepareSession(ctx context.Context, req protocol.Sessi
 			p.mu.Unlock()
 			return types.PrepareStateInFlight, nil
 		}
-		age := now.Sub(entry.completedAt)
-		if (entry.ok && age < p.limits.Freshness) || (!entry.ok && age < p.limits.FailedRetry) {
+		fresh := entry.ok && entry.admission == admission && now.Before(entry.observedAt.Add(p.limits.Freshness))
+		if fresh || (!entry.ok && now.Sub(entry.completedAt) < p.limits.FailedRetry) {
 			doReconcile, state = false, types.PrepareStateFresh
 		}
 	}
@@ -177,7 +224,7 @@ func (p *sessionPreparer) PrepareSession(ctx context.Context, req protocol.Sessi
 			p.mu.Unlock()
 			return types.PrepareStateBusy, nil
 		}
-		entry = &sessionPrepareEntry{done: make(chan struct{})}
+		entry = &sessionPrepareEntry{done: make(chan struct{}), admission: admission}
 		p.entries[key] = entry
 	}
 	p.wg.Add(1)
@@ -186,7 +233,7 @@ func (p *sessionPreparer) PrepareSession(ctx context.Context, req protocol.Sessi
 	runID := routeReq.LogicalRunID
 	workCtx, err := identity.WithRun(context.WithoutCancel(ctx), req.Identity, runID)
 	if err != nil {
-		p.finish(entry, false, "")
+		p.finish(entry, false, "", time.Time{})
 		<-p.sem
 		p.wg.Done()
 		return "", fmt.Errorf("session prepare: run identity: %w", err)
@@ -243,10 +290,12 @@ func (p *sessionPreparer) work(ctx context.Context, entry *sessionPrepareEntry, 
 	routeMS := p.now().Sub(started)
 
 	outcome, passes := "skipped", 0
-	ok, stamp := false, ""
 	if entry != nil {
-		outcome, passes, ok, stamp = p.converge(ctx, agentID, q)
-		p.finish(entry, ok, stamp)
+		var ok bool
+		var stamp string
+		var observedAt time.Time
+		outcome, passes, ok, stamp, observedAt = p.converge(ctx, agentID, q)
+		p.finish(entry, ok, stamp, observedAt)
 	}
 	p.logger.LogAttrs(ctx, slog.LevelInfo, "session.prepare",
 		slog.String("tenant_id", q.TenantID), slog.String("user_id", q.UserID), slog.String("session_id", q.SessionID),
@@ -261,48 +310,52 @@ func (p *sessionPreparer) work(ctx context.Context, entry *sessionPrepareEntry, 
 // names (write identities are unique and generations monotonic, so no ABA),
 // which is the condition a later run start may rely on. A first pass that
 // moves the stamp (its own attaches) is verified by one more pass; a second
-// move means concurrent change and the result is not retained.
-func (p *sessionPreparer) converge(ctx context.Context, agentID string, q identity.Quadruple) (outcome string, passes int, ok bool, stamp string) {
+// move means concurrent change and the result is not retained. observedAt is
+// the instant the accepted pass's leading stamp read began: the inputs a
+// reusing run relies on are those observed from that instant on.
+func (p *sessionPreparer) converge(ctx context.Context, agentID string, q identity.Quadruple) (outcome string, passes int, ok bool, stamp string, observedAt time.Time) {
 	if p.stamp == nil {
 		p.reconcile(ctx, agentID, q)
-		return "warmed", 1, false, ""
+		return "warmed", 1, false, "", time.Time{}
 	}
+	observed := p.now()
 	before, stampOK, err := p.stamp(ctx, q.Identity, agentID)
 	if err != nil {
-		return "failed", 0, false, ""
+		return "failed", 0, false, "", time.Time{}
 	}
 	for passes < 2 {
 		passes++
 		clean := p.reconcile(ctx, agentID, q)
 		if ctx.Err() != nil {
-			return "cancelled", passes, false, ""
+			return "cancelled", passes, false, "", time.Time{}
 		}
 		if !clean {
-			return "failed", passes, false, ""
+			return "failed", passes, false, "", time.Time{}
 		}
 		if !stampOK {
-			return "warmed", passes, false, ""
+			return "warmed", passes, false, "", time.Time{}
 		}
+		nextObserved := p.now()
 		after, afterOK, err := p.stamp(ctx, q.Identity, agentID)
 		if err != nil || !afterOK {
-			return "failed", passes, false, ""
+			return "failed", passes, false, "", time.Time{}
 		}
 		if after == before {
-			return "ready", passes, true, after
+			return "ready", passes, true, after, observed
 		}
-		before = after
+		before, observed = after, nextObserved
 	}
-	return "unstable", passes, false, ""
+	return "unstable", passes, false, "", time.Time{}
 }
 
-func (p *sessionPreparer) finish(entry *sessionPrepareEntry, ok bool, stamp string) {
+func (p *sessionPreparer) finish(entry *sessionPrepareEntry, ok bool, stamp string, observedAt time.Time) {
 	if entry == nil {
 		return
 	}
 	// A failed record stays retained too: it suppresses repeated prepares
 	// for FailedRetry and is reclaimed by eviction; consume never reuses it.
 	p.mu.Lock()
-	entry.completed, entry.completedAt, entry.ok, entry.stamp = true, p.now(), ok, stamp
+	entry.completed, entry.completedAt, entry.ok, entry.stamp, entry.observedAt = true, p.now(), ok, stamp, observedAt
 	p.mu.Unlock()
 	close(entry.done)
 }
@@ -336,9 +389,12 @@ func (p *sessionPreparer) evictLocked(now time.Time) {
 }
 
 // consume decides whether run start may skip its reconcile. It returns Hit
-// or Joined only for a successful, still-fresh preparation of the same
-// (tenant, user, Agent) whose input stamp is unchanged now; everything else
-// falls back to the normal reconcile.
+// or Joined only for a successful preparation of the same (tenant, user,
+// Agent), prepared under the same sealed admission subject (runtime, tenant,
+// user, agent) as the run's own restored admission on ctx, whose input stamp
+// is unchanged now, and whose freshness deadline — observedAt + Freshness —
+// has not passed when the decision is taken (checked again after the stamp
+// read). Everything else falls back to the normal reconcile.
 func (p *sessionPreparer) consume(ctx context.Context, id identity.Identity, agentID string) telemetry.TurnPrepared {
 	if p == nil || p.stamp == nil {
 		return telemetry.TurnPreparedNone
@@ -365,14 +421,24 @@ func (p *sessionPreparer) consume(ctx context.Context, id identity.Identity, age
 			return telemetry.TurnPreparedStale
 		}
 	}
+	runAdmission, admitted := admittedSubject(ctx, id, agentID)
+	if !admitted || runAdmission != entry.admission {
+		return telemetry.TurnPreparedStale
+	}
 	p.mu.Lock()
-	ok, stamp, at := entry.ok, entry.stamp, entry.completedAt
+	ok, stamp, observedAt := entry.ok, entry.stamp, entry.observedAt
 	p.mu.Unlock()
-	if !ok || p.now().Sub(at) >= p.limits.Freshness {
+	deadline := observedAt.Add(p.limits.Freshness)
+	if !ok || !p.now().Before(deadline) {
 		return telemetry.TurnPreparedStale
 	}
 	current, stampOK, err := p.stamp(ctx, id, agentID)
 	if err != nil || !stampOK || current != stamp {
+		return telemetry.TurnPreparedStale
+	}
+	// The stamp read may itself be slow: the reuse decision is taken now,
+	// so the deadline must still hold now.
+	if !p.now().Before(deadline) {
 		return telemetry.TurnPreparedStale
 	}
 	if joined {

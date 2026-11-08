@@ -21,9 +21,12 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // fakePrepareDeps is a controllable reconcile + stamp pair.
@@ -93,9 +96,38 @@ func prepID(tenant, user string) identity.Identity {
 	return identity.Identity{TenantID: tenant, UserID: user, SessionID: "home-" + user}
 }
 
-func prepCtx(t *testing.T, id identity.Identity) context.Context {
+// testAdmissions is the documented dummy (all-zero KEK) admission authority
+// the prepare tests mint reach admissions with — the same authority type the
+// control surface and run start share in production.
+var testAdmissions = func() *tasks.AgentReachAdmissionAuthority {
+	sealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+	if err != nil {
+		panic(err)
+	}
+	authority, err := tasks.NewAgentReachAdmissionAuthority(sealer)
+	if err != nil {
+		panic(err)
+	}
+	return authority
+}()
+
+// prepCtx is an admitted request/run context: verified identity, runtime,
+// reach narrowed to agent, and a sealed reach admission for exactly that
+// subject — what the control surface hands the preparer and what run start
+// restores from a task's receipt.
+func prepCtx(t *testing.T, id identity.Identity, agent string) context.Context {
+	t.Helper()
+	return prepCtxRuntime(t, id, agent, "runtime-1")
+}
+
+func prepCtxRuntime(t *testing.T, id identity.Identity, agent, runtimeID string) context.Context {
 	t.Helper()
 	ctx, err := identity.WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = auth.WithAgentReach(auth.WithRuntimeID(ctx, runtimeID), []string{agent})
+	ctx, err = testAdmissions.Admit(ctx, id, agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +136,7 @@ func prepCtx(t *testing.T, id identity.Identity) context.Context {
 
 func mustPrepare(t *testing.T, p *sessionPreparer, id identity.Identity, agent string, route *llm.ProviderRoute) types.PrepareState {
 	t.Helper()
-	state, err := p.PrepareSession(prepCtx(t, id), protocol.SessionPrepareRequest{Identity: id, EffectiveAgentID: agent, ProviderRoute: route})
+	state, err := p.PrepareSession(prepCtx(t, id, agent), protocol.SessionPrepareRequest{Identity: id, EffectiveAgentID: agent, ProviderRoute: route})
 	if err != nil {
 		t.Fatalf("PrepareSession: %v", err)
 	}
@@ -140,7 +172,7 @@ func TestSessionPrepare_PrepareThenRunSkipsReconcile(t *testing.T) {
 	}
 	// The run uses a DIFFERENT session than the home-screen prepare.
 	run := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "chat-42"}
-	if got := p.consume(context.Background(), run, "agent"); got != telemetry.TurnPreparedHit {
+	if got := p.consume(prepCtx(t, run, "agent"), run, "agent"); got != telemetry.TurnPreparedHit {
 		t.Fatalf("consume = %v, want hit", got)
 	}
 	// A repeated prepare inside the freshness window is a no-op.
@@ -162,7 +194,7 @@ func TestSessionPrepare_FirstPassAttachesThenVerifies(t *testing.T) {
 	if deps.calls.Load() != 2 {
 		t.Fatalf("passes = %d, want 2 (attach then verify)", deps.calls.Load())
 	}
-	if got := p.consume(context.Background(), id, "a"); got != telemetry.TurnPreparedHit {
+	if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedHit {
 		t.Fatalf("consume = %v, want hit on the post-attach stamp", got)
 	}
 }
@@ -177,7 +209,7 @@ func TestSessionPrepare_InFlightJoin(t *testing.T) {
 		t.Fatalf("second state = %q, want in_flight", got)
 	}
 	result := make(chan telemetry.TurnPrepared, 1)
-	go func() { result <- p.consume(context.Background(), id, "a") }()
+	go func() { result <- p.consume(prepCtx(t, id, "a"), id, "a") }()
 	select {
 	case got := <-result:
 		t.Fatalf("consume returned %v before the in-flight preparation finished", got)
@@ -198,14 +230,14 @@ func TestSessionPrepare_JoinWaitIsBounded(t *testing.T) {
 	id := prepID("t", "u")
 	mustPrepare(t, p, id, "a", nil)
 	started := time.Now()
-	if got := p.consume(context.Background(), id, "a"); got != telemetry.TurnPreparedStale {
+	if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedStale {
 		t.Fatalf("consume = %v, want stale after the bounded wait", got)
 	}
 	if waited := time.Since(started); waited > 2*time.Second {
 		t.Fatalf("join waited %v", waited)
 	}
 	// A cancelled run context also stops waiting.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(prepCtx(t, id, "a"))
 	cancel()
 	if got := p.consume(ctx, id, "a"); got != telemetry.TurnPreparedStale {
 		t.Fatalf("consume(cancelled) = %v", got)
@@ -221,7 +253,7 @@ func TestSessionPrepare_StaleFallsBackToNormalPath(t *testing.T) {
 		mustPrepare(t, p, id, "a", nil)
 		waitPrepared(t, p, id, "a")
 		deps.setStamp("s2") // e.g. a config revision or a detach after prepare
-		if got := p.consume(context.Background(), id, "a"); got != telemetry.TurnPreparedStale {
+		if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedStale {
 			t.Fatalf("consume = %v, want stale", got)
 		}
 	})
@@ -235,7 +267,7 @@ func TestSessionPrepare_StaleFallsBackToNormalPath(t *testing.T) {
 		mustPrepare(t, p, id, "a", nil)
 		waitPrepared(t, p, id, "a")
 		offset.Store(int64(2 * time.Minute))
-		if got := p.consume(context.Background(), id, "a"); got != telemetry.TurnPreparedStale {
+		if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedStale {
 			t.Fatalf("consume = %v, want stale after freshness", got)
 		}
 		if got := mustPrepare(t, p, id, "a", nil); got != types.PrepareStateScheduled {
@@ -252,7 +284,7 @@ func TestSessionPrepare_StaleFallsBackToNormalPath(t *testing.T) {
 		id := prepID("t", "u")
 		mustPrepare(t, p, id, "a", nil)
 		waitPrepared(t, p, id, "a")
-		if got := p.consume(context.Background(), id, "a"); got != telemetry.TurnPreparedStale {
+		if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedStale {
 			t.Fatalf("consume = %v, want stale for a failed preparation", got)
 		}
 		if got := mustPrepare(t, p, id, "a", nil); got != types.PrepareStateFresh {
@@ -277,7 +309,7 @@ func TestSessionPrepare_StaleFallsBackToNormalPath(t *testing.T) {
 		if deps.calls.Load() != 2 {
 			t.Fatalf("passes = %d, want the 2-pass bound", deps.calls.Load())
 		}
-		if got := p.consume(context.Background(), id, "a"); got != telemetry.TurnPreparedStale {
+		if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedStale {
 			t.Fatalf("consume = %v, want stale for unstable inputs", got)
 		}
 	})
@@ -291,7 +323,7 @@ func TestSessionPrepare_StaleFallsBackToNormalPath(t *testing.T) {
 		if deps.calls.Load() != 1 {
 			t.Fatalf("warm-only passes = %d, want 1", deps.calls.Load())
 		}
-		if got := p.consume(context.Background(), id, "a"); got != telemetry.TurnPreparedStale {
+		if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedStale {
 			t.Fatalf("consume = %v, want stale without a stamp", got)
 		}
 	})
@@ -304,7 +336,7 @@ func TestSessionPrepare_StaleFallsBackToNormalPath(t *testing.T) {
 		deps.mu.Lock()
 		deps.stampErr = errors.New("store down")
 		deps.mu.Unlock()
-		if got := p.consume(context.Background(), id, "a"); got != telemetry.TurnPreparedStale {
+		if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedStale {
 			t.Fatalf("consume = %v, want stale on a stamp error", got)
 		}
 	})
@@ -324,7 +356,7 @@ func TestSessionPrepare_IsolationAcrossTenantsUsersAgents(t *testing.T) {
 		{prepID("tenant-a", "user-b"), "agent-a"},
 		{prepID("tenant-a", "user-a"), "agent-b"},
 	} {
-		if got := p.consume(context.Background(), other.id, other.agent); got != telemetry.TurnPreparedMiss {
+		if got := p.consume(prepCtx(t, other.id, other.agent), other.id, other.agent); got != telemetry.TurnPreparedMiss {
 			t.Fatalf("consume(%+v, %s) = %v, want miss", other.id, other.agent, got)
 		}
 	}
@@ -352,14 +384,14 @@ func TestSessionPrepare_DetachedFromRequestCancellation(t *testing.T) {
 	deps.gate = make(chan struct{})
 	p := newTestPreparer(t, deps, testPrepareLimits(), llm.ProviderRouteConfig{})
 	id := prepID("t", "u")
-	reqCtx, cancel := context.WithCancel(prepCtx(t, id))
+	reqCtx, cancel := context.WithCancel(prepCtx(t, id, "a"))
 	if _, err := p.PrepareSession(reqCtx, protocol.SessionPrepareRequest{Identity: id, EffectiveAgentID: "a"}); err != nil {
 		t.Fatal(err)
 	}
 	cancel() // the HTTP request returned immediately
 	close(deps.gate)
 	waitPrepared(t, p, id, "a")
-	if got := p.consume(context.Background(), id, "a"); got != telemetry.TurnPreparedHit {
+	if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedHit {
 		t.Fatalf("consume = %v: a returned request must not cancel the background work", got)
 	}
 }
@@ -405,7 +437,7 @@ func TestSessionPrepare_ConcurrentPreparesCoalesce(t *testing.T) {
 	wg2.Wait()
 	for i := range 4 {
 		waitPrepared(t, p2, prepID("t", fmt.Sprintf("u%d", i)), "a")
-		if got := p2.consume(context.Background(), prepID("t", fmt.Sprintf("u%d", i)), "a"); got != telemetry.TurnPreparedHit {
+		if got := p2.consume(prepCtx(t, prepID("t", fmt.Sprintf("u%d", i)), "a"), prepID("t", fmt.Sprintf("u%d", i)), "a"); got != telemetry.TurnPreparedHit {
 			t.Fatalf("user %d consume = %v", i, got)
 		}
 	}
@@ -424,7 +456,7 @@ func TestSessionPrepare_WorkersBoundedAndBusy(t *testing.T) {
 	if got := mustPrepare(t, p, prepID("t", "u3"), "a", nil); got != types.PrepareStateBusy {
 		t.Fatalf("third prepare = %q, want busy", got)
 	}
-	if got := p.consume(context.Background(), prepID("t", "u3"), "a"); got != telemetry.TurnPreparedMiss {
+	if got := p.consume(prepCtx(t, prepID("t", "u3"), "a"), prepID("t", "u3"), "a"); got != telemetry.TurnPreparedMiss {
 		t.Fatalf("dropped prepare left state: %v", got)
 	}
 	close(deps.gate)
@@ -466,7 +498,7 @@ func TestSessionPrepare_CloseJoinsWorkersAndRefusesWork(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close did not cancel and join in-flight preparations")
 	}
-	if _, err := p.PrepareSession(prepCtx(t, prepID("t", "x")), protocol.SessionPrepareRequest{Identity: prepID("t", "x"), EffectiveAgentID: "a"}); !errors.Is(err, protocol.ErrSessionPrepareUnavailable) {
+	if _, err := p.PrepareSession(prepCtx(t, prepID("t", "x"), "a"), protocol.SessionPrepareRequest{Identity: prepID("t", "x"), EffectiveAgentID: "a"}); !errors.Is(err, protocol.ErrSessionPrepareUnavailable) {
 		t.Fatalf("prepare after Close err = %v", err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -493,7 +525,7 @@ func TestSessionPrepare_RejectsIncompleteRequests(t *testing.T) {
 		t.Fatalf("unbound bridge err = %v", err)
 	}
 	bridge.Bind(p)
-	if state, err := bridge.PrepareSession(prepCtx(t, prepID("t", "u")), protocol.SessionPrepareRequest{Identity: prepID("t", "u"), EffectiveAgentID: "a"}); err != nil || state != types.PrepareStateScheduled {
+	if state, err := bridge.PrepareSession(prepCtx(t, prepID("t", "u"), "a"), protocol.SessionPrepareRequest{Identity: prepID("t", "u"), EffectiveAgentID: "a"}); err != nil || state != types.PrepareStateScheduled {
 		t.Fatalf("bound bridge state=%q err=%v", state, err)
 	}
 }
@@ -585,7 +617,7 @@ func TestSessionPrepare_RunStartUsesPreparedState(t *testing.T) {
 	t.Cleanup(d.preparer.Close)
 
 	id := reQuad().Identity
-	if _, err := d.preparer.PrepareSession(prepCtx(t, id), protocol.SessionPrepareRequest{Identity: id, EffectiveAgentID: reAgent}); err != nil {
+	if _, err := d.preparer.PrepareSession(prepCtx(t, id, reAgent), protocol.SessionPrepareRequest{Identity: id, EffectiveAgentID: reAgent}); err != nil {
 		t.Fatal(err)
 	}
 	waitPrepared(t, d.preparer, id, reAgent)
@@ -597,7 +629,11 @@ func TestSessionPrepare_RunStartUsesPreparedState(t *testing.T) {
 	runTurn := func(admitted bool) map[string]any {
 		t.Helper()
 		var out bytes.Buffer
-		turnCtx := telemetry.BeginTurnTiming(ctx, slog.New(slog.NewJSONHandler(&out, nil)), time.Now())
+		base := ctx
+		if admitted {
+			base = prepCtx(t, reQuad().Identity, reAgent)
+		}
+		turnCtx := telemetry.BeginTurnTiming(base, slog.New(slog.NewJSONHandler(&out, nil)), time.Now())
 		d.reconcileConnections(turnCtx, reAgent, reQuad(), admitted)
 		telemetry.ObserveFirstModelRequest(turnCtx)
 		var record map[string]any
@@ -631,5 +667,208 @@ func TestSessionPrepare_RunStartUsesPreparedState(t *testing.T) {
 	}
 	if n := len(d.connectionDetacher.(*MCPConnectionDetacher).AttachedSources(ctx, reOwner())); n != 0 {
 		t.Fatalf("stale run start did not reconcile: %d sources attached", n)
+	}
+}
+
+// TestSessionPrepare_RequiresAdmittedAuthority — the preparer boundary
+// accepts only a context carrying the verified identity, the reach narrowed
+// to the target agent, and a sealed admission for exactly that subject.
+func TestSessionPrepare_RequiresAdmittedAuthority(t *testing.T) {
+	p := newTestPreparer(t, newFakePrepareDeps(), testPrepareLimits(), llm.ProviderRouteConfig{})
+	id := prepID("t", "u")
+	req := protocol.SessionPrepareRequest{Identity: id, EffectiveAgentID: "a"}
+	verified := func() context.Context {
+		ctx, err := identity.WithVerified(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	}
+	admitFor := func(ctx context.Context, admitID identity.Identity, agent string) context.Context {
+		ctx, err := testAdmissions.Admit(ctx, admitID, agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	}
+	other := identity.Identity{TenantID: "t", UserID: "u2", SessionID: "home-u"}
+	cases := map[string]context.Context{
+		"no verified identity":      auth.WithAgentReach(context.Background(), []string{"a"}),
+		"different verified":        auth.WithAgentReach(func() context.Context { c, _ := identity.WithVerified(context.Background(), other); return c }(), []string{"a"}),
+		"no reach":                  admitFor(verified(), id, "a"),
+		"wider reach":               admitFor(auth.WithAgentReach(verified(), []string{"a", "b"}), id, "a"),
+		"no admission":              auth.WithAgentReach(verified(), []string{"a"}),
+		"admission for other user":  admitFor(auth.WithAgentReach(verified(), []string{"a"}), other, "a"),
+		"admission for other agent": admitFor(auth.WithAgentReach(verified(), []string{"a"}), id, "b"),
+	}
+	for name, ctx := range cases {
+		if _, err := p.PrepareSession(ctx, req); err == nil {
+			t.Errorf("%s: prepare accepted", name)
+		}
+	}
+	if n := p.entryCount(); n != 0 {
+		t.Fatalf("refused prepares created %d records", n)
+	}
+}
+
+// TestSessionPrepare_RecordBoundToAdmission — a record is consumed only by a
+// run whose own sealed admission names the same runtime, tenant, user and
+// agent.
+func TestSessionPrepare_RecordBoundToAdmission(t *testing.T) {
+	deps := newFakePrepareDeps()
+	p := newTestPreparer(t, deps, testPrepareLimits(), llm.ProviderRouteConfig{})
+	id := prepID("t", "u")
+	mustPrepare(t, p, id, "a", nil)
+	waitPrepared(t, p, id, "a")
+	run := identity.Identity{TenantID: "t", UserID: "u", SessionID: "chat"}
+	if got := p.consume(prepCtxRuntime(t, run, "a", "runtime-2"), run, "a"); got != telemetry.TurnPreparedStale {
+		t.Fatalf("consume under another runtime's admission = %v, want stale", got)
+	}
+	plain, err := identity.WithVerified(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.consume(plain, run, "a"); got == telemetry.TurnPreparedHit || got == telemetry.TurnPreparedJoined {
+		t.Fatalf("consume without an admission = %v", got)
+	}
+	if got := p.consume(prepCtx(t, run, "a"), run, "a"); got != telemetry.TurnPreparedHit {
+		t.Fatalf("consume under a matching admission = %v, want hit", got)
+	}
+}
+
+// TestSessionPrepare_FreshnessFromFinalObservation — the freshness bound runs
+// from the start of the final pass's input observation, not from completion,
+// and is rechecked after the run-start stamp read.
+func TestSessionPrepare_FreshnessFromFinalObservation(t *testing.T) {
+	var offset atomic.Int64
+	base := time.Now()
+	clock := func() time.Time { return base.Add(time.Duration(offset.Load())) }
+	t.Run("slow pass", func(t *testing.T) {
+		offset.Store(0)
+		deps := newFakePrepareDeps()
+		deps.onRun = func(context.Context, identity.Quadruple) { offset.Add(int64(80 * time.Second)) }
+		p := newTestPreparer(t, deps, testPrepareLimits(), llm.ProviderRouteConfig{})
+		p.now = clock
+		id := prepID("t", "u")
+		mustPrepare(t, p, id, "a", nil)
+		waitPrepared(t, p, id, "a")
+		offset.Add(int64(15 * time.Second)) // 15 s after completion, 95 s after observation
+		if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedStale {
+			t.Fatalf("consume = %v, want stale: the observation is older than the freshness bound", got)
+		}
+	})
+	t.Run("slow stamp read", func(t *testing.T) {
+		offset.Store(0)
+		deps := newFakePrepareDeps()
+		var slow atomic.Bool
+		p := newSessionPreparer(slog.New(slog.NewTextHandler(io.Discard, nil)), testPrepareLimits(), llm.ProviderRouteConfig{}, deps.reconcile,
+			func(ctx context.Context, id identity.Identity, agent string) (string, bool, error) {
+				if slow.Load() {
+					offset.Add(int64(45 * time.Second))
+				}
+				return deps.stamp(ctx, id, agent)
+			})
+		t.Cleanup(p.Close)
+		p.now = clock
+		id := prepID("t", "u")
+		mustPrepare(t, p, id, "a", nil)
+		waitPrepared(t, p, id, "a")
+		offset.Add(int64(50 * time.Second)) // fresh when consume starts
+		slow.Store(true)                    // ... but not once the stamp read returns
+		if got := p.consume(prepCtx(t, id, "a"), id, "a"); got != telemetry.TurnPreparedStale {
+			t.Fatalf("consume = %v, want stale after the deadline recheck", got)
+		}
+	})
+}
+
+// TestPrepareStamp_CoversSignedOperationGenerations — the reconcile stamp
+// moves when a durable signed-capability operation record for the principal
+// changes (claim, phase transition, publisher takeover) even though no
+// revision pointer or fence moved, and ignores other principals' records.
+func TestPrepareStamp_CoversSignedOperationGenerations(t *testing.T) {
+	st, err := stateinmem.New(config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	agents := lifecycleTestRegistry(t, st)
+	overlay, err := sessionoverlay.NewStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops, err := agentcfg.NewSignedOAuthMCPOperationStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, catalog, registry, _ := reAttacherFor(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	d := &RunLoopDriver{logger: logger, agentConfig: agents, sessionOverlay: overlay, catalog: catalog,
+		connectionDetacher: NewMCPConnectionDetacher(catalog, registry, logger), signedOperations: ops}
+	ctx := context.Background()
+	id := reQuad().Identity
+	if _, err := agents.SetRevision(ctx, identity.Quadruple{Identity: id}, reAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{}, agentcfg.SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	stamp := func() string {
+		t.Helper()
+		v, ok, err := d.prepareStamp(ctx, id, reAgent)
+		if err != nil || !ok {
+			t.Fatalf("stamp ok=%v err=%v", ok, err)
+		}
+		return v
+	}
+	binding := func(user, agent string) agentcfg.SignedOAuthMCPBinding {
+		return agentcfg.SignedOAuthMCPBinding{TenantID: reTenant, UserID: user, SessionID: "s", AgentID: agent, Broker: "broker",
+			ProviderName: "provider", CapabilityRevision: "1", URLDigest: "url", SinkDigest: "sink", Audience: "aud",
+			Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: "server", URL: "https://example.test/mcp"}}
+	}
+	key := func(jti, user string) agentcfg.SignedOAuthMCPReplayKey {
+		k := agentcfg.SignedOAuthMCPReplayKey{TenantID: reTenant, TrustAnchorName: "anchor", Issuer: "iss", KeyID: "kid", JTI: jti}
+		if user != "" {
+			k.UserID, k.SessionID = user, "s"
+		}
+		return k
+	}
+	s0 := stamp()
+	// Another agent's and another user's user-tier receipts do not move it.
+	if _, _, err := ops.Claim(ctx, key("other-agent", ""), binding("registrar", "agent-other"), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ops.Claim(ctx, key("other-user", "user-other"), binding("user-other", reAgent), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := stamp(); got != s0 {
+		t.Fatal("a foreign principal's operation record moved the stamp")
+	}
+	// The principal's agent-tier receipt does.
+	claimed, _, err := ops.Claim(ctx, key("mine", ""), binding("registrar", reAgent), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1 := stamp()
+	if s1 == s0 {
+		t.Fatal("claiming a signed operation for the agent did not move the stamp")
+	}
+	committed, err := ops.Advance(ctx, claimed, agentcfg.SignedOAuthMCPPhaseRevisionCommitted, "rev-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2 := stamp()
+	if s2 == s1 {
+		t.Fatal("a phase transition did not move the stamp")
+	}
+	if _, err := ops.AcquirePublisher(ctx, committed); err != nil {
+		t.Fatal(err)
+	}
+	if stamp() == s2 {
+		t.Fatal("a publisher takeover did not move the stamp")
+	}
+	// The acting user's own user-tier receipt also moves it.
+	s3 := stamp()
+	if _, _, err := ops.Claim(ctx, key("mine-user", id.UserID), binding(id.UserID, reAgent), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if stamp() == s3 {
+		t.Fatal("the acting user's user-tier receipt did not move the stamp")
 	}
 }

@@ -108,6 +108,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess" // tasks inprocess driver self-register
 	"github.com/hurtener/Harbor/internal/telemetry"
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/noop" // span exporter noop driver self-register
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // FixedNow is the deterministic clock the suite's JWT validator +
@@ -206,7 +207,15 @@ func (conformanceAgentResolver) EffectiveAgentID(requested string) (string, erro
 // itself is covered by the runtime serve-band tests.
 type conformancePreparer struct{}
 
-func (conformancePreparer) PrepareSession(context.Context, protocol.SessionPrepareRequest) (types.PrepareState, error) {
+// PrepareSession refuses a context without the sealed reach admission the
+// surface must seat, so the suite pins that `prepare` never reaches a
+// preparer unadmitted.
+func (conformancePreparer) PrepareSession(ctx context.Context, req protocol.SessionPrepareRequest) (types.PrepareState, error) {
+	subject, ok := tasks.AgentReachAdmissionSubjectFrom(ctx)
+	if !ok || subject.TenantID != req.Identity.TenantID || subject.UserID != req.Identity.UserID ||
+		subject.SessionID != req.Identity.SessionID || subject.EffectiveAgentID != req.EffectiveAgentID {
+		return "", fmt.Errorf("conformance: prepare reached the preparer without a matching admission")
+	}
 	return types.PrepareStateScheduled, nil
 }
 
@@ -292,9 +301,20 @@ func buildDefaultStack(t *testing.T, testdataRoot string) *Stack {
 
 	steerReg := steering.NewRegistry()
 	agentReach := auth.NewAgentReachAuthorizer()
+	// A documented dummy (all-zero) KEK: the admission authority `start`
+	// and `prepare` seal reach admissions with. Not a secret.
+	admissionSealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+	if err != nil {
+		fatal("admission sealer: %v", err)
+	}
+	admissions, err := tasks.NewAgentReachAdmissionAuthority(admissionSealer)
+	if err != nil {
+		fatal("admission authority: %v", err)
+	}
 	surface, err := protocol.NewControlSurface(taskReg, steerReg,
 		protocol.WithAgentResolver(conformanceAgentResolver{}),
 		protocol.WithAgentReachAuthorizer(agentReach),
+		protocol.WithAgentReachAdmissionAuthority(admissions),
 		protocol.WithSessionPreparer(conformancePreparer{}))
 	if err != nil {
 		fatal("protocol.NewControlSurface: %v", err)
@@ -1265,18 +1285,16 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 				st := factory(t)
 				defer st.Cleanup()
 				if m == methods.MethodPrepare {
+					// `prepare` requires a request-edge verified identity, which
+					// only the transport middleware seats: an embedded Dispatch
+					// without one is refused before any preparer runs. The
+					// accepted path is pinned by the Wire scenario below.
 					id := runIdentity("tenant-conformance", "happy-prepare-inproc").Identity
 					directCtx := auth.WithAgentReach(context.Background(), []string{conformanceAgentID})
-					resp, err := st.Surface.Dispatch(directCtx, m, &types.PrepareRequest{
+					_, err := st.Surface.Dispatch(directCtx, m, &types.PrepareRequest{
 						Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 					})
-					if err != nil {
-						t.Fatalf("Dispatch(prepare): unexpected error: %v", err)
-					}
-					pr, ok := resp.(*types.PrepareResponse)
-					if !ok || pr.State != types.PrepareStateScheduled || pr.ProtocolVersion != types.ProtocolVersion {
-						t.Fatalf("Dispatch(prepare): response = %#v", resp)
-					}
+					assertCode(t, err, protoerrors.CodeIdentityRequired)
 					return
 				}
 				if m == methods.MethodStart {

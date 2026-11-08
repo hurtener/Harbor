@@ -30,7 +30,9 @@ type SessionPrepareRequest struct {
 
 // SessionPreparer performs run-start preparation in the background. It must
 // return promptly; ctx is the admitted request context and carries the
-// verified identity, runtime and narrowed Agent reach the work runs under.
+// verified identity, runtime, narrowed Agent reach and the sealed reach
+// admission (tasks.AgentReachAdmissionSubjectFrom) the work runs under.
+// Implementations must refuse a context missing any of them.
 // Implementations are internally synchronized and safe for concurrent use.
 type SessionPreparer interface {
 	PrepareSession(ctx context.Context, req SessionPrepareRequest) (types.PrepareState, error)
@@ -72,10 +74,16 @@ func (s *ControlSurface) dispatchPrepare(ctx context.Context, req any) (*types.P
 		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
 			"method %q: identity scope incomplete: %v", string(method), err)
 	}
-	// The body triple must be the verified identity. The transport's shared
-	// body-scope gate already reconciles it; this re-check keeps an embedded
-	// Dispatch caller from preparing for a principal it was not verified as.
-	if verified, present := identity.FromVerified(ctx); present && verified != id {
+	// The body triple must be the verified identity, and a verified identity
+	// is mandatory. The transport's shared body-scope gate already reconciles
+	// it; this re-check keeps an embedded or unauthenticated Dispatch caller
+	// from preparing for a principal it was not verified as.
+	verified, present := identity.FromVerified(ctx)
+	if !present {
+		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: a verified identity is required", string(method))
+	}
+	if verified != id {
 		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
 			"method %q: identity scope does not match the verified identity", string(method))
 	}
@@ -91,10 +99,23 @@ func (s *ControlSurface) dispatchPrepare(ctx context.Context, req any) (*types.P
 				"method %q: provider_route requires opaque route, connection, generation, and model selector fields", string(method))
 		}
 	}
+	// A preparation is consumable only by a run carrying a sealed reach
+	// admission for the same subject, so without the admission authority it
+	// could never be used: the method reads as absent.
+	if s.reachAdmissions == nil {
+		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
+			"method %q: session preparation requires the agent reach admission authority", string(method))
+	}
 	// Narrow the carried Agent reach to the single admitted target, exactly
-	// as run start re-seats it from its sealed admission receipt, so the
-	// background work can never act on a wider reach than the run would.
-	workCtx := auth.WithAgentReach(ctx, []string{effectiveAgentID})
+	// as run start re-seats it from its sealed admission receipt, and seal
+	// the admission the preparer records. Only the admission authority can
+	// mint that proof, so the preparer accepts nothing this edge did not
+	// admit, and run start reuses only a record whose proof matches its own.
+	workCtx, admitErr := s.reachAdmissions.Admit(auth.WithAgentReach(ctx, []string{effectiveAgentID}), id, effectiveAgentID)
+	if admitErr != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: authenticate agent reach admission: %v", string(method), admitErr)
+	}
 	state, err := s.preparer.PrepareSession(workCtx, SessionPrepareRequest{
 		Identity: id, EffectiveAgentID: effectiveAgentID, ProviderRoute: route,
 	})

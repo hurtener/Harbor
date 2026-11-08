@@ -515,7 +515,9 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/prepare" \
 # → 202 {"state":"scheduled","protocol_version":"0.1.0"}
 ```
 
-`state` is `scheduled`, `in_flight` (already running for this tenant/user/agent),
+A runtime without a reach-admission authority (no broker or shared KEK) answers
+`404`, as does one predating the method. `state` is `scheduled`, `in_flight`
+(already running for this tenant/user/agent),
 `fresh` (completed within 90 s; nothing new started) or `busy` (workers
 saturated; the hint was dropped). Calling it repeatedly is cheap. A `start`
 within 90 s whose inputs are unchanged skips its reconcile, and one arriving

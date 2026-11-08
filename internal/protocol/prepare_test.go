@@ -13,14 +13,16 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/serve"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 type recordingPreparer struct {
-	mu    sync.Mutex
-	calls []protocol.SessionPrepareRequest
-	reach [][]string
-	state types.PrepareState
-	err   error
+	mu       sync.Mutex
+	calls    []protocol.SessionPrepareRequest
+	reach    [][]string
+	subjects []tasks.AgentReachAdmissionSubject
+	state    types.PrepareState
+	err      error
 }
 
 func (r *recordingPreparer) PrepareSession(ctx context.Context, req protocol.SessionPrepareRequest) (types.PrepareState, error) {
@@ -29,6 +31,8 @@ func (r *recordingPreparer) PrepareSession(ctx context.Context, req protocol.Ses
 	reach, _ := auth.AgentReachFrom(ctx)
 	r.calls = append(r.calls, req)
 	r.reach = append(r.reach, reach)
+	subject, _ := tasks.AgentReachAdmissionSubjectFrom(ctx)
+	r.subjects = append(r.subjects, subject)
 	if r.err != nil {
 		return "", r.err
 	}
@@ -37,8 +41,16 @@ func (r *recordingPreparer) PrepareSession(ctx context.Context, req protocol.Ses
 
 func newPrepareSurface(t *testing.T, preparer protocol.SessionPreparer) (*protocol.ControlSurface, *agentFixture) {
 	t.Helper()
+	return newPrepareSurfaceWith(t, preparer, true)
+}
+
+func newPrepareSurfaceWith(t *testing.T, preparer protocol.SessionPreparer, admissions bool) (*protocol.ControlSurface, *agentFixture) {
+	t.Helper()
 	f := newAgentFixture(t, true)
 	opts := []protocol.Option{protocol.WithAgentResolver(serve.NewAgentResolverAdapter(f.cfg, bootAgentID))}
+	if admissions {
+		opts = append(opts, protocol.WithAgentReachAdmissionAuthority(f.authority))
+	}
 	if preparer != nil {
 		opts = append(opts, protocol.WithSessionPreparer(preparer))
 	}
@@ -83,6 +95,9 @@ func TestDispatchPrepare_AdmitsLikeStartAndNarrowsReach(t *testing.T) {
 	if len(rec.reach[0]) != 1 || rec.reach[0][0] != "configured-agent" {
 		t.Fatalf("work ctx reach = %v, want narrowed to the admitted agent", rec.reach[0])
 	}
+	if sub := rec.subjects[0]; sub.TenantID != caller.TenantID || sub.UserID != caller.UserID || sub.SessionID != caller.SessionID || sub.EffectiveAgentID != "configured-agent" {
+		t.Fatalf("work ctx admission subject = %+v, want the admitted caller and agent", sub)
+	}
 	// Omitted agent selects the default, exactly like start.
 	if _, err := surface.Dispatch(auth.WithAgentReach(authCtx(t, caller), []string{bootAgentID}), methods.MethodPrepare, prepareReq(caller, "")); err != nil {
 		t.Fatalf("default-agent prepare: %v", err)
@@ -110,6 +125,7 @@ func TestDispatchPrepare_RefusesWhatStartRefuses(t *testing.T) {
 		req  *types.PrepareRequest
 		want protoerrors.Code
 	}{
+		{"no verified identity", auth.WithAgentReach(context.Background(), []string{"configured-agent"}), prepareReq(caller, "configured-agent"), protoerrors.CodeIdentityRequired},
 		{"incomplete identity", reach("configured-agent"), prepareReq(identity.Identity{TenantID: "tenant-a", UserID: "user-1"}, "configured-agent"), protoerrors.CodeIdentityRequired},
 		{"body identity differs from verified", reach("configured-agent"), prepareReq(agentIdent("tenant-a", "user-2", "home"), "configured-agent"), protoerrors.CodeScopeMismatch},
 		{"no signed reach", reach("other-agent"), prepareReq(caller, "configured-agent"), protoerrors.CodeScopeMismatch},
@@ -149,6 +165,12 @@ func TestDispatchPrepare_UnwiredAndUnavailableReadAsAbsent(t *testing.T) {
 	surface, _ = newPrepareSurface(t, unbound)
 	if _, err := surface.Dispatch(ctx, methods.MethodPrepare, prepareReq(caller, "")); codeOf(t, err) != protoerrors.CodeUnknownMethod {
 		t.Fatalf("unbound prepare err = %v", err)
+	}
+	// Without the admission authority no record could ever be consumed; the
+	// method reads as absent rather than preparing unbound state.
+	noAdmissions, _ := newPrepareSurfaceWith(t, &recordingPreparer{state: types.PrepareStateScheduled}, false)
+	if _, err := noAdmissions.Dispatch(ctx, methods.MethodPrepare, prepareReq(caller, "")); codeOf(t, err) != protoerrors.CodeUnknownMethod {
+		t.Fatalf("prepare without an admission authority err = %v", err)
 	}
 	if _, err := surface.Dispatch(ctx, methods.MethodPrepare, &types.StartRequest{}); codeOf(t, err) != protoerrors.CodeInvalidRequest {
 		t.Fatalf("wrong request type err = %v", err)

@@ -77,10 +77,15 @@ package serve
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -462,6 +467,10 @@ type RunLoopDriver struct {
 	// reuse it (see session_prepare.go). Internally synchronized; never nil
 	// on a driver built by NewRunLoopDriver.
 	preparer *sessionPreparer
+	// signedOperations reads the durable signed-capability operation
+	// records whose write identities the prepare stamp covers. Nil when no
+	// signed reconciler is wired (those records then cannot affect reconcile).
+	signedOperations *agentcfg.SignedOAuthMCPOperationStore
 
 	// session auto-naming wiring: the static fleet-default policy, the
 	// session-registry titler seam, and the run's wrapped LLM client. All
@@ -602,6 +611,13 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		tokenBudget:              opts.TokenBudget,
 		compression:              opts.Compression,
 	}
+	if opts.StateStore != nil && opts.SignedOAuthMCPReconciler != nil {
+		operations, err := agentcfg.NewSignedOAuthMCPOperationStore(opts.StateStore)
+		if err != nil {
+			return nil, fmt.Errorf("run loop signed operation store: %w", err)
+		}
+		d.signedOperations = operations
+	}
 	d.preparer = newSessionPreparer(opts.Logger, defaultSessionPrepareLimits(), opts.ProviderRoute,
 		d.reconcileConnectionsPass, d.prepareStamp)
 	return d, nil
@@ -614,13 +630,23 @@ func (d *RunLoopDriver) SessionPreparer() protocol.SessionPreparer {
 	return d.preparer
 }
 
-// prepareStamp computes the input-addressed stamp that guards reuse of a
-// preparation: the projection.CatalogStamp over the registry pointers, fence
-// records, deletion generation, session overlay and the process-local
-// catalog and MCP registry generations. ok=false (no fast path) when the
-// wired dependencies cannot report generations.
+// prepareStamp computes the reconcile-specific stamp that guards reuse of a
+// preparation. It extends the projection.CatalogStamp (registry pointers,
+// fence records, deletion generation, session overlay, process-local catalog
+// and MCP registry generations) with the write identity of every durable
+// signed-capability operation record the run-start signed reconcile would
+// act on for this principal: the agent's agent-tier receipts and the acting
+// user's user-tier receipts. Every operation write (claim, phase transition,
+// publisher acquisition, expiry, renewal) mints a new record EventID, so a
+// change made by another replica — a publisher takeover, a removal admitted
+// before the revision moves — changes the stamp. ok=false (no fast path)
+// when the wired dependencies cannot report generations or the tenant's
+// operation records exceed the bounded scan.
 func (d *RunLoopDriver) prepareStamp(ctx context.Context, id identity.Identity, agentID string) (string, bool, error) {
 	if d.agentConfig == nil || d.catalog == nil || d.connectionDetacher == nil {
+		return "", false, nil
+	}
+	if d.signedOAuthMCPReconciler != nil && d.signedOperations == nil {
 		return "", false, nil
 	}
 	owner, ok := d.connectionDetacher.(projection.SourceOwnerResolver)
@@ -629,8 +655,64 @@ func (d *RunLoopDriver) prepareStamp(ctx context.Context, id identity.Identity, 
 	}
 	resolver := projection.CatalogViewResolver{Registry: d.agentConfig, SessionOverlay: d.sessionOverlay, Catalog: d.catalog, OwnerResolver: owner}
 	revision, _, ok, err := resolver.CatalogStamp(ctx, id, agentID, sessionPrepareStampView)
-	return revision, ok, err
+	if err != nil || !ok || d.signedOperations == nil {
+		return revision, ok, err
+	}
+	type generation struct{ kind, eventID string }
+	var generations []generation
+	continuation := ""
+	for page := 0; ; page++ {
+		if page == sessionPrepareMaxOperationPages {
+			return "", false, nil
+		}
+		ops, next, scanErr := d.signedOperations.ScanTenantPage(ctx, id.TenantID, state.MaxStateScanLimit, continuation)
+		if scanErr != nil {
+			return "", false, scanErr
+		}
+		for _, op := range ops {
+			if op.Binding.AgentID != agentID {
+				continue
+			}
+			agentTier := op.ReplayKey.UserID == "" && op.ReplayKey.SessionID == ""
+			if !agentTier && op.Binding.UserID != id.UserID {
+				continue
+			}
+			kind, kindErr := d.signedOperations.Kind(op.ReplayKey)
+			if kindErr != nil {
+				return "", false, kindErr
+			}
+			generations = append(generations, generation{kind: kind, eventID: string(op.EventID)})
+		}
+		if next == "" {
+			break
+		}
+		continuation = next
+	}
+	sort.Slice(generations, func(i, j int) bool { return generations[i].kind < generations[j].kind })
+	h := sha256.New()
+	field := func(v string) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(v)))
+		h.Write(n[:])
+		h.Write([]byte(v))
+	}
+	field(sessionPrepareStampFormat)
+	field(revision)
+	field(strconv.Itoa(len(generations)))
+	for _, g := range generations {
+		field(g.kind)
+		field(g.eventID)
+	}
+	return hex.EncodeToString(h.Sum(nil)), true, nil
 }
+
+const (
+	// sessionPrepareStampFormat versions the reconcile stamp encoding.
+	sessionPrepareStampFormat = "harbor.run-start.prepare-stamp.v1"
+	// sessionPrepareMaxOperationPages bounds the signed-operation scan a
+	// stamp performs; a tenant with more records gets no fast path.
+	sessionPrepareMaxOperationPages = 4
+)
 
 // sessionPrepareStampView names the stamp's view so a preparation stamp can
 // never compare equal to a catalog-listing revision.

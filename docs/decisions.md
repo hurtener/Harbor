@@ -16586,13 +16586,18 @@ connections re-attach) and two sequential provider-route calls (~0.37 s). The
 platform knows the user's intent before the send (home screen, agent picked,
 typing), so the runtime accepts a `prepare` hint and does that work early.
 
-- **Admission is `start`'s, minus materialization.** Verified identity triple
-  (the body must equal it; impersonation is refused), signed agent reach before
-  agent resolution, the same provider-route shape check. No session row, task,
-  idempotency record, or new scope. The background work runs on a context
-  detached from the request's cancellation but carrying exactly its verified
-  identity and runtime, with agent reach narrowed to the admitted agent (the
-  shape run start restores from its sealed admission receipt), plus a minted
+- **Admission is `start`'s, minus materialization.** A verified identity is
+  mandatory and the body triple must equal it (impersonation is refused),
+  signed agent reach runs before agent resolution, the same provider-route
+  shape check applies. No session row, task, idempotency record, or new scope.
+  The surface then seals a reach admission (the `control.start` admission
+  authority) for exactly (runtime, tenant, user, session, agent); without that
+  authority the method answers 404, because no record could ever be consumed.
+  The preparer refuses any context lacking the verified identity, the reach
+  narrowed to exactly the agent, and a sealed admission for exactly the
+  request subject — an embedded or unauthenticated caller cannot create a
+  record. The background work runs on a context detached from the request's
+  cancellation but carrying exactly that authority, plus a minted
   `prepare-run-*` run scope.
 - **Same work, not new work.** The preparation runs the run loop's own
   reconcile pass. It converges: stamp, pass, stamp; when the pass moved the
@@ -16601,17 +16606,31 @@ typing), so the runtime accepts a `prepare` hint and does that work early.
   generations monotonic, so equal before/after stamps mean the pass ran on
   exactly the stamped inputs.
 - **Reuse is proven, never assumed.** Run start consumes a preparation only
-  when the run carries a verified reach admission, the preparation for the same
-  `(tenant, user, agent)` completed cleanly (any leg error, including a
-  re-attach parked by its retry window, disqualifies it) less than 90 s ago, and
-  the current stamp equals the retained one. The stamp is D-491's
-  `CatalogStamp` (agent and user pointers, fence records, deletion generation,
-  session overlay, catalog and MCP registry generations) under its own view
-  name. An in-flight preparation is joined for at most 10 s. Everything else
-  runs the normal reconcile. The key omits the session: reconcile state is
-  slot-scoped, and an overlay in the run's session moves the stamp. Residual,
-  stated: inputs outside the stamp (the signed-operation page cursor, time-
-  driven receipt expiry) can be deferred by at most the freshness window.
+  when (1) the run's own restored sealed admission names the same runtime,
+  tenant, user and agent as the admission the record was prepared under; (2)
+  the preparation for that `(tenant, user, agent)` completed cleanly (any leg
+  error, including a re-attach parked by its retry window, disqualifies it);
+  (3) the current reconcile stamp equals the retained one; and (4) the
+  decision instant — checked both before and after the run-start stamp read —
+  is strictly earlier than `observedAt + 90 s`, where `observedAt` is the
+  instant the accepted (final) pass's leading stamp read began. A skipped run
+  start therefore relies only on inputs observed less than 90 s before it
+  decides, however long the pass or the stamp read took. The reconcile stamp
+  is D-491's `CatalogStamp` (agent and user pointers, fence records, deletion
+  generation, session overlay, catalog and MCP registry generations) under its
+  own view name, hashed together with the record write identity (EventID) of
+  every durable signed-capability operation record the signed reconcile would
+  act on for the principal — the agent's agent-tier receipts and the acting
+  user's user-tier receipts. Every claim, phase transition, publisher
+  acquisition, expiry or renewal mints a new EventID, so another replica's
+  publisher takeover or a `removal_admitted` persisted before the revision
+  moves changes the stamp. The operation scan is bounded (4 pages); a tenant
+  with more records gets no fast path. An in-flight preparation is joined for
+  at most 10 s. Everything else runs the normal reconcile. The key omits the
+  session: reconcile state is slot-scoped, and an overlay in the run's session
+  moves the stamp. Residual, stated: time-driven work the reconcile would
+  start without any record change (a receipt crossing its expiry, the
+  maintenance page cursor) is deferred by less than 90 s from `observedAt`.
 - **Route selection is cached, credentials are not.** A bounded
   credential-free selection cache (1024 entries) keyed by tenant, user,
   effective agent, purpose, profile negotiation and the exact route
