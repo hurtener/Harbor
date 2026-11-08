@@ -17,25 +17,29 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.41.0] — 2026-11-08
+
 ### Added
 
-- **`prepare`: warm a run start before the user sends.** A platform can call
-  `POST /v1/control/prepare` (HTTP 202) with the identity triple, optional
-  `agent_id` and the optional `provider_route` its next `start` will carry. It
-  is admitted exactly like `start` (verified identity, signed agent reach, no
-  impersonation; requires the reach-admission authority), creates nothing,
-  and runs the run-start signed OAuth MCP reconcile for the agent and user
-  tiers plus the credential-free provider-route selection in the background —
-  bounded, coalesced per (tenant, user, agent), and joined on shutdown. A run
-  start whose own sealed admission matches the preparation's, within 90 s of
-  the preparation's final input observation and with unchanged inputs (catalog
-  stamp plus the principal's signed-operation record generations), skips its
-  reconcile; one that arrives while preparation runs
-  joins it for at most 10 s; anything else reconciles as before. Route
-  selections are now cached until their resolver-issued expiry for every
-  planner call (credentials are still resolved per attempt). `turn.pre_model`
-  reports `prepared` and `provider_route_cached`; each preparation logs one
-  `session.prepare` line. See D-495.
+### Changed
+
+- **Stable tool declaration order.** Always-loaded tools are declared by
+  stability tier — builtin, shared/operator, agent-owned, then user-owned
+  connections (catalog order within a tier); per-run discoveries still follow.
+  A user's lazily attached connection now changes only the tail of the
+  declarations instead of shifting every tool sorted after it. Order between
+  the steps of one run is unchanged, and name-collision winners are still
+  chosen in catalog order, so `tool_get`, native dispatch and
+  `declarative_action` resolve an alias to the same tool.
+- **No duplicated tool descriptions.** `<available_tools>` lists callable names
+  only; descriptions and schemas travel once, in the native declarations.
+  `$schema` / `$comment` annotations are stripped from every subschema sent to
+  the model (validation still uses the original schema). On a representative
+  47-tool fixture the per-call request shrinks from 57,868 to 44,520 bytes
+  (−23%, roughly 3.3k tokens).
+- **The current date moved to a trailing `<current_date>` system section** so
+  the static sections ahead of it stay byte-stable across days.
+
 
 ## [1.40.0] — 2026-11-07
 
@@ -231,7 +235,6 @@ Two versions move independently in Harbor (RFC §5.3):
   server's instructions), indexed for search so a server-name query matches.
   `tool_search` and `tool_get` results include a `server` label. Model-visible
   tool names are unchanged.
-
 
 ## [1.38.0] — 2026-11-07
 

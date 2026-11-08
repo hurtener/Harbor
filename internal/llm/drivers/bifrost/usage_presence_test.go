@@ -31,7 +31,7 @@ func TestUsagePresence_NormalizedObjectsNotInventedZeros(t *testing.T) {
 			u, c := extractUsageAndCost(&response)
 			assertPresenceJSON(t, u, map[string]bool{"ReportPresent": tc.usage, "PromptDetailsPresent": tc.prompt, "CompletionDetailsPresent": tc.completion, "Estimated": false})
 			assertPresenceJSON(t, c, map[string]bool{"ReportPresent": tc.cost, "Estimated": false})
-			if u.CacheReadTokens != 0 || u.CacheWriteTokens != 0 {
+			if u.CacheReadTokens != 0 || u.CacheWriteTokens != 0 || u.CacheReadReported || u.CacheWriteReported {
 				t.Fatal("invented cache tokens")
 			}
 		})
@@ -114,4 +114,31 @@ func TestUsagePresence_ConcurrentIsolation(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// Each cache counter carries its own presence: a details object reporting
+// only writes (or only audio) never marks the read counter as measured.
+func TestUsagePresence_CacheCountersReportedIndependently(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                string
+		body                string
+		wantRead, wantWrite bool
+	}{
+		{"audio only", `{"usage":{"prompt_tokens":5,"prompt_tokens_details":{"audio_tokens":5}}}`, false, false},
+		{"openai cached read", `{"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":80}}}`, true, false},
+		{"write only", `{"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cache_write_tokens":100}}}`, false, true},
+		{"read and write", `{"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_read_tokens":60,"cached_write_tokens":40}}}`, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var response bfschemas.BifrostChatResponse
+			if err := json.Unmarshal([]byte(tc.body), &response); err != nil {
+				t.Fatal(err)
+			}
+			u, _ := extractUsageAndCost(&response)
+			if u.CacheReadReported != tc.wantRead || u.CacheWriteReported != tc.wantWrite {
+				t.Errorf("reported read=%v write=%v, want read=%v write=%v", u.CacheReadReported, u.CacheWriteReported, tc.wantRead, tc.wantWrite)
+			}
+		})
+	}
 }

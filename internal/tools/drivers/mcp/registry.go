@@ -305,7 +305,7 @@ func (e *DiscoveryStaleError) Is(target error) bool { return target == ErrDiscov
 const (
 	maxListPageSize          = 200
 	defaultListPageSize      = 50
-	userPhysicalSourceMarker = "~u-"
+	userPhysicalSourceMarker = tools.UserSourceMarker
 )
 
 // PhysicalServerName derives the process-local source id for one logical MCP
@@ -320,7 +320,7 @@ func PhysicalServerName(logical string, owner auth.Owner) string {
 	}
 	if owner.Scope() == auth.ScopeTenantAgent {
 		h := sha256.Sum256([]byte("harbor:mcp:agent-source:v1\x00" + owner.Tenant + "\x00" + owner.Agent))
-		return logical + "~a-" + hex.EncodeToString(h[:16])
+		return logical + tools.AgentSourceMarker + hex.EncodeToString(h[:16])
 	}
 	h := sha256.Sum256([]byte("harbor:mcp:user-source:v1\x00" + owner.Tenant + "\x00" + owner.Agent + "\x00" + owner.User))
 	return logical + userPhysicalSourceMarker + hex.EncodeToString(h[:16])

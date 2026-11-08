@@ -70,7 +70,20 @@ func SnapshotFromConfig(cfg config.LLMConfig, art config.ArtifactsConfig) Config
 		// InferenceKeySource + connects it), not a snapshot field.
 		CredentialSource: cfg.CredentialSource,
 		InferenceBroker:  cfg.InferenceBroker,
+		PromptCache:      promptCacheFromConfig(cfg.PromptCache, cfg.ProviderRouting),
 	}
+}
+
+// promptCacheFromConfig projects `llm.prompt_cache` + `llm.provider_routing`
+// onto the snapshot's prompt-cache posture (validated upstream).
+func promptCacheFromConfig(pc config.LLMPromptCacheConfig, routing config.LLMProviderRoutingConfig) PromptCacheSettings {
+	return PromptCacheSettings{
+		Disabled:       pc.Key == "off",
+		Retention:      pc.Retention,
+		StickyRouting:  pc.StickyRouting,
+		ProviderOrder:  routing.Order,
+		AllowFallbacks: routing.AllowFallbacks,
+	}.Clone()
 }
 
 // modelProfilesFromConfig converts the config-package map shape into

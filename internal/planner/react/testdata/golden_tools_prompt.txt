@@ -1,5 +1,5 @@
 <available_tools>
-- search: Search the knowledge base for documents matching a query.
-
-- ping: Health-check the upstream service.
+Callable catalog tools (each tool's description and argument schema are in its native tool declaration):
+- search
+- ping
 </available_tools>

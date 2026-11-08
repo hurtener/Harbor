@@ -184,6 +184,12 @@ type CompleteRequest struct {
 	// operator's yaml knob + the runloop executor's capability signal.
 	ParallelToolCalls bool
 
+	// PromptCacheScope is an opaque digest of the request's stable prompt
+	// prefix (see [PromptCacheScope]). Drivers derive the provider prompt
+	// cache key from it plus the serving provider/model; empty sends no key.
+	// Never a raw identifier.
+	PromptCacheScope string
+
 	// modelProfile is a trusted, request-local technical descriptor attached by
 	// the provider-route selector. It is deliberately unexported: callers must
 	// not be able to smuggle a profile into the model-sensitive wrapper chain.
@@ -578,11 +584,18 @@ type Usage struct {
 	// prompt-details object exists (it may contain only audio/text counts).
 	PromptDetailsPresent     bool `json:",omitempty"`
 	CompletionDetailsPresent bool `json:",omitempty"`
-	PromptTokens             int
-	CompletionTokens         int
-	ReasoningTokens          int
-	TotalTokens              int
-	LatencyMS                int64
+	// CacheReadReported / CacheWriteReported record, per counter, that the
+	// driver observed that cache count. A prompt-details object alone (for
+	// example audio-only details) reports neither. Drivers whose SDK erases
+	// per-field presence set a flag only for a positive count, so an
+	// unflagged zero is unknown, never a measured miss.
+	CacheReadReported  bool `json:",omitempty"`
+	CacheWriteReported bool `json:",omitempty"`
+	PromptTokens       int
+	CompletionTokens   int
+	ReasoningTokens    int
+	TotalTokens        int
+	LatencyMS          int64
 	// CacheReadTokens is the count of PromptTokens served from the
 	// provider's prompt cache — a subset of PromptTokens, not additional
 	// tokens. Zero when the provider/response reports no cache data.
