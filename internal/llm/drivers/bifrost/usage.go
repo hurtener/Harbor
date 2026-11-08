@@ -32,8 +32,13 @@ func mergeStreamAccounting(resp *bfschemas.BifrostChatResponse, usage *llm.Usage
 	}
 	if next.PromptDetailsPresent {
 		usage.PromptDetailsPresent = true
+		// The latest prompt-details object is the cumulative report; each
+		// counter's presence travels with its own value, so a details
+		// object that does not report a counter leaves it unreported.
 		usage.CacheReadTokens = next.CacheReadTokens
 		usage.CacheWriteTokens = next.CacheWriteTokens
+		usage.CacheReadReported = next.CacheReadReported
+		usage.CacheWriteReported = next.CacheWriteReported
 	}
 	if next.CompletionDetailsPresent {
 		usage.CompletionDetailsPresent = true

@@ -32,8 +32,8 @@ Two versions move independently in Harbor (RFC §5.3):
   opt-in `sticky_routing` → OpenRouter `session_id`) and opt-in
   `llm.provider_routing` (`order`, `allow_fallbacks` → OpenRouter `provider`).
 - **`llm.call.completed` logs `cached_input_tokens` and `cache_write_tokens`**
-  when the provider returned a prompt-token breakdown; both are absent when it
-  did not (unknown is never logged as zero).
+  each only when that counter was reported (a prompt-details object carrying,
+  say, only audio tokens reports neither); unknown is never logged as zero.
 
 ### Changed
 
@@ -42,7 +42,9 @@ Two versions move independently in Harbor (RFC §5.3):
   connections (catalog order within a tier); per-run discoveries still follow.
   A user's lazily attached connection now changes only the tail of the
   declarations instead of shifting every tool sorted after it. Order between
-  the steps of one run is unchanged.
+  the steps of one run is unchanged, and name-collision winners are still
+  chosen in catalog order, so `tool_get`, native dispatch and
+  `declarative_action` resolve an alias to the same tool.
 - **No duplicated tool descriptions.** `<available_tools>` lists callable names
   only; descriptions and schemas travel once, in the native declarations.
   `$schema` / `$comment` annotations are stripped from every subschema sent to

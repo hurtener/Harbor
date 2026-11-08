@@ -353,7 +353,11 @@ func projectModelToolsListed(rc planner.RunContext, discovered []string) ([]tool
 	if rc.Catalog == nil {
 		return nil, tools.NewModelToolNameProjection(nil, nil), 0
 	}
-	candidates := tools.OrderForPromptStability(rc.Catalog.List())
+	// Collision winners are chosen in CATALOG order — the same order
+	// tool_get / tool_search / declarative_action use — so one declared
+	// alias names one tool on every path. Only the surviving declarations
+	// are reordered by stability below.
+	candidates := rc.Catalog.List()
 	listedCandidates := len(candidates)
 	if len(discovered) > 0 {
 		discoveryCandidates := candidates
@@ -415,6 +419,11 @@ func projectModelToolsListed(rc planner.RunContext, discovered []string) ([]tool
 			}
 		}
 	}
+	// The always-loaded survivors are a prefix of projected (List
+	// candidates precede discoveries); order them by prompt stability.
+	// The name projection above is unaffected: reordering declarations
+	// never changes which tool an alias resolves to.
+	copy(projected[:listed], tools.OrderForPromptStability(projected[:listed]))
 	return projected, projection, listed
 }
 

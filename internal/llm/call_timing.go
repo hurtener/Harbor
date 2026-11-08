@@ -162,10 +162,12 @@ func (c *safetyClient) logCallTiming(ctx context.Context, req CompleteRequest, r
 	if usage.ReportPresent && !usage.Estimated {
 		call.InputTokens = &usage.PromptTokens
 		call.OutputTokens = &usage.CompletionTokens
-		// The cache breakdown is known only when the provider returned a
-		// prompt-details object; without one the counts stay absent.
-		if usage.PromptDetailsPresent {
+		// Each cache counter is logged only when it was reported; a
+		// prompt-details object alone (audio-only, say) proves neither.
+		if usage.CacheReadReported {
 			call.CachedInputTokens = &usage.CacheReadTokens
+		}
+		if usage.CacheWriteReported {
 			call.CacheWriteTokens = &usage.CacheWriteTokens
 		}
 	}

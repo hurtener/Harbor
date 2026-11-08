@@ -692,6 +692,11 @@ func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Co
 		// both at zero — the same "nil-usage yields zero values" contract.
 		usage.CacheReadTokens = resp.Usage.PromptTokensDetails.CachedReadTokens
 		usage.CacheWriteTokens = resp.Usage.PromptTokensDetails.CachedWriteTokens
+		// The pinned SDK erases each counter's wire presence (absent and
+		// zero both decode to 0), so only a positive count proves the
+		// provider reported that counter.
+		usage.CacheReadReported = usage.CacheReadTokens > 0
+		usage.CacheWriteReported = usage.CacheWriteTokens > 0
 	}
 	usage.LatencyMS = resp.ExtraFields.Latency
 	if resp.Usage.Cost != nil {
