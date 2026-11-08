@@ -23,6 +23,29 @@ const (
 	turnStageCount
 )
 
+// TurnPrepared records how run start used ahead-of-time session preparation.
+// The values are a fixed closed set so the log attribute stays bounded.
+type TurnPrepared uint8
+
+const (
+	// TurnPreparedNone means no preparation outcome was recorded.
+	TurnPreparedNone TurnPrepared = iota
+	// TurnPreparedHit means a completed, still-fresh preparation with an
+	// unchanged input stamp replaced the run-start reconcile.
+	TurnPreparedHit
+	// TurnPreparedJoined means run start waited for an in-flight preparation
+	// and then reused it.
+	TurnPreparedJoined
+	// TurnPreparedStale means a preparation existed but was expired, failed,
+	// or its inputs changed, so the full reconcile ran.
+	TurnPreparedStale
+	// TurnPreparedMiss means no preparation existed for the run's principal.
+	TurnPreparedMiss
+	turnPreparedCount
+)
+
+var turnPreparedNames = [...]string{"", "hit", "joined", "stale", "miss"}
+
 type turnTimingKey struct{}
 
 // turnTiming is per-turn state, internally synchronized because parallel
@@ -34,6 +57,10 @@ type turnTiming struct {
 	now     func() time.Time
 	emitted bool
 	stages  [turnStageCount]time.Duration
+	// prepared is the run-start preparation outcome; routeCached reports
+	// that at least one provider-route selection was served from cache.
+	prepared    TurnPrepared
+	routeCached bool
 }
 
 // BeginTurnTiming starts a fresh turn observation. Callers use a server-owned
@@ -74,6 +101,34 @@ func RecordTurnStage(ctx context.Context, stage TurnStage, duration time.Duratio
 	}
 }
 
+// RecordTurnPrepared records the run-start preparation outcome for this
+// turn. Unknown values and calls after dispatch are ignored.
+func RecordTurnPrepared(ctx context.Context, prepared TurnPrepared) {
+	timing, ok := ctx.Value(turnTimingKey{}).(*turnTiming)
+	if !ok || prepared >= turnPreparedCount {
+		return
+	}
+	timing.mu.Lock()
+	defer timing.mu.Unlock()
+	if !timing.emitted {
+		timing.prepared = prepared
+	}
+}
+
+// RecordTurnProviderRouteCached marks that a provider-route selection for
+// this turn was served from the selection cache.
+func RecordTurnProviderRouteCached(ctx context.Context) {
+	timing, ok := ctx.Value(turnTimingKey{}).(*turnTiming)
+	if !ok {
+		return
+	}
+	timing.mu.Lock()
+	defer timing.mu.Unlock()
+	if !timing.emitted {
+		timing.routeCached = true
+	}
+}
+
 // ObserveFirstModelRequest emits turn.pre_model exactly once for this turn.
 // It must be called only for a main planner completion at the actual driver
 // dispatch boundary, after local gates. Auxiliary calls do not consume it.
@@ -91,6 +146,7 @@ func ObserveFirstModelRequest(ctx context.Context) {
 	timing.emitted = true
 	elapsed := max(timing.now().Sub(timing.started), 0)
 	stages := timing.stages
+	prepared, routeCached := timing.prepared, timing.routeCached
 	timing.mu.Unlock()
 	attrs := []slog.Attr{slog.Float64("duration_ms", float64(elapsed)/float64(time.Millisecond))}
 	keys := [...]string{"mcp_reconcile_ms", "mcp_discovery_reconcile_ms", "tool_attach_ms", "provider_route_ms"}
@@ -98,6 +154,12 @@ func ObserveFirstModelRequest(ctx context.Context) {
 		if duration > 0 {
 			attrs = append(attrs, slog.Float64(keys[stage], float64(duration)/float64(time.Millisecond)))
 		}
+	}
+	if prepared != TurnPreparedNone {
+		attrs = append(attrs, slog.String("prepared", turnPreparedNames[prepared]))
+	}
+	if routeCached {
+		attrs = append(attrs, slog.Bool("provider_route_cached", true))
 	}
 	timing.logger.LogAttrs(ctx, slog.LevelInfo, "turn.pre_model", appendCtxIdentity(ctx, attrs)...)
 }

@@ -53,7 +53,7 @@ func withControlTestReach(ctx context.Context) context.Context {
 // newTestSurface builds a real protocol.ControlSurface over real
 // in-process drivers — no mocks at the seam (CLAUDE.md §17.3). The
 // returned cleanup closes every driver.
-func newTestSurface(t *testing.T) (*protocol.ControlSurface, func()) {
+func newTestSurface(t *testing.T, extra ...protocol.Option) (*protocol.ControlSurface, func()) {
 	t.Helper()
 	red := auditpatterns.New()
 	bus, err := events.Open(context.Background(), config.EventsConfig{
@@ -84,8 +84,10 @@ func newTestSurface(t *testing.T) (*protocol.ControlSurface, func()) {
 	}
 	steerReg := steering.NewRegistry()
 	surface, err := protocol.NewControlSurface(taskReg, steerReg,
-		protocol.WithAgentResolver(controlTestAgentResolver{}),
-		protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()))
+		append([]protocol.Option{
+			protocol.WithAgentResolver(controlTestAgentResolver{}),
+			protocol.WithAgentReachAuthorizer(auth.NewAgentReachAuthorizer()),
+		}, extra...)...)
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())

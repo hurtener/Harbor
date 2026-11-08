@@ -170,6 +170,11 @@ func methodTable() map[methods.Method]methodEntry {
 			Route: controlRoute(methods.MethodStart), Mutates: true,
 			Request: "StartRequest", Response: "StartResponse",
 		},
+		methods.MethodPrepare: {
+			Route: controlRoute(methods.MethodPrepare), Mutates: true,
+			Request: "PrepareRequest", Response: "PrepareResponse",
+			Auth: "same admission as `start` (verified identity, signed Agent reach); impersonation refused; HTTP 202",
+		},
 
 		// --- Streaming events.
 		methods.MethodEventsSubscribe: {
@@ -895,6 +900,8 @@ func classify(m methods.Method) string {
 	switch {
 	case m == methods.MethodStart:
 		return "task control — spawn"
+	case m == methods.MethodPrepare:
+		return "task control — run-start preparation"
 	case methods.IsControlMethod(m):
 		return "task control — steering"
 	case methods.IsStreamingEventsMethod(m):
@@ -968,7 +975,9 @@ var methodClusters = []struct {
 	Match  func(methods.Method) bool
 	Anchor string
 }{
-	{"Task control", func(m methods.Method) bool { return m == methods.MethodStart || methods.IsControlMethod(m) }, "task-control"},
+	{"Task control", func(m methods.Method) bool {
+		return m == methods.MethodStart || m == methods.MethodPrepare || methods.IsControlMethod(m)
+	}, "task-control"},
 	{"Streaming events", methods.IsStreamingEventsMethod, "streaming-events"},
 	{"Tasks", methods.IsTasksMethod, "tasks"},
 	{"Sessions", methods.IsSessionsMethod, "sessions"},

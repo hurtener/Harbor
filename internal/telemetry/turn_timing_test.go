@@ -117,3 +117,46 @@ func TestTurnTiming_EnsureAndNewTurn_PreserveThenReset(t *testing.T) {
 		t.Fatalf("expected one record for each new turn: %s", output.String())
 	}
 }
+
+func TestTurnTiming_PreparedAndRouteCachedAttributes(t *testing.T) {
+	cases := []struct {
+		prepared TurnPrepared
+		cached   bool
+		want     string
+	}{
+		{TurnPreparedHit, true, "hit"},
+		{TurnPreparedJoined, false, "joined"},
+		{TurnPreparedStale, false, "stale"},
+		{TurnPreparedMiss, false, "miss"},
+		{TurnPreparedNone, false, ""},
+	}
+	for _, tc := range cases {
+		var output bytes.Buffer
+		ctx := BeginTurnTiming(t.Context(), slog.New(slog.NewJSONHandler(&output, nil)), time.Now())
+		RecordTurnPrepared(ctx, tc.prepared)
+		RecordTurnPrepared(ctx, TurnPrepared(200)) // unknown values are ignored
+		if tc.cached {
+			RecordTurnProviderRouteCached(ctx)
+		}
+		ObserveFirstModelRequest(ctx)
+		RecordTurnPrepared(ctx, TurnPreparedStale) // after dispatch: ignored
+		var record map[string]any
+		if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+			t.Fatal(err)
+		}
+		got, present := record["prepared"]
+		if tc.want == "" {
+			if present {
+				t.Fatalf("prepared attribute emitted without an outcome: %v", record)
+			}
+		} else if got != tc.want {
+			t.Fatalf("prepared = %v, want %q", got, tc.want)
+		}
+		if cached, ok := record["provider_route_cached"]; tc.cached != ok || (ok && cached != true) {
+			t.Fatalf("provider_route_cached = %v (present %v), want %v", cached, ok, tc.cached)
+		}
+	}
+	// No turn timing on ctx: both recorders are no-ops.
+	RecordTurnPrepared(context.Background(), TurnPreparedHit)
+	RecordTurnProviderRouteCached(context.Background())
+}

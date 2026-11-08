@@ -2646,6 +2646,27 @@ user removal or revision fence cannot be reported from a stale pre-reconcile
 projection. Missing identity, authorization, reach, wiring, or profile state
 fails closed, and the Protocol version is unchanged.
 
+**Run-start preparation (D-495).** The task-control `prepare` method
+(`POST /v1/control/prepare`, HTTP 202) lets a platform warm a run start before
+the user sends: for the verified `(tenant, user)` and one effective agent it
+runs, in the background, the exact run-start reconcile (signed OAuth MCP agent
+and user tiers, provider, connection and discovery legs) and, when the request
+carries the same opaque `provider_route` selector the later `start` will carry,
+the credential-free route selection. Admission is `start`'s (identity triple
+equal to the verified identity, signed reach before agent resolution; no
+impersonation) and the background work runs under that request's verified
+identity with agent reach narrowed to the admitted agent. It creates no task,
+session or idempotency record and grants nothing. Work is coalesced per
+`(tenant, user, agent)`, bounded in concurrency and records, and joined on
+shutdown. A later run start whose sealed reach admission is present skips its
+reconcile only when a preparation for the same principal completed cleanly
+within 90 s and the input-addressed catalog stamp (D-491) is unchanged; a
+preparation still running is joined for at most 10 s; anything else reconciles
+as before. Route selections are cached per principal and exact route
+coordinates until their resolver-issued expiry; credentials are still resolved
+per attempt. `turn.pre_model` reports `prepared` (`hit`/`joined`/`stale`/`miss`)
+and `provider_route_cached`. The Protocol version is unchanged.
+
 **Events.** The registry emits `agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered` on the typed event bus (§6.13), carrying the registration `agent_id`. The Console Agents page (§7) is a lens over these events plus a registry state snapshot — the Console never holds the agent list itself (D-061).
 
 **Fleet privilege tiers.** A Console managing one or more Harbor runtimes is a control plane. Fleet *observation* (reading events, viewing topology, listing agents) and fleet *control* (pause / drain / restart / force-stop of agents) are **distinct privilege tiers** — control requires a more-elevated scope claim than observation, extending the elevated-scope-claim concept (§6.13 admin subscriptions). Every fleet-control command is audit-redacted (§6.4) and emitted. A leaked read-only Console token must not be able to force-stop a fleet. A runtime-side enrollment allowlist of authorized control-plane clients is a stronger-than-JWT-scope option, deferred as a "decide later" item — per-request JWT scope (§5.5) covers the V1 need. (Settled — D-066.)

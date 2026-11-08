@@ -17,6 +17,23 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- **`prepare`: warm a run start before the user sends.** A platform can call
+  `POST /v1/control/prepare` (HTTP 202) with the identity triple, optional
+  `agent_id` and the optional `provider_route` its next `start` will carry. It
+  is admitted exactly like `start` (verified identity, signed agent reach, no
+  impersonation), creates nothing, and runs the run-start signed OAuth MCP
+  reconcile for the agent and user tiers plus the credential-free provider-route
+  selection in the background — bounded, coalesced per (tenant, user, agent),
+  and joined on shutdown. A run start within 90 s whose inputs are unchanged
+  (catalog stamp) skips its reconcile; one that arrives while preparation runs
+  joins it for at most 10 s; anything else reconciles as before. Route
+  selections are now cached until their resolver-issued expiry for every
+  planner call (credentials are still resolved per attempt). `turn.pre_model`
+  reports `prepared` and `provider_route_cached`; each preparation logs one
+  `session.prepare` line. See D-495.
+
 ## [1.40.0] — 2026-11-07
 
 ### Fixed

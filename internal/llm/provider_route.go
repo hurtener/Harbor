@@ -232,6 +232,11 @@ type ProviderRouteSelectionValidator interface {
 // A zero value is fully latent.
 type ProviderRouteConfig struct {
 	Resolver ProviderRouteResolver
+	// SelectionCache optionally retains credential-free selections until
+	// their resolver-issued expiry (see ProviderRouteSelectionCache). Nil
+	// selects on every logical call, the original behaviour. Credentials are
+	// never cached: the leaf resolves one per attempt either way.
+	SelectionCache *ProviderRouteSelectionCache
 }
 
 type providerRouteContextKey struct{}

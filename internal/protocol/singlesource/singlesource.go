@@ -103,6 +103,7 @@ const (
 // duplicated here and the test pins the duplication.
 var CanonicalMethods = map[string]struct{}{
 	"start":                           {},
+	"prepare":                         {},
 	"cancel":                          {},
 	"pause":                           {},
 	"resume":                          {},
@@ -300,6 +301,8 @@ var CanonicalWireTypes = map[string]string{
 	"IdentityScope":          "types",
 	"StartRequest":           "types",
 	"StartResponse":          "types",
+	"PrepareRequest":         "types",
+	"PrepareResponse":        "types",
 	"ControlRequest":         "types",
 	"ControlResponse":        "types",
 	"Version":                "types",

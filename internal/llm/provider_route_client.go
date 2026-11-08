@@ -36,10 +36,13 @@ func (c *providerRouteClient) Complete(ctx context.Context, req CompleteRequest)
 		return CompleteResponse{}, ErrProviderRouteInvalid
 	}
 	routeStarted := time.Now()
-	selected, err := SelectProviderRoute(requestCtx, c.cfg, routeReq, c.now())
+	selected, cached, err := selectProviderRouteCached(requestCtx, c.cfg, routeReq, c.now())
 	telemetry.RecordTurnStage(ctx, telemetry.TurnStageProviderRoute, time.Since(routeStarted))
 	if err != nil {
 		return CompleteResponse{}, err
+	}
+	if cached {
+		telemetry.RecordTurnProviderRouteCached(ctx)
 	}
 	// The resolver is networked and may return after a selection that was valid
 	// at request time has expired. Recheck at receipt before policy or the inner

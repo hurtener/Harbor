@@ -16573,3 +16573,58 @@ session header is unchanged (a session-activity index is a possible
 follow-up). The rollups projector worker already resumes from its durable
 checkpoint.
 **Cross-references:** D-492.
+
+## D-495 — Run-start preparation ahead of `start` (`prepare`)
+
+**Date:** 2026-11-07. **Scope:** task-control Protocol method `prepare`
+(`POST /v1/control/prepare`), the run-loop driver's run-start reconcile, the
+provider-route selection leg, and `turn.pre_model`. No config keys.
+
+Measured warm, the work before the first planner call is dominated by the
+run-start signed OAuth MCP reconcile (~0.4 s; 5–6 s right after a restart, when
+connections re-attach) and two sequential provider-route calls (~0.37 s). The
+platform knows the user's intent before the send (home screen, agent picked,
+typing), so the runtime accepts a `prepare` hint and does that work early.
+
+- **Admission is `start`'s, minus materialization.** Verified identity triple
+  (the body must equal it; impersonation is refused), signed agent reach before
+  agent resolution, the same provider-route shape check. No session row, task,
+  idempotency record, or new scope. The background work runs on a context
+  detached from the request's cancellation but carrying exactly its verified
+  identity and runtime, with agent reach narrowed to the admitted agent (the
+  shape run start restores from its sealed admission receipt), plus a minted
+  `prepare-run-*` run scope.
+- **Same work, not new work.** The preparation runs the run loop's own
+  reconcile pass. It converges: stamp, pass, stamp; when the pass moved the
+  stamp (its own attaches) it runs one more pass and retains the result only if
+  that pass left the stamp unchanged. Write identities are unique and process
+  generations monotonic, so equal before/after stamps mean the pass ran on
+  exactly the stamped inputs.
+- **Reuse is proven, never assumed.** Run start consumes a preparation only
+  when the run carries a verified reach admission, the preparation for the same
+  `(tenant, user, agent)` completed cleanly (any leg error, including a
+  re-attach parked by its retry window, disqualifies it) less than 90 s ago, and
+  the current stamp equals the retained one. The stamp is D-491's
+  `CatalogStamp` (agent and user pointers, fence records, deletion generation,
+  session overlay, catalog and MCP registry generations) under its own view
+  name. An in-flight preparation is joined for at most 10 s. Everything else
+  runs the normal reconcile. The key omits the session: reconcile state is
+  slot-scoped, and an overlay in the run's session moves the stamp. Residual,
+  stated: inputs outside the stamp (the signed-operation page cursor, time-
+  driven receipt expiry) can be deferred by at most the freshness window.
+- **Route selection is cached, credentials are not.** A bounded
+  credential-free selection cache (1024 entries) keyed by tenant, user,
+  effective agent, purpose, profile negotiation and the exact route
+  coordinates and generations serves both `prepare` and every planner call,
+  reusing a selection until 5 s before its resolver-issued expiry. The leaf
+  still resolves and exact-matches a fresh attempt-bound credential.
+- **Bounded.** 4 workers (a saturated pool answers `busy`, dropping the hint),
+  1024 records (expired, then oldest completed records evicted), a 105 s work
+  budget, repeated prepares answered `fresh`/`in_flight` without new work, a
+  failed preparation suppressing retries for 10 s. Close cancels and joins the
+  workers.
+- **Observable.** One `session.prepare` Info line per preparation (outcome
+  `ready`/`warmed`/`failed`/`unstable`/`cancelled`, passes, route outcome,
+  durations). `turn.pre_model` gains `prepared` and `provider_route_cached`.
+
+**Cross-references:** D-450, D-491.

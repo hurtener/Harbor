@@ -35,6 +35,8 @@
     "MemoryHealthRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "MemoryPutRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "MemoryStrategyTraceRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
+    "PrepareRequest": "platform-to-runtime run-start preparation hint; the Console does not call prepare, so no named TS interface",
+    "PrepareResponse": "platform-to-runtime run-start preparation acknowledgement; the Console does not call prepare, so no named TS interface",
     "ReadMCPResourceRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "RunSetOverridesRequest": "request body sent inline via the generic HarborClient namespace; not declared as a named TS interface",
     "RunSetOverridesResponse": "response narrowed inline at the call site; not declared as a named TS interface",
