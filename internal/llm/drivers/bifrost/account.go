@@ -82,6 +82,13 @@ type Account struct {
 	externalGrantRequired bool
 }
 
+// isCustom reports whether provider names an operator-declared
+// OpenAI-compatible provider.
+func (a *Account) isCustom(provider bfschemas.ModelProvider) bool {
+	_, ok := a.customByName[string(provider)]
+	return ok
+}
+
 // customRuntime is the resolved-at-construction shape of one custom
 // provider. Holds the API-key value (resolved from env) and the
 // pre-computed `ProviderConfig`. Internal; never serialized.

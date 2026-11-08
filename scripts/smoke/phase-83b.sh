@@ -36,8 +36,10 @@ assert_file "${GOLDEN}" "golden enriched-tools fixture exists"
 assert_grep_absent 'args_schema:' "${GOLDEN}" "golden omits args_schema: (now in req.Tools[].Schema)"
 assert_grep_absent 'side_effects:' "${GOLDEN}" "golden omits side_effects: (Phase 107c narrowed available_tools)"
 assert_grep_absent 'examples:' "${GOLDEN}" "golden omits examples: (Phase 107c narrowed available_tools)"
-# Tool name + description still render as a quick reference.
+# Tool names render as a quick reference; descriptions ride the native
+# declaration only (rendering them here sent every description twice).
 assert_grep_present '^- ' "${GOLDEN}" "golden carries at least one tool entry line"
+assert_grep_absent '^- [^:]*: ' "${GOLDEN}" "golden omits descriptions (already in req.Tools[].Description)"
 
 # The section openers/closers are present.
 assert_grep_present '^<available_tools>$' "${GOLDEN}" "golden opens <available_tools>"

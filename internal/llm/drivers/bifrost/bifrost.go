@@ -72,6 +72,9 @@ type Driver struct {
 	providerRoute llm.ProviderRouteConfig
 	routeClient   bifrostClient
 	routePool     *routeClientPool
+	// promptCache is the operator prompt-caching posture (read-only after
+	// construction).
+	promptCache llm.PromptCacheSettings
 
 	closed atomic.Bool
 }
@@ -129,6 +132,7 @@ func New(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 		files:         newProviderFileCache(defaultFileCacheCapacity, defaultFileCacheTTL),
 		account:       account,
 		providerRoute: deps.ProviderRoute,
+		promptCache:   cfg.PromptCache.Clone(),
 	}
 	if deps.ProviderRoute.Resolver != nil {
 		routeAccount, routeErr := newRouteAccount(cfg.NetworkDefaults)
@@ -176,6 +180,8 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	id := identityQuad(ctx)
 	providerID := d.provider
 	callClient := d.client
+	customPrimary := d.account != nil && d.account.isCustom(providerID)
+	compatibleEndpoint := false
 	var releaseRouteClient func()
 	if trusted, explicit := llm.TrustedProviderRouteFrom(ctx); explicit {
 		selected, selectedOK := llm.SelectedProviderRouteFrom(ctx)
@@ -228,7 +234,9 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		}
 		ctx = llm.WithResolvedProviderRoute(ctx, resolved)
 		callClient = d.routeClient
+		customPrimary = false
 		if resolved.Endpoint != nil && resolved.Endpoint.Kind == llm.ProviderEndpointOpenAICompatible {
+			compatibleEndpoint = true
 			if d.routePool == nil {
 				return llm.CompleteResponse{}, llm.ErrProviderRouteInvalid
 			}
@@ -262,6 +270,9 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	bfReq, err := translateRequest(providerID, req)
 	if err != nil {
 		return llm.CompleteResponse{}, fmt.Errorf("bifrost: translate request: %w", err)
+	}
+	if applyPromptCache(bfReq, req.PromptCacheScope, d.promptCache, promptCacheTargetFor(providerID, customPrimary, compatibleEndpoint)) {
+		bctx.SetValue(bfschemas.BifrostContextKeyPassthroughExtraParams, true)
 	}
 
 	if req.Stream {

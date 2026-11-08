@@ -62,9 +62,15 @@ func TestDefaultBuilder_EmitsSystemPromptAndCatalog(t *testing.T) {
 	// the <available_tools> section still appends so tool rendering
 	// survives a custom base prompt (Phase 83a buildSystemContent
 	// contract).
-	for _, want := range []string{"SYS_PROMPT", "search", "find things", "answer", "respond to user", "<available_tools>"} {
+	for _, want := range []string{"SYS_PROMPT", "- search\n", "- answer\n", "<available_tools>"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("system content missing %q. Body: %s", want, body)
+		}
+	}
+	// Descriptions ride the native declarations only.
+	for _, dup := range []string{"find things", "respond to user"} {
+		if strings.Contains(body, dup) {
+			t.Errorf("system content duplicates the declaration description %q. Body: %s", dup, body)
 		}
 	}
 }
@@ -1876,16 +1882,20 @@ func TestBuildSystemContent_WhitespaceOnlyExtraGuidanceOmitsSection(t *testing.T
 	}
 }
 
-// TestBuildSystemContent_CurrentDateIsDateOnly asserts the <identity>
-// section's `Current date:` line is YYYY-MM-DD with no time-of-day
-// component (brief 13 §4 — date-only for KV-cache stability).
+// TestBuildSystemContent_CurrentDateIsDateOnly asserts the trailing
+// <current_date> section is YYYY-MM-DD with no time-of-day component
+// (brief 13 §4 — date-only for KV-cache stability), and that it is the LAST
+// system section so the volatile value never precedes a cacheable one.
 func TestBuildSystemContent_CurrentDateIsDateOnly(t *testing.T) {
 	t.Parallel()
 	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
-	re := regexp.MustCompile(`Current date: (\S+)`)
+	re := regexp.MustCompile(`<current_date>([^<]*)</current_date>$`)
 	m := re.FindStringSubmatch(body)
 	if m == nil {
-		t.Fatalf("no `Current date:` line found. Body:\n%s", body)
+		t.Fatalf("no trailing <current_date> section found. Body:\n%s", body)
+	}
+	if strings.Contains(body[:strings.Index(body, "</identity>")], "Current date") {
+		t.Errorf("the date still renders inside <identity>, ahead of the cacheable sections")
 	}
 	date := m[1]
 	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(date) {
@@ -2053,7 +2063,7 @@ func TestBuildSystemContent_ErrorHandlingNoLegacyShape(t *testing.T) {
 }
 
 // TestBuildSystemContent_AvailableToolsRendersCatalog asserts the
-// <available_tools> section renders the catalog (name + description).
+// <available_tools> section renders the catalog by callable name only.
 func TestBuildSystemContent_AvailableToolsRendersCatalog(t *testing.T) {
 	t.Parallel()
 	rc := planner.RunContext{
@@ -2066,10 +2076,11 @@ func TestBuildSystemContent_AvailableToolsRendersCatalog(t *testing.T) {
 	start := strings.Index(body, "<available_tools>")
 	end := strings.Index(body, "</available_tools>")
 	section := body[start:end]
-	for _, want := range []string{"search", "find things"} {
-		if !strings.Contains(section, want) {
-			t.Errorf("<available_tools> missing %q. Section:\n%s", want, section)
-		}
+	if !strings.Contains(section, "- search\n") {
+		t.Errorf("<available_tools> missing the search entry. Section:\n%s", section)
+	}
+	if strings.Contains(section, "find things") {
+		t.Errorf("<available_tools> duplicates the declaration description. Section:\n%s", section)
 	}
 }
 
@@ -2115,7 +2126,7 @@ func TestBuildSystemContent_NoUnresolvedTemplateMarkers(t *testing.T) {
 // TestDefaultBuilder_GoldenDefaultPrompt is the fixture-driven golden
 // test (acceptance criterion): the rendered default prompt with no
 // tools and no extra_guidance must match the checked-in fixture. The
-// fixture *is* the normative spec. The volatile `Current date:` line
+// fixture *is* the normative spec. The volatile `<current_date>` section
 // is normalised to a sentinel before the compare so the test is
 // date-independent.
 func TestDefaultBuilder_GoldenDefaultPrompt(t *testing.T) {
@@ -2123,8 +2134,8 @@ func TestDefaultBuilder_GoldenDefaultPrompt(t *testing.T) {
 	const goldenPath = "testdata/golden_default_prompt.txt"
 	got := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{})
 	// Normalise the volatile date line to the fixture's sentinel.
-	dateRE := regexp.MustCompile(`Current date: \d{4}-\d{2}-\d{2}`)
-	gotNorm := dateRE.ReplaceAllString(got, "Current date: 2025-01-01")
+	dateRE := regexp.MustCompile(`<current_date>\d{4}-\d{2}-\d{2}</current_date>`)
+	gotNorm := dateRE.ReplaceAllString(got, "<current_date>2025-01-01</current_date>")
 	if os.Getenv("HARBOR_UPDATE_GOLDEN") == "1" {
 		if err := os.WriteFile(goldenPath, []byte(gotNorm), 0o644); err != nil {
 			t.Fatalf("update golden fixture: %v", err)
@@ -2182,51 +2193,37 @@ func fixtureCatalog() *stubCatalog {
 	}}
 }
 
-// TestRenderToolNameDesc_RendersNameAndDescriptionOnly asserts
-// Phase 107c (D-167) narrows the prompt-side tool block to name +
-// description only — no args_schema, side_effects, or examples.
-func TestRenderToolNameDesc_RendersNameAndDescriptionOnly(t *testing.T) {
+// TestRenderToolName_RendersNameOnly asserts the prompt-side tool bullet is
+// the callable name only — the description, args_schema, side_effects and
+// examples all live in the native declaration and are never duplicated.
+func TestRenderToolName_RendersNameOnly(t *testing.T) {
 	t.Parallel()
-	out := renderToolNameDesc(tools.Tool{
+	out := renderToolName(tools.Tool{
 		Name:        "search",
 		Description: "find things",
 		ArgsSchema:  json.RawMessage(`{"type":"object"}`),
 		SideEffects: tools.SideEffectRead,
 		Examples:    []tools.ToolExample{{Description: "ex", Args: map[string]any{"q": "x"}}},
 	})
-	if !strings.Contains(out, "search") || !strings.Contains(out, "find things") {
-		t.Errorf("tool block missing name/description: %s", out)
-	}
-	if strings.Contains(out, "args_schema") || strings.Contains(out, "side_effects") || strings.Contains(out, "examples:") {
-		t.Errorf("Phase 107c: tool block leaks schema/side_effects/examples. Output:\n%s", out)
-	}
-}
-
-// TestRenderToolNameDesc_NoDescriptionRendersNameOnly asserts a tool
-// without description renders name only.
-func TestRenderToolNameDesc_NoDescriptionRendersNameOnly(t *testing.T) {
-	t.Parallel()
-	out := renderToolNameDesc(tools.Tool{Name: "ping"})
-	want := "- ping\n"
-	if out != want {
+	if want := "- search\n"; out != want {
 		t.Errorf("got %q, want %q", out, want)
 	}
 }
 
-// TestRenderAvailableToolsSection_NameDescOnly asserts Phase 107c
-// (D-167) — the section renders name+description per tool, no
-// schemas/side_effects/examples.
-func TestRenderAvailableToolsSection_NameDescOnly(t *testing.T) {
+// TestRenderAvailableToolsSection_NamesOnly asserts the section lists every
+// callable name once and repeats no description, schema, side_effects or
+// examples (each already rides the native declaration).
+func TestRenderAvailableToolsSection_NamesOnly(t *testing.T) {
 	t.Parallel()
 	body := renderAvailableToolsSection(planner.RunContext{Catalog: fixtureCatalog()}, 0)
-	for _, want := range []string{"search", "Search the knowledge base", "ping", "Health-check"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("<available_tools> missing %q. Body:\n%s", want, body)
+	for _, want := range []string{"- search\n", "- ping\n"} {
+		if strings.Count(body, want) != 1 {
+			t.Errorf("<available_tools> lists %q %d times, want 1. Body:\n%s", want, strings.Count(body, want), body)
 		}
 	}
-	for _, forbidden := range []string{"args_schema", "side_effects", "examples:"} {
+	for _, forbidden := range []string{"Search the knowledge base", "Health-check", "args_schema", "side_effects", "examples:"} {
 		if strings.Contains(body, forbidden) {
-			t.Errorf("Phase 107c: <available_tools> leaks %q (should render name+desc only). Body:\n%s", forbidden, body)
+			t.Errorf("<available_tools> duplicates %q from the native declaration. Body:\n%s", forbidden, body)
 		}
 	}
 }

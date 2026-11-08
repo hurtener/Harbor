@@ -17,6 +17,41 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- **Provider prompt caching across turns.** Every planner call now carries an
+  opaque prompt cache key (`hpc1-…`) derived from a digest of the tenant, the
+  acting agent, the serving provider/model, the stable tool declarations and
+  the static system-prompt spine — never a raw identifier. Turns of the same
+  agent share one key across sessions, so key-routed provider caches reuse the
+  prefix instead of rewriting it. Native providers receive the typed
+  `prompt_cache_key` (bifrost drops it where unsupported); OpenRouter receives
+  it as a body field (also its fallback sticky-routing key). Custom
+  OpenAI-compatible providers and route endpoints receive nothing. New
+  `llm.prompt_cache` (`key: auto|off`, opt-in `retention: in_memory|24h`,
+  opt-in `sticky_routing` → OpenRouter `session_id`) and opt-in
+  `llm.provider_routing` (`order`, `allow_fallbacks` → OpenRouter `provider`).
+- **`llm.call.completed` logs `cached_input_tokens` and `cache_write_tokens`**
+  when the provider returned a prompt-token breakdown; both are absent when it
+  did not (unknown is never logged as zero).
+
+### Changed
+
+- **Stable tool declaration order.** Always-loaded tools are declared by
+  stability tier — builtin, shared/operator, agent-owned, then user-owned
+  connections (catalog order within a tier); per-run discoveries still follow.
+  A user's lazily attached connection now changes only the tail of the
+  declarations instead of shifting every tool sorted after it. Order between
+  the steps of one run is unchanged.
+- **No duplicated tool descriptions.** `<available_tools>` lists callable names
+  only; descriptions and schemas travel once, in the native declarations.
+  `$schema` / `$comment` annotations are stripped from every subschema sent to
+  the model (validation still uses the original schema). On a representative
+  47-tool fixture the per-call request shrinks from 57,868 to 44,520 bytes
+  (−23%, roughly 3.3k tokens).
+- **The current date moved to a trailing `<current_date>` system section** so
+  the static sections ahead of it stay byte-stable across days.
+
 ## [1.40.0] — 2026-11-07
 
 ### Fixed
@@ -211,7 +246,6 @@ Two versions move independently in Harbor (RFC §5.3):
   server's instructions), indexed for search so a server-name query matches.
   `tool_search` and `tool_get` results include a `server` label. Model-visible
   tool names are unchanged.
-
 
 ## [1.38.0] — 2026-11-07
 

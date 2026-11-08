@@ -49,7 +49,7 @@
 //     the native-tool-calling cutover) assembles the nine XML-tagged structured sections
 //     — `<identity>`, `<tool_discovery>`, `<tool_usage>`,
 //     `<reasoning>`, `<tone>`, `<error_handling>`,
-//     `<available_tools>` (name + description quick-reference;
+//     `<available_tools>` (callable-name quick-reference;
 //     schemas live in `req.Tools`), and the optional
 //     `<additional_guidance>` / `<planning_constraints>` injection
 //     surfaces. The prompt asks for a final answer as plain
@@ -648,7 +648,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// informational on `rc.DiscoveredTools`; the same set drives this
 	// turn's `req.Tools` construction.
 	rc.DiscoveredTools = mergeDiscovered(rc.DiscoveredTools, deriveDiscoveredFromTrajectory(rc.Trajectory))
-	projectedTools, declaredToolProjection := projectModelTools(rc, rc.DiscoveredTools)
+	projectedTools, declaredToolProjection, listedTools := projectModelToolsListed(rc, rc.DiscoveredTools)
 
 	// Build the LLM request via the configured prompt builder. The
 	// builder reads from rc; it MUST NOT mutate rc.
@@ -721,6 +721,12 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// serialization fallback (head + PendingToolCalls tail)
 	// stays the path of record.
 	req.ParallelToolCalls = p.parallelToolCalls
+
+	// Opaque prompt-cache scope over the stable prefix (tenant, agent,
+	// stable tool tiers, static system spine) — drivers turn it into the
+	// provider's prompt cache key so turns of the same agent reuse the
+	// cached prefix across sessions.
+	req.PromptCacheScope = promptCacheScope(ctx, rc, req, projectedTools, listedTools)
 
 	// streaming wiring. Under the era the repair
 	// loop owned the OnContent/OnReasoning fan-out; the

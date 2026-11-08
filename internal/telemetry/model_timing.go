@@ -23,8 +23,12 @@ type ModelCallTiming struct {
 	Total                            time.Duration
 	FirstDelta                       *time.Duration
 	InputTokens, OutputTokens        *int
-	Failed, Canceled, TimedOut       bool
-	Attempt                          *ModelAttemptCoordinates
+	// CachedInputTokens / CacheWriteTokens are the subsets of InputTokens
+	// read from / newly written to the provider prompt cache. Nil means the
+	// provider reported no cache breakdown — never a measured zero.
+	CachedInputTokens, CacheWriteTokens *int
+	Failed, Canceled, TimedOut          bool
+	Attempt                             *ModelAttemptCoordinates
 }
 
 // RecordModelCall writes the shared completion/embedding timing schema.
@@ -68,6 +72,12 @@ func RecordModelCall(ctx context.Context, logger *slog.Logger, call ModelCallTim
 	}
 	if call.OutputTokens != nil && *call.OutputTokens >= 0 {
 		attrs = append(attrs, slog.Int("output_tokens", *call.OutputTokens))
+	}
+	if call.CachedInputTokens != nil && *call.CachedInputTokens >= 0 {
+		attrs = append(attrs, slog.Int("cached_input_tokens", *call.CachedInputTokens))
+	}
+	if call.CacheWriteTokens != nil && *call.CacheWriteTokens >= 0 {
+		attrs = append(attrs, slog.Int("cache_write_tokens", *call.CacheWriteTokens))
 	}
 	if call.Attempt != nil {
 		attrs = append(attrs, slog.Int("attempt", call.Attempt.Attempt), slog.Int("retry", call.Attempt.Retry),

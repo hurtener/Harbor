@@ -423,6 +423,34 @@ func TestValidate_TableDriven(t *testing.T) {
 			},
 			"llm.network_defaults.max_retries",
 		},
+		{
+			"prompt cache unknown key mode",
+			func(c *config.Config) { c.LLM.PromptCache.Key = "always" },
+			"llm.prompt_cache.key",
+		},
+		{
+			"prompt cache unknown retention",
+			func(c *config.Config) { c.LLM.PromptCache.Retention = "1h" },
+			"llm.prompt_cache.retention",
+		},
+		{
+			"provider routing blank slug",
+			func(c *config.Config) { c.LLM.ProviderRouting.Order = []string{"openai", " "} },
+			"llm.provider_routing.order[1]",
+		},
+		{
+			"provider routing duplicate slug",
+			func(c *config.Config) { c.LLM.ProviderRouting.Order = []string{"openai", "openai"} },
+			"llm.provider_routing.order[1]",
+		},
+		{
+			"provider routing allow_fallbacks without order",
+			func(c *config.Config) {
+				allow := false
+				c.LLM.ProviderRouting.AllowFallbacks = &allow
+			},
+			"llm.provider_routing.allow_fallbacks",
+		},
 		// Phase 36a / 36b governance identity-tier validation.
 		{
 			"identity tier empty name",

@@ -318,6 +318,41 @@ type LLMConfig struct {
 	// ProviderRoute configures the optional grant-free external provider-route
 	// resolver. An empty block is fully latent and requires no environment.
 	ProviderRoute LLMProviderRouteConfig `yaml:"provider_route,omitempty"`
+
+	// PromptCache tunes provider prompt caching across turns: the opaque
+	// prompt cache key Harbor derives from the stable prompt prefix, its
+	// retention, and router session affinity. Omitted = key on, provider
+	// default retention, no affinity key. Restart-required.
+	PromptCache LLMPromptCacheConfig `yaml:"prompt_cache,omitempty"`
+
+	// ProviderRouting pins a router provider's upstream choice (for
+	// example an aggregator that load-balances one model over several
+	// hosts). Opt-in; omitted = the router's default routing. Ignored by
+	// providers without upstream routing. Restart-required.
+	ProviderRouting LLMProviderRoutingConfig `yaml:"provider_routing,omitempty"`
+}
+
+// LLMPromptCacheConfig is the `llm.prompt_cache` block.
+type LLMPromptCacheConfig struct {
+	// Key is "auto" (default; "" means auto) to send a prompt cache key on
+	// providers that accept one, or "off" to never send one.
+	Key string `yaml:"key,omitempty"`
+	// Retention is "" (provider default), "in_memory" or "24h". Sent only
+	// to providers whose request schema carries a retention field.
+	Retention string `yaml:"retention,omitempty"`
+	// StickyRouting also sends the cache key as the router's
+	// session-affinity key so turns that share a prefix reach the same
+	// upstream host from the first request. Default false.
+	StickyRouting bool `yaml:"sticky_routing,omitempty"`
+}
+
+// LLMProviderRoutingConfig is the `llm.provider_routing` block.
+type LLMProviderRoutingConfig struct {
+	// Order lists upstream provider slugs in preference order.
+	Order []string `yaml:"order,omitempty"`
+	// AllowFallbacks permits the router to use providers outside Order
+	// when they are unavailable. Nil keeps the router default.
+	AllowFallbacks *bool `yaml:"allow_fallbacks,omitempty"`
 }
 
 // LLMProviderRouteConfig is one boot-pinned authenticated resolver endpoint.

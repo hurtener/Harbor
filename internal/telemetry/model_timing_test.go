@@ -88,3 +88,36 @@ func TestModelTiming_Outcome_TimeoutTakesPrecedence(t *testing.T) {
 		})
 	}
 }
+
+func TestModelTiming_CacheTokens_LoggedWhenKnownAbsentWhenUnknown(t *testing.T) {
+	read, write, zero := 4740, 120, 0
+	for _, tc := range []struct {
+		name        string
+		read, write *int
+	}{
+		{name: "unknown"},
+		{name: "reported hit and write", read: &read, write: &write},
+		{name: "reported zero (measured miss)", read: &zero, write: &zero},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			RecordModelCall(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)), ModelCallTiming{
+				Provider: "openrouter", Model: "m", Role: "planner",
+				CachedInputTokens: tc.read, CacheWriteTokens: tc.write,
+			})
+			var record map[string]any
+			if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record["msg"] != "llm.call.completed" {
+				t.Fatalf("msg = %v", record["msg"])
+			}
+			for key, want := range map[string]*int{"cached_input_tokens": tc.read, "cache_write_tokens": tc.write} {
+				value, present := record[key]
+				if present != (want != nil) || (present && value != float64(*want)) {
+					t.Errorf("%s = %v (present=%v), want %v", key, value, present, want)
+				}
+			}
+		})
+	}
+}

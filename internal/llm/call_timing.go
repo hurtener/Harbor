@@ -162,6 +162,12 @@ func (c *safetyClient) logCallTiming(ctx context.Context, req CompleteRequest, r
 	if usage.ReportPresent && !usage.Estimated {
 		call.InputTokens = &usage.PromptTokens
 		call.OutputTokens = &usage.CompletionTokens
+		// The cache breakdown is known only when the provider returned a
+		// prompt-details object; without one the counts stay absent.
+		if usage.PromptDetailsPresent {
+			call.CachedInputTokens = &usage.CacheReadTokens
+			call.CacheWriteTokens = &usage.CacheWriteTokens
+		}
 	}
 	telemetry.RecordModelCall(ctx, c.deps.Logger, call)
 }

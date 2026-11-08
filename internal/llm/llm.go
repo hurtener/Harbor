@@ -184,6 +184,12 @@ type CompleteRequest struct {
 	// operator's yaml knob + the runloop executor's capability signal.
 	ParallelToolCalls bool
 
+	// PromptCacheScope is an opaque digest of the request's stable prompt
+	// prefix (see [PromptCacheScope]). Drivers derive the provider prompt
+	// cache key from it plus the serving provider/model; empty sends no key.
+	// Never a raw identifier.
+	PromptCacheScope string
+
 	// modelProfile is a trusted, request-local technical descriptor attached by
 	// the provider-route selector. It is deliberately unexported: callers must
 	// not be able to smuggle a profile into the model-sensitive wrapper chain.

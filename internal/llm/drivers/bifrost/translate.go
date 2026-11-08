@@ -785,8 +785,10 @@ func translateToolDeclaration(td llm.ToolDeclaration) (bfschemas.ChatTool, error
 		var tp bfschemas.ToolFunctionParameters
 		// Fail loud on a malformed JSON Schema — silent drop here
 		// would teach the LLM an undeclared tool shape (CLAUDE.md §5
-		// fail-loudly, §13 forbidden-practices).
-		if err := json.Unmarshal(td.Schema, &tp); err != nil {
+		// fail-loudly, §13 forbidden-practices). `$schema` / `$comment`
+		// annotations are generator noise to the model: strip them at
+		// every subschema so they cost no prompt tokens.
+		if err := json.Unmarshal(llm.StripSchemaAnnotations(td.Schema), &tp); err != nil {
 			return bfschemas.ChatTool{}, fmt.Errorf(
 				"tool %q: malformed JSON schema: %w", td.Name, err)
 		}

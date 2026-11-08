@@ -309,3 +309,40 @@ func TestCallTiming_ConcurrentReuseIsolatedCancellation(t *testing.T) {
 		}
 	}
 }
+
+// llm.call.completed carries the provider cache breakdown only when the
+// provider returned a prompt-details object; otherwise both fields are absent
+// (unknown is never logged as a measured zero).
+func TestCallTiming_CacheTokenFields(t *testing.T) {
+	cases := []struct {
+		name      string
+		usage     llm.Usage
+		wantCache bool
+	}{
+		{name: "no prompt details", usage: llm.Usage{ReportPresent: true, PromptTokens: 54000, CompletionTokens: 9}},
+		{name: "cache hit", usage: llm.Usage{ReportPresent: true, PromptDetailsPresent: true, PromptTokens: 54000, CacheReadTokens: 53760, CacheWriteTokens: 0}, wantCache: true},
+		{name: "cache write", usage: llm.Usage{ReportPresent: true, PromptDetailsPresent: true, PromptTokens: 54000, CacheWriteTokens: 54000}, wantCache: true},
+		{name: "estimated usage", usage: llm.Usage{ReportPresent: true, Estimated: true, PromptDetailsPresent: true, CacheReadTokens: 5}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			client := timingClient(t, timingDriver{complete: func(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error) {
+				return llm.CompleteResponse{Content: "ok", Usage: tc.usage}, nil
+			}}, &logs)
+			text := "hola"
+			_, _ = client.Complete(withIdentity(t, t.Context()), llm.CompleteRequest{Model: "m", Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}}})
+			records := timingRecords(t, &logs)
+			if len(records) != 1 {
+				t.Fatalf("records=%v", records)
+			}
+			got := records[0]
+			for key, want := range map[string]int{"cached_input_tokens": tc.usage.CacheReadTokens, "cache_write_tokens": tc.usage.CacheWriteTokens} {
+				value, present := got[key]
+				if present != tc.wantCache || (present && value != float64(want)) {
+					t.Errorf("%s=%v present=%v, want present=%v value=%d", key, value, present, tc.wantCache, want)
+				}
+			}
+		})
+	}
+}

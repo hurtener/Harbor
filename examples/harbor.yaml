@@ -187,6 +187,21 @@ llm:
   #   retry_backoff_max: 5s
   #   concurrency: 3
   #   buffer_size: 10
+  #
+  # prompt_cache:
+  #   # Opaque, digest-derived prompt cache key per stable prompt prefix
+  #   # (tenant + agent + stable tools + system spine). `auto` | `off`.
+  #   key: auto
+  #   # Provider default when empty; `in_memory` | `24h` (OpenAI). Opt-in.
+  #   retention: ""
+  #   # OpenRouter only: also send the key as `session_id` affinity. Opt-in.
+  #   sticky_routing: false
+  #
+  # provider_routing:
+  #   # OpenRouter only, opt-in: pin upstream providers. A manual order
+  #   # disables OpenRouter's own sticky routing.
+  #   order: [openai, azure]
+  #   allow_fallbacks: true
 
   # Inference-plane broker-pull credential source (D-333). By default the
   # primary provider's key resolves from `api_key` (env / literal) once at

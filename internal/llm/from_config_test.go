@@ -263,6 +263,8 @@ func TestSnapshotFromConfig_FieldParity_LLMConfig(t *testing.T) {
 		"NetworkDefaults":      true,
 		"CredentialSource":     true, // → the brokered-XOR-local primary selector
 		"InferenceBroker":      true, // → the named broker the primary key is pulled from
+		"PromptCache":          true, // → PromptCache (key mode, retention, sticky routing)
+		"ProviderRouting":      true, // → PromptCache.ProviderOrder / AllowFallbacks
 	}
 	// InferenceBrokers is boundary-wired, not a snapshot field: the boot
 	// builds the InferenceKeySource over the shared LiveKey and connects it,
@@ -375,3 +377,37 @@ func assertFieldParity(t *testing.T, typ reflect.Type, projected map[string]bool
 }
 
 func boolPtrForTest(b bool) *bool { return &b }
+
+// TestSnapshotFromConfig_PromptCacheProjection: every `llm.prompt_cache` /
+// `llm.provider_routing` knob reaches the snapshot, deep-copied, and the
+// omitted blocks keep the key on with no retention or routing constraint.
+func TestSnapshotFromConfig_PromptCacheProjection(t *testing.T) {
+	t.Parallel()
+	if got := SnapshotFromConfig(config.LLMConfig{}, config.ArtifactsConfig{}).PromptCache; got.Disabled || got.Retention != "" || got.StickyRouting || got.ProviderOrder != nil || got.AllowFallbacks != nil {
+		t.Errorf("omitted blocks projected %+v, want the zero (key on) posture", got)
+	}
+	allow := true
+	cfg := config.LLMConfig{
+		PromptCache:     config.LLMPromptCacheConfig{Key: "off", Retention: "24h", StickyRouting: true},
+		ProviderRouting: config.LLMProviderRoutingConfig{Order: []string{"openai", "azure"}, AllowFallbacks: &allow},
+	}
+	got := SnapshotFromConfig(cfg, config.ArtifactsConfig{}).PromptCache
+	if !got.Disabled || got.Retention != "24h" || !got.StickyRouting || len(got.ProviderOrder) != 2 || got.AllowFallbacks == nil || !*got.AllowFallbacks {
+		t.Fatalf("projection = %+v", got)
+	}
+	cfg.ProviderRouting.Order[0] = "mutated"
+	*cfg.ProviderRouting.AllowFallbacks = false
+	if got.ProviderOrder[0] != "openai" || !*got.AllowFallbacks {
+		t.Error("snapshot aliases the caller's config")
+	}
+}
+
+func TestSnapshotFromConfig_FieldParity_PromptCache(t *testing.T) {
+	t.Parallel()
+	assertFieldParity(t, reflect.TypeOf(config.LLMPromptCacheConfig{}), map[string]bool{
+		"Key": true, "Retention": true, "StickyRouting": true,
+	}, map[string]string{})
+	assertFieldParity(t, reflect.TypeOf(config.LLMProviderRoutingConfig{}), map[string]bool{
+		"Order": true, "AllowFallbacks": true,
+	}, map[string]string{})
+}

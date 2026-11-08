@@ -233,6 +233,8 @@ llm:
 
 Long-running models (deep reasoning, large context) sometimes exceed the default 60s; bump to 120s or 240s for those. The Console's Task page surfaces timeout errors with the provider's verbatim response, so you can tune fast.
 
+**Prompt caching across turns.** Harbor sends an opaque prompt cache key per stable prompt prefix by default (`llm.prompt_cache.key: auto`; set `off` to disable). Retention (`llm.prompt_cache.retention: in_memory|24h`), OpenRouter session affinity (`llm.prompt_cache.sticky_routing: true`) and OpenRouter upstream pinning (`llm.provider_routing.order` / `allow_fallbacks`) are opt-in. Check `cached_input_tokens` / `cache_write_tokens` on the `llm.call.completed` log line to confirm hits; they are absent when the provider reports no cache breakdown. See `docs/CONFIG.md` for each knob.
+
 ## 6. Embeddings are a separate block (not an `llm` knob)
 
 Harbor's embedding client is a sibling seam to the chat client — turning text into vectors gets its **own** provider/model/key, configured at the top-level `embeddings:` block, never inherited from `llm.*`:
