@@ -146,6 +146,10 @@ type Stack struct {
 	// ). The in-process transport scenarios reach the runtime
 	// through `Surface.Dispatch`.
 	Surface *protocol.ControlSurface
+	// SupportsPrepare declares that Surface wires both a session preparer
+	// and reach-admission authority. Otherwise the suite requires
+	// unknown_method (HTTP 404) for decoded prepare requests.
+	SupportsPrepare bool
 	// Bus is the real events.EventBus the SSE wire transport
 	// subscribes to and the runtime publishes lifecycle events on.
 	Bus events.EventBus
@@ -351,11 +355,12 @@ func buildDefaultStack(t *testing.T, testdataRoot string) *Stack {
 	rollback = nil
 
 	return &Stack{
-		Surface:  surface,
-		Bus:      bus,
-		Steering: steerReg,
-		Tasks:    taskReg,
-		Mux:      mux,
+		Surface:         surface,
+		SupportsPrepare: true,
+		Bus:             bus,
+		Steering:        steerReg,
+		Tasks:           taskReg,
+		Mux:             mux,
 		SignToken: func(t *testing.T, id identity.Identity, scopes []auth.Scope) string {
 			t.Helper()
 			return signES256(t, priv, defaultClaims(id, scopes), kid)
@@ -1294,7 +1299,11 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 					_, err := st.Surface.Dispatch(directCtx, m, &types.PrepareRequest{
 						Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 					})
-					assertCode(t, err, protoerrors.CodeIdentityRequired)
+					if !st.SupportsPrepare {
+						assertCode(t, err, protoerrors.CodeUnknownMethod)
+					} else {
+						assertCode(t, err, protoerrors.CodeIdentityRequired)
+					}
 					return
 				}
 				if m == methods.MethodStart {
@@ -1370,6 +1379,13 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 						Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 					})
 					status, decoded := postControl(t, srv.URL, m, body, tok)
+					if !st.SupportsPrepare {
+						if status != http.StatusNotFound {
+							t.Fatalf("POST /v1/control/prepare: status = %d, want 404; body=%s", status, decoded)
+						}
+						assertWireErrorCode(t, decoded, protoerrors.CodeUnknownMethod)
+						return
+					}
 					if status != http.StatusAccepted {
 						t.Fatalf("POST /v1/control/prepare: status = %d, want 202; body=%s", status, decoded)
 					}
@@ -1548,6 +1564,10 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 				st := factory(t)
 				defer st.Cleanup()
 				_, err := st.Surface.Dispatch(context.Background(), m, nil)
+				if m == methods.MethodPrepare && !st.SupportsPrepare {
+					assertCode(t, err, protoerrors.CodeUnknownMethod)
+					return
+				}
 				assertCode(t, err, protoerrors.CodeInvalidRequest)
 			})
 			t.Run("InProcess_WrongTypeRequest", func(t *testing.T) {
@@ -1564,6 +1584,10 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 					req = &types.StartRequest{}
 				}
 				_, err := st.Surface.Dispatch(context.Background(), m, req)
+				if m == methods.MethodPrepare && !st.SupportsPrepare {
+					assertCode(t, err, protoerrors.CodeUnknownMethod)
+					return
+				}
 				assertCode(t, err, protoerrors.CodeInvalidRequest)
 			})
 			t.Run("Wire_NotJSON", func(t *testing.T) {

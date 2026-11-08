@@ -185,11 +185,12 @@ func buildForkStack(t *testing.T, testdataRoot string) *conformance.Stack {
 	rollback = nil // a passing build hands ownership to Stack.Cleanup
 
 	return &conformance.Stack{
-		Surface:  surface,
-		Bus:      bus,
-		Steering: steerReg,
-		Tasks:    taskReg,
-		Mux:      mux,
+		Surface:         surface,
+		SupportsPrepare: false, // No session preparer or reach-admission authority.
+		Bus:             bus,
+		Steering:        steerReg,
+		Tasks:           taskReg,
+		Mux:             mux,
 		SignToken: func(t *testing.T, id identity.Identity, scopes []auth.Scope) string {
 			t.Helper()
 			return signES256(t, priv, defaultClaims(id, scopes), forkKID)

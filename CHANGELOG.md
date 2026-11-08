@@ -17,6 +17,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- **Protocol conformance accepts runtimes without session preparation.**
+  Stacks explicitly declare whether they support `prepare`; stacks without
+  it must return `unknown_method` (HTTP 404), while stacks with a preparer
+  retain the full admission, acknowledgement, and malformed-request checks.
+
 ## [1.41.0] — 2026-11-08
 
 ### Added
