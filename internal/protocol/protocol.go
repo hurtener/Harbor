@@ -120,6 +120,7 @@ type ControlSurface struct {
 	reach            auth.AgentReachAuthorizer // always fail-closed; assembly may replace the default shared gate
 	reachAdmissions  *tasks.AgentReachAdmissionAuthority
 	pauseCoordinator pauseresume.Coordinator
+	preparer         SessionPreparer // optional; `prepare` answers CodeUnknownMethod without it
 }
 
 // SessionEnsurer is the create-on-first-use seam the `start` method

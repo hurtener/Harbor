@@ -16,6 +16,7 @@ import (
 // the canonical set, the exhaustiveness test below fails.
 var wantMethods = []methods.Method{
 	methods.MethodStart,
+	methods.MethodPrepare,
 	methods.MethodCancel,
 	methods.MethodPause,
 	methods.MethodResume,
@@ -227,9 +228,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// observability administrative read (observability.query) = 139, plus
 	// HA-68 same-runtime skill publications ten = 151, plus the user live
 	// profile reconciliation verb = 152, explicit session-context
-	// reconciliation = 153, and admin-only runtime retention = 154.
-	if len(got) != 154 {
-		t.Fatalf("Methods() returned %d methods, want 154", len(got))
+	// reconciliation = 153, admin-only runtime retention = 154, and the
+	// run-start preparation hint (prepare) = 155.
+	if len(got) != 155 {
+		t.Fatalf("Methods() returned %d methods, want 155", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -263,6 +265,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// naming convention (`tool.failed`, `runtime.error`, etc.).
 	wireStrings := map[methods.Method]string{
 		methods.MethodStart:               "start",
+		methods.MethodPrepare:             "prepare",
 		methods.MethodCancel:              "cancel",
 		methods.MethodPause:               "pause",
 		methods.MethodResume:              "resume",
@@ -362,6 +365,9 @@ func TestIsValidMethod_RejectsUnknown(t *testing.T) {
 func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	if methods.IsControlMethod(methods.MethodStart) {
 		t.Error("IsControlMethod(start) = true, want false — start maps to the task registry, not the steering inbox")
+	}
+	if methods.IsControlMethod(methods.MethodPrepare) {
+		t.Error("IsControlMethod(prepare) = true, want false — prepare is a run-start preparation hint, not a steering control")
 	}
 	// Wave 13 streaming-events methods route through their own
 	// transports (SSE / events-aggregate), NOT the steering inbox.
@@ -516,7 +522,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	// non-tasks, non-flows, non-agents, non-sessions canonical method
 	// IS a control method.
 	for _, m := range methods.Methods() {
-		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
+		if m == methods.MethodStart || m == methods.MethodPrepare || methods.IsStreamingEventsMethod(m) {
 			continue
 		}
 		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) || methods.IsPauseMethod(m) ||

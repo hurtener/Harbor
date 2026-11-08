@@ -108,6 +108,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess" // tasks inprocess driver self-register
 	"github.com/hurtener/Harbor/internal/telemetry"
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/noop" // span exporter noop driver self-register
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 )
 
 // FixedNow is the deterministic clock the suite's JWT validator +
@@ -201,6 +202,23 @@ func (conformanceAgentResolver) EffectiveAgentID(requested string) (string, erro
 	return conformanceAgentID, nil
 }
 
+// conformancePreparer acknowledges `prepare` without doing work: the suite
+// pins the method's admission and wire contract; the background preparation
+// itself is covered by the runtime serve-band tests.
+type conformancePreparer struct{}
+
+// PrepareSession refuses a context without the sealed reach admission the
+// surface must seat, so the suite pins that `prepare` never reaches a
+// preparer unadmitted.
+func (conformancePreparer) PrepareSession(ctx context.Context, req protocol.SessionPrepareRequest) (types.PrepareState, error) {
+	subject, ok := tasks.AgentReachAdmissionSubjectFrom(ctx)
+	if !ok || subject.TenantID != req.Identity.TenantID || subject.UserID != req.Identity.UserID ||
+		subject.SessionID != req.Identity.SessionID || subject.EffectiveAgentID != req.EffectiveAgentID {
+		return "", fmt.Errorf("conformance: prepare reached the preparer without a matching admission")
+	}
+	return types.PrepareStateScheduled, nil
+}
+
 // NewDefaultFactory returns the canonical factory used by Harbor's own
 // conformance test. It wires:
 //
@@ -283,9 +301,21 @@ func buildDefaultStack(t *testing.T, testdataRoot string) *Stack {
 
 	steerReg := steering.NewRegistry()
 	agentReach := auth.NewAgentReachAuthorizer()
+	// A documented dummy (all-zero) KEK: the admission authority `start`
+	// and `prepare` seal reach admissions with. Not a secret.
+	admissionSealer, err := toolauth.NewAESGCMSealer(make([]byte, toolauth.KEKSizeBytes))
+	if err != nil {
+		fatal("admission sealer: %v", err)
+	}
+	admissions, err := tasks.NewAgentReachAdmissionAuthority(admissionSealer)
+	if err != nil {
+		fatal("admission authority: %v", err)
+	}
 	surface, err := protocol.NewControlSurface(taskReg, steerReg,
 		protocol.WithAgentResolver(conformanceAgentResolver{}),
-		protocol.WithAgentReachAuthorizer(agentReach))
+		protocol.WithAgentReachAuthorizer(agentReach),
+		protocol.WithAgentReachAdmissionAuthority(admissions),
+		protocol.WithSessionPreparer(conformancePreparer{}))
 	if err != nil {
 		fatal("protocol.NewControlSurface: %v", err)
 	}
@@ -753,13 +783,14 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// The canonical list currently contains 154 methods; keep the explicit
+	// The canonical list currently contains 155 methods; keep the explicit
 	// wantSet below in lockstep with it.
-	if len(got) != 154 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 154 (including explicit session-context reconciliation and admin-only runtime retention)", len(got))
+	if len(got) != 155 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 155 (including explicit session-context reconciliation, admin-only runtime retention and the run-start prepare hint)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
+		methods.MethodPrepare:             {},
 		methods.MethodCancel:              {},
 		methods.MethodPause:               {},
 		methods.MethodResume:              {},
@@ -1253,6 +1284,19 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
 				defer st.Cleanup()
+				if m == methods.MethodPrepare {
+					// `prepare` requires a request-edge verified identity, which
+					// only the transport middleware seats: an embedded Dispatch
+					// without one is refused before any preparer runs. The
+					// accepted path is pinned by the Wire scenario below.
+					id := runIdentity("tenant-conformance", "happy-prepare-inproc").Identity
+					directCtx := auth.WithAgentReach(context.Background(), []string{conformanceAgentID})
+					_, err := st.Surface.Dispatch(directCtx, m, &types.PrepareRequest{
+						Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
+					})
+					assertCode(t, err, protoerrors.CodeIdentityRequired)
+					return
+				}
 				if m == methods.MethodStart {
 					id := runIdentity("tenant-conformance", "happy-start-inproc-"+string(m)).Identity
 					req := &types.StartRequest{
@@ -1319,6 +1363,22 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 				srv := httptest.NewServer(st.Mux)
 				defer srv.Close()
 
+				if m == methods.MethodPrepare {
+					id := runIdentity("tenant-conformance", "happy-prepare-wire").Identity
+					tok := st.SignToken(t, id, nil)
+					body := mustJSON(t, types.PrepareRequest{
+						Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
+					})
+					status, decoded := postControl(t, srv.URL, m, body, tok)
+					if status != http.StatusAccepted {
+						t.Fatalf("POST /v1/control/prepare: status = %d, want 202; body=%s", status, decoded)
+					}
+					var pr types.PrepareResponse
+					if err := json.Unmarshal(decoded, &pr); err != nil || pr.State != types.PrepareStateScheduled {
+						t.Fatalf("decode PrepareResponse: %v (body=%s)", err, decoded)
+					}
+					return
+				}
 				if m == methods.MethodStart {
 					id := runIdentity("tenant-conformance", "happy-start-wire-"+string(m)).Identity
 					tok := st.SignToken(t, id, nil)

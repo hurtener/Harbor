@@ -32,10 +32,12 @@ import (
 type promptRecorderLLM struct {
 	mu      sync.Mutex
 	systems []string
+	tools   []llm.ToolDeclaration
 }
 
 func (c *promptRecorderLLM) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
 	c.mu.Lock()
+	c.tools = append([]llm.ToolDeclaration(nil), req.Tools...)
 	for _, m := range req.Messages {
 		if m.Role == llm.RoleSystem && m.Content.Text != nil {
 			c.systems = append(c.systems, *m.Content.Text)
@@ -157,12 +159,26 @@ func TestE2E_Phase83b_EnrichedCatalogReachesPrompt(t *testing.T) {
 	}
 	for _, want := range []string{
 		"<available_tools>",
-		"kb_search",
-		"Search the knowledge base",
+		"- kb_search\n",
 	} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("system prompt missing %q.\nPrompt:\n%s", want, sys)
 		}
+	}
+	// The description travels once, in the native declaration.
+	if strings.Contains(sys, "Search the knowledge base") {
+		t.Errorf("system prompt duplicates the kb_search description.\nPrompt:\n%s", sys)
+	}
+	rec.mu.Lock()
+	declared := false
+	for _, d := range rec.tools {
+		if d.Name == "kb_search" && strings.Contains(d.Description, "Search the knowledge base") {
+			declared = true
+		}
+	}
+	rec.mu.Unlock()
+	if !declared {
+		t.Error("kb_search declaration lost its description")
 	}
 	// Phase 107c (D-167): these are NOT rendered in the prompt.
 	for _, forbidden := range []string{"args_schema:", "side_effects:", "examples:"} {

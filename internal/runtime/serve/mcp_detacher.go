@@ -49,6 +49,25 @@ func (d *MCPConnectionDetacher) OwnerOfSource(source tools.ToolSourceID) (toolau
 	return d.registry.OwnerOf(string(source))
 }
 
+// RegistryEpoch passes through the live MCP registry's random per-instance
+// epoch so the detacher, used as the run-start source-owner resolver, can
+// feed the input-addressed catalog stamp (projection.CatalogStamp).
+func (d *MCPConnectionDetacher) RegistryEpoch() string {
+	if d == nil || d.registry == nil {
+		return ""
+	}
+	return d.registry.RegistryEpoch()
+}
+
+// RegistryGeneration passes through the live MCP registry's structural
+// generation (see RegistryEpoch).
+func (d *MCPConnectionDetacher) RegistryGeneration() uint64 {
+	if d == nil || d.registry == nil {
+		return 0
+	}
+	return d.registry.RegistryGeneration()
+}
+
 // LogicalNameOfSource translates a physical registry source back to the
 // signed/config descriptor name. User-owned sources carry an owner-derived
 // physical suffix; operator/boot sources return their original name.

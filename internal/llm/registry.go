@@ -153,6 +153,10 @@ type ConfigSnapshot struct {
 	// bifrost's package-level defaults at construction. Restart-
 	// required.
 	NetworkDefaults NetworkDefaults
+
+	// PromptCache is the provider prompt-caching posture (cache key,
+	// retention, router affinity). The zero value is the default.
+	PromptCache PromptCacheSettings
 }
 
 // CustomProviderSpec is one operator-declared OpenAI-compatible

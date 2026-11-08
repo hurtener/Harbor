@@ -44,6 +44,28 @@ ID_HEADERS=(
 )
 SESSION_ID="phase106-smoke-$$"
 
+# 0. Run-start preparation (D-495): `prepare` is admitted like `start` and
+# answers 202 with a closed acknowledgement state; the start below may reuse
+# the prepared reconcile. A build without the method answers 404 (SKIP).
+PREPARE_BODY="{\"identity\":{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"${SESSION_ID}\"}}"
+PREPARE_CODE="$(curl -s -o /tmp/phase106-prepare-$$.json -w '%{http_code}' --max-time 10 -X POST "$(api_url /v1/control/prepare)" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  "${ID_HEADERS[@]}" \
+  -H "Content-Type: application/json" \
+  -d "${PREPARE_BODY}" || true)"
+case "${PREPARE_CODE}" in
+  202)
+    PREPARE_STATE="$(jq -r '.state // empty' /tmp/phase106-prepare-$$.json 2>/dev/null || true)"
+    case "${PREPARE_STATE}" in
+      scheduled|in_flight|fresh|busy) ok "prepare acknowledged (state=${PREPARE_STATE})" ;;
+      *) fail "prepare returned 202 with an unknown state: $(head -c 200 /tmp/phase106-prepare-$$.json)" ;;
+    esac
+    ;;
+  404|405|501) skip "prepare: ${PREPARE_CODE} (surface not implemented on this build)" ;;
+  *) fail "prepare: expected 202, got ${PREPARE_CODE}: $(head -c 200 /tmp/phase106-prepare-$$.json 2>/dev/null)" ;;
+esac
+rm -f /tmp/phase106-prepare-$$.json
+
 START_RESP="$(curl -sS -X POST "$(api_url /v1/control/start)" \
   -H "Authorization: Bearer ${TOKEN}" \
   "${ID_HEADERS[@]}" \

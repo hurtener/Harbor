@@ -735,7 +735,7 @@ func TestRunLoopDriver_Reconcile_DetachesStaleAndLogsErrors(t *testing.T) {
 		agentConfig:        &countingFailRegistry{failAt: 0}, // 0 = never fails
 		agentConfigID:      "reconcile-agent",
 	}
-	d.reconcileConnections(ctx, d.agentConfigID, q)
+	d.reconcileConnections(ctx, d.agentConfigID, q, false)
 	if det.detached.Load() != 1 {
 		t.Fatalf("stale source detached %d times, want 1", det.detached.Load())
 	}
@@ -747,7 +747,7 @@ func TestRunLoopDriver_Reconcile_DetachesStaleAndLogsErrors(t *testing.T) {
 		agentConfig:        &countingFailRegistry{failAt: 1},
 		agentConfigID:      "fail-agent",
 	}
-	dErr.reconcileConnections(ctx, dErr.agentConfigID, q)
+	dErr.reconcileConnections(ctx, dErr.agentConfigID, q, false)
 }
 
 // TestRunOne_InvalidIdentity_BailsBeforeRun — a quadruple whose identity is
@@ -893,7 +893,7 @@ func TestRunLoopDriver_Reconcile_SignedPairFailureDoesNotSkipLaterLegs(t *testin
 		agentConfig:              &countingFailRegistry{failAt: 0},
 		agentConfigID:            "reconcile-agent",
 	}
-	d.reconcileConnections(ctx, d.agentConfigID, q)
+	d.reconcileConnections(ctx, d.agentConfigID, q, false)
 	if signed.agentCalls.Load() != 1 || signed.userCalls.Load() != 1 {
 		t.Fatalf("signed tiers called agent=%d user=%d, want both", signed.agentCalls.Load(), signed.userCalls.Load())
 	}

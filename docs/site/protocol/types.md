@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 466 canonical Harbor Protocol wire types, generated from the single-source
+The 468 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -3714,6 +3714,25 @@ Declared in `internal/protocol/types`.
 | `available` | `bool` |  |
 | `payload` | `map[string]any` | optional (`omitempty`) |
 | `payload_ref` | `*types.PauseArtifactRef` — see [`PauseArtifactRef`](./types.md#pauseartifactref) | optional (`omitempty`) |
+
+## PrepareRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` | optional (`omitempty`) |
+| `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
+
+## PrepareResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `state` | `types.PrepareState` |  |
+| `protocol_version` | `string` |  |
 
 ## RateLimitView
 

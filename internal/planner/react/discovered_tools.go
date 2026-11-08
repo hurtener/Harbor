@@ -268,7 +268,8 @@ func mergeDiscovered(existing, derived []string) []string {
 // (`_spawn_task` / `_await_task`) at the FRONT so the LLM always sees
 // them regardless of catalog size (step 10 follow-up to
 // AC-20a — Path 1 from the planner reserved-name native declaration
-// gap). Then always-loaded tools (in catalog registration order),
+// gap). Then always-loaded tools (in prompt-stability tier order — see
+// projectModelTools),
 // then discovered tools (in discovery order). A discovered name that
 // already exists in the always-loaded set is skipped — duplicates would
 // confuse provider-side dispatch.
@@ -334,11 +335,30 @@ func buildToolDeclarationsFromProjection(rc planner.RunContext, projected []tool
 // call it; Next retains its returned immutable projection across Complete for
 // provider-returned-name resolution, so collision winner and ordering cannot
 // drift within a turn.
+//
+// Always-loaded tools are ordered by prompt stability (builtin, shared,
+// agent-owned, user-owned; catalog order within a tier) and per-run
+// discovered tools follow them. Providers cache an exact prompt prefix and
+// serialise declarations first, so a user's lazily attached connection or a
+// discovery result then changes only the tail of the declaration list.
 func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool, tools.ModelToolNameProjection) {
+	projected, projection, _ := projectModelToolsListed(rc, discovered)
+	return projected, projection
+}
+
+// projectModelToolsListed is projectModelTools that also reports how many
+// leading projected tools came from the always-loaded List (the remainder
+// are per-run discoveries).
+func projectModelToolsListed(rc planner.RunContext, discovered []string) ([]tools.Tool, tools.ModelToolNameProjection, int) {
 	if rc.Catalog == nil {
-		return nil, tools.NewModelToolNameProjection(nil, nil)
+		return nil, tools.NewModelToolNameProjection(nil, nil), 0
 	}
+	// Collision winners are chosen in CATALOG order — the same order
+	// tool_get / tool_search / declarative_action use — so one declared
+	// alias names one tool on every path. Only the surviving declarations
+	// are reordered by stability below.
 	candidates := rc.Catalog.List()
+	listedCandidates := len(candidates)
 	if len(discovered) > 0 {
 		discoveryCandidates := candidates
 		complete := false
@@ -386,16 +406,25 @@ func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool
 	// snapshot once in that same order, skipping residual collisions and
 	// benign rediscovery duplicates without building a second name map.
 	next := 0
-	for _, candidate := range candidates {
+	listed := 0
+	for i, candidate := range candidates {
 		if next == len(entries) {
 			break
 		}
 		if candidate.Name == entries[next].CatalogName {
 			projected = append(projected, candidate)
 			next++
+			if i < listedCandidates {
+				listed++
+			}
 		}
 	}
-	return projected, projection
+	// The always-loaded survivors are a prefix of projected (List
+	// candidates precede discoveries); order them by prompt stability.
+	// The name projection above is unaffected: reordering declarations
+	// never changes which tool an alias resolves to.
+	copy(projected[:listed], tools.OrderForPromptStability(projected[:listed]))
+	return projected, projection, listed
 }
 
 // emitToolDeclarationCollision announces a tool that could not be declared

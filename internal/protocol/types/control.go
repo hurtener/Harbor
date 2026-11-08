@@ -312,6 +312,57 @@ type StartResponse struct {
 	ProtocolVersion string `json:"protocol_version"`
 }
 
+// PrepareRequest is the wire request for the `prepare` Protocol method. It
+// asks the Runtime to perform run-start preparation for the caller's verified
+// (tenant, user) and one effective Agent ahead of a later `start`: the signed
+// OAuth MCP reconcile for the Agent and user tiers and, when ProviderRoute is
+// present, the credential-free provider-route selection. Admission is
+// identical to `start` (verified identity, signed Agent reach); the request
+// grants nothing, creates no task or session, and is answered immediately
+// while the work runs in the background.
+type PrepareRequest struct {
+	// Identity is the request's identity scope. The (tenant, user, session)
+	// triple is mandatory and must equal the verified identity; admin
+	// impersonation is refused. The session is the one the eventual `start`
+	// is expected to use; prepared state is keyed by (tenant, user, Agent).
+	Identity IdentityScope `json:"identity"`
+	// AgentID names the Agent the eventual `start` will select. Omitted
+	// selects the Runtime's default Agent, exactly like `start`.
+	AgentID string `json:"agent_id,omitempty"`
+	// ProviderRoute is the opaque route selector the eventual `start` will
+	// carry. When present it must be a complete selector; the Runtime
+	// pre-selects (credential-free) and caches the route decision until its
+	// resolver-issued expiry. Credentials are never prepared.
+	ProviderRoute *LLMProviderRouteSelector `json:"provider_route,omitempty"`
+}
+
+// PrepareState is the closed set of `prepare` acknowledgement states.
+type PrepareState string
+
+const (
+	// PrepareStateScheduled — background preparation was started.
+	PrepareStateScheduled PrepareState = "scheduled"
+	// PrepareStateInFlight — a preparation for the same principal is
+	// already running; this request joined it.
+	PrepareStateInFlight PrepareState = "in_flight"
+	// PrepareStateFresh — a preparation for the same principal completed
+	// within the freshness window; no new work was started.
+	PrepareStateFresh PrepareState = "fresh"
+	// PrepareStateBusy — the bounded preparation workers are saturated; the
+	// hint was dropped and the eventual `start` behaves as without it.
+	PrepareStateBusy PrepareState = "busy"
+)
+
+// PrepareResponse is the wire response for the `prepare` Protocol method.
+// It is an acknowledgement (HTTP 202): the outcome of the background work is
+// observable only through Runtime logs and the eventual run's timing.
+type PrepareResponse struct {
+	// State reports how the request was handled.
+	State PrepareState `json:"state"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered under.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
 // ControlRequest is the wire request shared by the nine steering-control
 // Protocol methods (`cancel`, `pause`, `resume`, `redirect`,
 // `inject_context`, `approve`, `reject`, `prioritize`, `user_message`).

@@ -498,6 +498,34 @@ Two consequences for your client: strip fields the runtime does not declare (typ
 
 For multimodal input, upload artifacts FIRST (`artifacts.put`, see §6) and pass the returned IDs in `input_artifact_ids` (D-166). The per-MIME dispatch — image inline vs PDF/audio as ArtifactStub — happens inside the planner; your client just passes refs. To override how an attachment is handed to the model, add the optional `input_artifact_dispositions` map (Phase 84b — D-189), keyed by artifact id with values `ref` | `inline` | `provider_native` | `tool:<name>` (e.g. `{"art_x": "tool:pdf.extract"}` forces the named catalog tool). Your hint is the top precedence layer (hint > the agent's `multimodal.disposition` config map > the runtime default: image inline, everything else ref); an omitted map keeps today's behaviour. `tasks.get` reflects the hint on `input_artifacts[].disposition`, and the resolution (including degradations — e.g. an unknown `tool:<name>`) is observable as `task.input_disposition.resolved` events. A `provider_native` hint is honoured end-to-end (Phase 84c — D-190): the LLM driver uploads the attachment to the provider's file surface and the upload is observable as `llm.provider_file.uploaded` events (artifact ref, provider, modality, `file_id`).
 
+### 3a. Warming the next start — `prepare` (D-495)
+
+When your client knows a send is coming (the user opened the agent, picked it,
+or started typing), call `prepare` with the identity, `agent_id` and
+`provider_route` the next `start` will carry. It is admitted exactly like
+`start`, creates nothing, and answers `202` at once while the runtime runs the
+run-start MCP reconcile and the credential-free route selection in the
+background:
+
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/prepare" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {"tenant": "t", "user": "u", "session": "'"$SESSION"'"}, "agent_id": "support"}'
+# → 202 {"state":"scheduled","protocol_version":"0.1.0"}
+```
+
+A runtime without a reach-admission authority (no broker or shared KEK) answers
+`404`, as does one predating the method. `state` is `scheduled`, `in_flight`
+(already running for this tenant/user/agent),
+`fresh` (completed within 90 s; nothing new started) or `busy` (workers
+saturated; the hint was dropped). Calling it repeatedly is cheap. A `start`
+within 90 s whose inputs are unchanged skips its reconcile, and one arriving
+mid-preparation waits for it at most 10 s; otherwise the start behaves exactly
+as without `prepare`. Impersonation is refused and no outcome is reported back:
+watch the runtime's `session.prepare` log line and the run's `turn.pre_model`
+`prepared` attribute.
+
 ## 4. The events stream — SSE `events.subscribe`
 
 The Protocol exposes events as Server-Sent Events:

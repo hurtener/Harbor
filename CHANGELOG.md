@@ -17,6 +17,30 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.41.0] — 2026-11-08
+
+### Added
+
+### Changed
+
+- **Stable tool declaration order.** Always-loaded tools are declared by
+  stability tier — builtin, shared/operator, agent-owned, then user-owned
+  connections (catalog order within a tier); per-run discoveries still follow.
+  A user's lazily attached connection now changes only the tail of the
+  declarations instead of shifting every tool sorted after it. Order between
+  the steps of one run is unchanged, and name-collision winners are still
+  chosen in catalog order, so `tool_get`, native dispatch and
+  `declarative_action` resolve an alias to the same tool.
+- **No duplicated tool descriptions.** `<available_tools>` lists callable names
+  only; descriptions and schemas travel once, in the native declarations.
+  `$schema` / `$comment` annotations are stripped from every subschema sent to
+  the model (validation still uses the original schema). On a representative
+  47-tool fixture the per-call request shrinks from 57,868 to 44,520 bytes
+  (−23%, roughly 3.3k tokens).
+- **The current date moved to a trailing `<current_date>` system section** so
+  the static sections ahead of it stay byte-stable across days.
+
+
 ## [1.40.0] — 2026-11-07
 
 ### Fixed
@@ -211,7 +235,6 @@ Two versions move independently in Harbor (RFC §5.3):
   server's instructions), indexed for search so a server-name query matches.
   `tool_search` and `tool_get` results include a `server` label. Model-visible
   tool names are unchanged.
-
 
 ## [1.38.0] — 2026-11-07
 

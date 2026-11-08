@@ -309,3 +309,47 @@ func TestCallTiming_ConcurrentReuseIsolatedCancellation(t *testing.T) {
 		}
 	}
 }
+
+// llm.call.completed carries each cache counter only when the driver
+// reported that counter; an unreported one is absent (unknown is never
+// logged as a measured zero).
+func TestCallTiming_CacheTokenFields(t *testing.T) {
+	cases := []struct {
+		name                string
+		usage               llm.Usage
+		wantRead, wantWrite bool
+	}{
+		{name: "no prompt details", usage: llm.Usage{ReportPresent: true, PromptTokens: 54000, CompletionTokens: 9}},
+		{name: "cache hit only", usage: llm.Usage{ReportPresent: true, PromptDetailsPresent: true, PromptTokens: 54000, CacheReadTokens: 53760, CacheReadReported: true}, wantRead: true},
+		{name: "cache write only", usage: llm.Usage{ReportPresent: true, PromptDetailsPresent: true, PromptTokens: 54000, CacheWriteTokens: 54000, CacheWriteReported: true}, wantWrite: true},
+		{name: "read and write", usage: llm.Usage{ReportPresent: true, PromptDetailsPresent: true, PromptTokens: 54000, CacheReadTokens: 50000, CacheReadReported: true, CacheWriteTokens: 4000, CacheWriteReported: true}, wantRead: true, wantWrite: true},
+		{name: "estimated usage", usage: llm.Usage{ReportPresent: true, Estimated: true, PromptDetailsPresent: true, CacheReadTokens: 5, CacheReadReported: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			client := timingClient(t, timingDriver{complete: func(context.Context, llm.CompleteRequest) (llm.CompleteResponse, error) {
+				return llm.CompleteResponse{Content: "ok", Usage: tc.usage}, nil
+			}}, &logs)
+			text := "hola"
+			_, _ = client.Complete(withIdentity(t, t.Context()), llm.CompleteRequest{Model: "m", Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}}})
+			records := timingRecords(t, &logs)
+			if len(records) != 1 {
+				t.Fatalf("records=%v", records)
+			}
+			got := records[0]
+			for key, want := range map[string]struct {
+				present bool
+				value   int
+			}{
+				"cached_input_tokens": {tc.wantRead, tc.usage.CacheReadTokens},
+				"cache_write_tokens":  {tc.wantWrite, tc.usage.CacheWriteTokens},
+			} {
+				value, present := got[key]
+				if present != want.present || (present && value != float64(want.value)) {
+					t.Errorf("%s=%v present=%v, want present=%v value=%d", key, value, present, want.present, want.value)
+				}
+			}
+		})
+	}
+}

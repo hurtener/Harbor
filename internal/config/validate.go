@@ -411,6 +411,9 @@ func (c *Config) validateLLM() error {
 	if err := c.validateLLMNetworkDefaults(); err != nil {
 		return err
 	}
+	if err := c.validateLLMPromptCache(); err != nil {
+		return err
+	}
 	// Bifrost-driver knobs are required only for real drivers; the
 	// mock driver ignores Provider/Model/APIKey/Timeout. Keep the
 	// canonical fixture valid by enforcing these when driver != "mock".
@@ -3137,6 +3140,37 @@ func (c *Config) validateLLMCustomProviders(driver string) (map[string]struct{},
 		}
 	}
 	return names, nil
+}
+
+// validateLLMPromptCache rejects unknown prompt-cache modes / retention
+// values and blank or duplicate provider-routing entries.
+func (c *Config) validateLLMPromptCache() error {
+	pc := c.LLM.PromptCache
+	switch pc.Key {
+	case "", "auto", "off":
+	default:
+		return fieldError("llm.prompt_cache.key", fmt.Sprintf("must be one of auto, off (got %q)", pc.Key))
+	}
+	switch pc.Retention {
+	case "", "in_memory", "24h":
+	default:
+		return fieldError("llm.prompt_cache.retention", fmt.Sprintf("must be one of in_memory, 24h, or empty (got %q)", pc.Retention))
+	}
+	seen := make(map[string]struct{}, len(c.LLM.ProviderRouting.Order))
+	for i, slug := range c.LLM.ProviderRouting.Order {
+		trimmed := strings.TrimSpace(slug)
+		if trimmed == "" || trimmed != slug {
+			return fieldError(fmt.Sprintf("llm.provider_routing.order[%d]", i), "must be a non-empty provider slug without surrounding whitespace")
+		}
+		if _, dup := seen[slug]; dup {
+			return fieldError(fmt.Sprintf("llm.provider_routing.order[%d]", i), fmt.Sprintf("duplicate provider %q", slug))
+		}
+		seen[slug] = struct{}{}
+	}
+	if c.LLM.ProviderRouting.AllowFallbacks != nil && len(c.LLM.ProviderRouting.Order) == 0 {
+		return fieldError("llm.provider_routing.allow_fallbacks", "requires a non-empty llm.provider_routing.order")
+	}
+	return nil
 }
 
 // validateLLMNetworkDefaults rejects negative durations / counts.

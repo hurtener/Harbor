@@ -859,10 +859,14 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			stack.closeFns = append(stack.closeFns, publicationStore.Close)
 		}
 		agentResolver = serve.NewAgentResolverAdapter(stack.AgentConfig, stack.AgentConfigID, serve.WithBootLifecycleEnsurer(bootLifecycleEnsurer))
+		// `prepare` forwards to the run-loop driver built below — the same
+		// late binding production serve.Boot uses.
+		prepareBridge := serve.NewSessionPrepareBridge()
 		surfaceOpts = append(surfaceOpts,
 			protocol.WithAgentResolver(agentResolver),
 			protocol.WithAgentReachAuthorizer(stack.AgentReach),
-			protocol.WithAgentReachAdmissionAuthority(agentReachAdmissions))
+			protocol.WithAgentReachAdmissionAuthority(agentReachAdmissions),
+			protocol.WithSessionPreparer(prepareBridge))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
@@ -1011,6 +1015,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				return stack, fmt.Errorf("devstack RunLoop driver start: %w", startErr)
 			}
 			stack.RunLoopDriver = driver
+			prepareBridge.Bind(driver.SessionPreparer())
 			stack.RunsOverrideStore = runsStore
 			stack.closeFns = append(stack.closeFns, driver.Close)
 		}

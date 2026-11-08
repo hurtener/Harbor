@@ -692,6 +692,11 @@ func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Co
 		// both at zero — the same "nil-usage yields zero values" contract.
 		usage.CacheReadTokens = resp.Usage.PromptTokensDetails.CachedReadTokens
 		usage.CacheWriteTokens = resp.Usage.PromptTokensDetails.CachedWriteTokens
+		// The pinned SDK erases each counter's wire presence (absent and
+		// zero both decode to 0), so only a positive count proves the
+		// provider reported that counter.
+		usage.CacheReadReported = usage.CacheReadTokens > 0
+		usage.CacheWriteReported = usage.CacheWriteTokens > 0
 	}
 	usage.LatencyMS = resp.ExtraFields.Latency
 	if resp.Usage.Cost != nil {
@@ -785,8 +790,10 @@ func translateToolDeclaration(td llm.ToolDeclaration) (bfschemas.ChatTool, error
 		var tp bfschemas.ToolFunctionParameters
 		// Fail loud on a malformed JSON Schema — silent drop here
 		// would teach the LLM an undeclared tool shape (CLAUDE.md §5
-		// fail-loudly, §13 forbidden-practices).
-		if err := json.Unmarshal(td.Schema, &tp); err != nil {
+		// fail-loudly, §13 forbidden-practices). `$schema` / `$comment`
+		// annotations are generator noise to the model: strip them at
+		// every subschema so they cost no prompt tokens.
+		if err := json.Unmarshal(llm.StripSchemaAnnotations(td.Schema), &tp); err != nil {
 			return bfschemas.ChatTool{}, fmt.Errorf(
 				"tool %q: malformed JSON schema: %w", td.Name, err)
 		}

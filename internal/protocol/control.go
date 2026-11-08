@@ -77,6 +77,9 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 	if method == methods.MethodStart {
 		return s.dispatchStart(ctx, req)
 	}
+	if method == methods.MethodPrepare {
+		return s.dispatchPrepare(ctx, req)
+	}
 	// The streaming-events
 	// methods are served by their own transports (SSE for subscribe;
 	// POST /v1/events/aggregate for aggregate), NOT by the REST control

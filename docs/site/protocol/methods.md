@@ -2,7 +2,7 @@
 
 # Protocol methods
 
-The 154 canonical Harbor Protocol methods, generated from the single-source registry
+The 155 canonical Harbor Protocol methods, generated from the single-source registry
 (`internal/protocol/methods`) joined against the wire transports' route patterns
 (`internal/protocol/transports/{control,stream}`). The classification column is computed
 from the same `Is*Method` predicates the transports branch on.
@@ -22,6 +22,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `cancel` | `POST /v1/control/cancel` | task control — steering | [`ControlRequest`](./types.md#controlrequest) | [`ControlResponse`](./types.md#controlresponse) | mutating; steering scope ≥ `owner_user` (RFC §6.3); cross-tenant steering requires `admin` |
 | `inject_context` | `POST /v1/control/inject_context` | task control — steering | [`ControlRequest`](./types.md#controlrequest) | [`ControlResponse`](./types.md#controlresponse) | mutating; steering scope ≥ `session_user` (RFC §6.3); cross-tenant steering requires `admin` |
 | `pause` | `POST /v1/control/pause` | task control — steering | [`ControlRequest`](./types.md#controlrequest) | [`ControlResponse`](./types.md#controlresponse) | mutating; steering scope ≥ `owner_user` (RFC §6.3); cross-tenant steering requires `admin` |
+| `prepare` | `POST /v1/control/prepare` | task control — run-start preparation | [`PrepareRequest`](./types.md#preparerequest) | [`PrepareResponse`](./types.md#prepareresponse) | mutating; same admission as `start` (verified identity, signed Agent reach); impersonation refused; HTTP 202 |
 | `prioritize` | `POST /v1/control/prioritize` | task control — steering | [`ControlRequest`](./types.md#controlrequest) | [`ControlResponse`](./types.md#controlresponse) | mutating; steering scope ≥ `admin` (RFC §6.3); cross-tenant steering requires `admin` |
 | `redirect` | `POST /v1/control/redirect` | task control — steering | [`ControlRequest`](./types.md#controlrequest) | [`ControlResponse`](./types.md#controlresponse) | mutating; steering scope ≥ `owner_user` (RFC §6.3); cross-tenant steering requires `admin` |
 | `reject` | `POST /v1/control/reject` | task control — steering | [`ControlRequest`](./types.md#controlrequest) | [`ControlResponse`](./types.md#controlresponse) | mutating; steering scope ≥ `owner_user` (RFC §6.3); cross-tenant steering requires `admin` |

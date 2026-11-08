@@ -655,6 +655,49 @@ Default in-flight request limit per provider. Default: `0`.
 
 Default request-queue buffer per provider. Default: `0`.
 
+### llm.prompt_cache.key
+
+`auto` (default; empty means `auto`) or `off`. With `auto`, every planner
+call carries an opaque prompt cache key derived from a digest of the
+tenant, the acting agent, the serving provider/model, the stable tool
+declarations (builtin, shared and agent-owned tools — not user-owned
+connections or per-run discoveries) and the static system-prompt spine.
+No raw identifier reaches the provider. Turns of the same agent then share
+one key across sessions, so providers that route by key reuse the cached
+prefix instead of rewriting it. Sent as the typed `prompt_cache_key` field
+to native providers (bifrost drops it for models that do not accept it)
+and as a `prompt_cache_key` body field to OpenRouter (which also uses it
+as its fallback sticky-routing key). Never sent to operator-declared
+custom providers or OpenAI-compatible route endpoints. Restart-required.
+
+### llm.prompt_cache.retention
+
+Empty (default: provider default), `in_memory` or `24h`. Sent only to
+providers whose request schema carries `prompt_cache_retention` (OpenAI);
+not sent through OpenRouter. Extended retention can change provider
+billing/data-retention posture, so it is opt-in. Restart-required.
+
+### llm.prompt_cache.sticky_routing
+
+Default `false`. When `true` and the provider is OpenRouter, the prompt
+cache key is also sent as `session_id`, OpenRouter's session-affinity key,
+so turns sharing a prefix reach the same upstream provider from the first
+request instead of only after a cache hit is detected. Restart-required.
+
+### llm.provider_routing.order
+
+Optional list of upstream provider slugs (for example `openai`, `azure`)
+sent as OpenRouter's `provider.order`. Default: empty (router decides).
+Pinning an order disables OpenRouter's own sticky routing; prefer
+`llm.prompt_cache.sticky_routing` unless a specific upstream is required.
+Ignored by providers without upstream routing. Restart-required.
+
+### llm.provider_routing.allow_fallbacks
+
+Optional boolean sent as OpenRouter's `provider.allow_fallbacks`; requires
+a non-empty `llm.provider_routing.order`. Unset keeps the router default
+(fallbacks allowed). Restart-required.
+
 ---
 
 ## Embeddings

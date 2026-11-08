@@ -106,6 +106,15 @@ const (
 	// MethodStart asks the Runtime to spawn a new task / foreground run.
 	// Maps onto tasks.TaskRegistry.Spawn.
 	MethodStart Method = "start"
+	// MethodPrepare asks the Runtime to perform run-start preparation for
+	// one (tenant, user, Agent) ahead of a later `start`: the signed OAuth
+	// MCP reconcile for the Agent and user tiers and, when a provider route
+	// is supplied, its credential-free route selection. It is admitted
+	// exactly like `start` (verified identity, signed Agent reach), grants
+	// nothing, creates no task or session, and answers immediately while
+	// the work runs in the background. NOT a control method. The
+	// wire-transport route is `POST /v1/control/prepare`.
+	MethodPrepare Method = "prepare"
 	// MethodCancel cancels a run (soft by default; `hard: true` in the
 	// payload propagates a cancellation context). Maps onto the CANCEL
 	// steering control.
@@ -1234,6 +1243,7 @@ const (
 // deterministic snapshot.
 var canonicalMethods = map[Method]struct{}{
 	MethodStart:                                     {},
+	MethodPrepare:                                   {},
 	MethodCancel:                                    {},
 	MethodPause:                                     {},
 	MethodResume:                                    {},
@@ -2275,7 +2285,7 @@ func IsControlMethod(m Method) bool {
 	if !IsValidMethod(m) {
 		return false
 	}
-	if m == MethodStart {
+	if m == MethodStart || m == MethodPrepare {
 		return false
 	}
 	if _, ok := streamingEventsMethods[m]; ok {

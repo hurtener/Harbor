@@ -97,6 +97,7 @@ var requestSurfaces = map[string]Surface{
 	// task — start and the steering controls.
 	"ControlRequest": SurfaceControlTask,
 	"StartRequest":   SurfaceControlTask,
+	"PrepareRequest": SurfaceControlTask,
 
 	// events.
 	"EventAggregateRequest": SurfaceEvents,

@@ -94,6 +94,33 @@ func (a *AgentReachAdmissionAuthority) Admit(ctx context.Context, id identity.Id
 	return context.WithValue(ctx, agentReachAdmissionContextKey{}, admitted), nil
 }
 
+// AgentReachAdmissionSubject is the authenticated subject of an admission
+// seated on a context by Admit or Restore. Only holders of the admission
+// authority can seat one, so its presence is proof that the canonical
+// control.start-style reach admission ran for exactly this subject.
+type AgentReachAdmissionSubject struct {
+	RuntimeID        string
+	TenantID         string
+	UserID           string
+	SessionID        string
+	EffectiveAgentID string
+}
+
+// AgentReachAdmissionSubjectFrom returns the admission subject seated on ctx
+// by Admit or Restore, if any.
+func AgentReachAdmissionSubjectFrom(ctx context.Context) (AgentReachAdmissionSubject, bool) {
+	if ctx == nil {
+		return AgentReachAdmissionSubject{}, false
+	}
+	admitted, ok := ctx.Value(agentReachAdmissionContextKey{}).(admittedAgentReach)
+	if !ok || admitted.claims.Schema != agentReachAdmissionSchema || strings.TrimSpace(admitted.claims.EffectiveAgentID) == "" {
+		return AgentReachAdmissionSubject{}, false
+	}
+	c := admitted.claims
+	return AgentReachAdmissionSubject{RuntimeID: c.RuntimeID, TenantID: c.TenantID, UserID: c.UserID,
+		SessionID: c.SessionID, EffectiveAgentID: c.EffectiveAgentID}, true
+}
+
 // CaptureAgentReachAdmission returns a detached opaque receipt only for the
 // exact spawn subject. An ordinary SDK Spawn cannot manufacture the private
 // context value merely by setting SpawnRequest.AgentID.

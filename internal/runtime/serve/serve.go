@@ -578,6 +578,11 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		}
 		return nil, routeErr
 	}
+	// A route resolver gets one bounded credential-free selection cache,
+	// shared by the run path and `prepare`. Credentials are never cached.
+	if opts.ProviderRoute.Resolver != nil && opts.ProviderRoute.SelectionCache == nil {
+		opts.ProviderRoute.SelectionCache = llm.NewProviderRouteSelectionCache(0)
+	}
 	finalGrantMode := opts.ExternalGrant.Mode
 	if finalGrantMode == "" {
 		finalGrantMode = llm.ExternalGrantMode(strings.TrimSpace(cfg.LLM.ExternalGrant.Mode))
@@ -792,11 +797,15 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 	// resolved. Otherwise a runtime without an OAuth provider would capture a
 	// nil admission authority here even though the same boot later wires the
 	// run-loop authority, making every route-bearing start unverifiable.
+	// `prepare` dispatches to the run-loop driver, built later in boot; the
+	// bridge is bound before the mux serves any request.
+	prepareBridge := NewSessionPrepareBridge()
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
 		protocol.WithSessionEnsurer(NewSessionEnsurerAdapter(sessionRegistry)),
 		protocol.WithAgentResolver(agentResolver),
 		protocol.WithAgentReachAuthorizer(agentReach),
 		protocol.WithAgentReachAdmissionAuthority(agentReachAdmissions),
+		protocol.WithSessionPreparer(prepareBridge),
 	)
 	if err != nil {
 		closeAll(ctx)
@@ -1210,6 +1219,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		BootDeclaredMCP:          BootDeclaredMCPServerSet(cfg),
 		OAuthProviderReconciler:  oauthProviderReconciler,
 		SignedOAuthMCPReconciler: signedOAuthMCPReconciler,
+		ProviderRoute:            opts.ProviderRoute,
 		NamingDefault:            cfg.Runtime.Naming,
 		SessionTitler:            sessionRegistry,
 		NamingLLM:                stack.LLM,
@@ -1223,6 +1233,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		return nil, fmt.Errorf("steering.RunLoop driver start: %w", err)
 	}
 	closers = append(closers, runLoopDriver.Close)
+	prepareBridge.Bind(runLoopDriver.SessionPreparer())
 
 	// Auth validator — the REQUIRED production path. A factory error, or a
 	// factory that hands back a nil Validator, fails Boot loud (never a

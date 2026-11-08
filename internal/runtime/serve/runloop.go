@@ -77,10 +77,15 @@ package serve
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +101,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
@@ -328,6 +334,11 @@ type RunLoopDriverOptions struct {
 	SignedOAuthMCPReconciler interface {
 		ReconcileSignedOAuthMCPCapability(context.Context, identity.Quadruple, string) error
 	}
+	// ProviderRoute is the runtime's provider-route configuration. The
+	// `prepare` method uses it to pre-select (credential-free) the route a
+	// later start will carry, retained in its SelectionCache. A zero value
+	// disables the route leg of preparation.
+	ProviderRoute llm.ProviderRouteConfig
 
 	// namingDefault is the static `runtime.naming` fleet-default auto-naming
 	// policy; the driver resolves the effective policy per run (agent-config
@@ -452,6 +463,14 @@ type RunLoopDriver struct {
 	signedOAuthMCPReconciler interface {
 		ReconcileSignedOAuthMCPCapability(context.Context, identity.Quadruple, string) error
 	}
+	// preparer runs `prepare` work ahead of a start and lets run start
+	// reuse it (see session_prepare.go). Internally synchronized; never nil
+	// on a driver built by NewRunLoopDriver.
+	preparer *sessionPreparer
+	// signedOperations reads the durable signed-capability operation
+	// records whose write identities the prepare stamp covers. Nil when no
+	// signed reconciler is wired (those records then cannot affect reconcile).
+	signedOperations *agentcfg.SignedOAuthMCPOperationStore
 
 	// session auto-naming wiring: the static fleet-default policy, the
 	// session-registry titler seam, and the run's wrapped LLM client. All
@@ -541,7 +560,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 	if opts.TaskKind == "" {
 		opts.TaskKind = tasks.KindForeground
 	}
-	return &RunLoopDriver{
+	d := &RunLoopDriver{
 		retainedContextTurns:  memoryTurns,
 		retainedContextTTL:    opts.RetainedContextTTL,
 		stateStore:            opts.StateStore,
@@ -591,8 +610,113 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		trajectories:             make(map[tasks.TaskID]*trackedTrajectory),
 		tokenBudget:              opts.TokenBudget,
 		compression:              opts.Compression,
-	}, nil
+	}
+	if opts.StateStore != nil && opts.SignedOAuthMCPReconciler != nil {
+		operations, err := agentcfg.NewSignedOAuthMCPOperationStore(opts.StateStore)
+		if err != nil {
+			return nil, fmt.Errorf("run loop signed operation store: %w", err)
+		}
+		d.signedOperations = operations
+	}
+	d.preparer = newSessionPreparer(opts.Logger, defaultSessionPrepareLimits(), opts.ProviderRoute,
+		d.reconcileConnectionsPass, d.prepareStamp)
+	return d, nil
 }
+
+// SessionPreparer returns the driver's `prepare` implementation, which the
+// control surface dispatches to. It shares the exact reconcile the driver
+// runs at run start.
+func (d *RunLoopDriver) SessionPreparer() protocol.SessionPreparer {
+	return d.preparer
+}
+
+// prepareStamp computes the reconcile-specific stamp that guards reuse of a
+// preparation. It extends the projection.CatalogStamp (registry pointers,
+// fence records, deletion generation, session overlay, process-local catalog
+// and MCP registry generations) with the write identity of every durable
+// signed-capability operation record the run-start signed reconcile would
+// act on for this principal: the agent's agent-tier receipts and the acting
+// user's user-tier receipts. Every operation write (claim, phase transition,
+// publisher acquisition, expiry, renewal) mints a new record EventID, so a
+// change made by another replica — a publisher takeover, a removal admitted
+// before the revision moves — changes the stamp. ok=false (no fast path)
+// when the wired dependencies cannot report generations or the tenant's
+// operation records exceed the bounded scan.
+func (d *RunLoopDriver) prepareStamp(ctx context.Context, id identity.Identity, agentID string) (string, bool, error) {
+	if d.agentConfig == nil || d.catalog == nil || d.connectionDetacher == nil {
+		return "", false, nil
+	}
+	if d.signedOAuthMCPReconciler != nil && d.signedOperations == nil {
+		return "", false, nil
+	}
+	owner, ok := d.connectionDetacher.(projection.SourceOwnerResolver)
+	if !ok {
+		return "", false, nil
+	}
+	resolver := projection.CatalogViewResolver{Registry: d.agentConfig, SessionOverlay: d.sessionOverlay, Catalog: d.catalog, OwnerResolver: owner}
+	revision, _, ok, err := resolver.CatalogStamp(ctx, id, agentID, sessionPrepareStampView)
+	if err != nil || !ok || d.signedOperations == nil {
+		return revision, ok, err
+	}
+	type generation struct{ kind, eventID string }
+	var generations []generation
+	continuation := ""
+	for page := 0; ; page++ {
+		if page == sessionPrepareMaxOperationPages {
+			return "", false, nil
+		}
+		ops, next, scanErr := d.signedOperations.ScanTenantPage(ctx, id.TenantID, state.MaxStateScanLimit, continuation)
+		if scanErr != nil {
+			return "", false, scanErr
+		}
+		for _, op := range ops {
+			if op.Binding.AgentID != agentID {
+				continue
+			}
+			agentTier := op.ReplayKey.UserID == "" && op.ReplayKey.SessionID == ""
+			if !agentTier && op.Binding.UserID != id.UserID {
+				continue
+			}
+			kind, kindErr := d.signedOperations.Kind(op.ReplayKey)
+			if kindErr != nil {
+				return "", false, kindErr
+			}
+			generations = append(generations, generation{kind: kind, eventID: string(op.EventID)})
+		}
+		if next == "" {
+			break
+		}
+		continuation = next
+	}
+	sort.Slice(generations, func(i, j int) bool { return generations[i].kind < generations[j].kind })
+	h := sha256.New()
+	field := func(v string) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(v)))
+		h.Write(n[:])
+		h.Write([]byte(v))
+	}
+	field(sessionPrepareStampFormat)
+	field(revision)
+	field(strconv.Itoa(len(generations)))
+	for _, g := range generations {
+		field(g.kind)
+		field(g.eventID)
+	}
+	return hex.EncodeToString(h.Sum(nil)), true, nil
+}
+
+const (
+	// sessionPrepareStampFormat versions the reconcile stamp encoding.
+	sessionPrepareStampFormat = "harbor.run-start.prepare-stamp.v1"
+	// sessionPrepareMaxOperationPages bounds the signed-operation scan a
+	// stamp performs; a tenant with more records gets no fast path.
+	sessionPrepareMaxOperationPages = 4
+)
+
+// sessionPrepareStampView names the stamp's view so a preparation stamp can
+// never compare equal to a catalog-listing revision.
+const sessionPrepareStampView = "run_start_prepare"
 
 // SessionOverridesStore returns the pending-override Store the driver
 // consumes at run start. It is the seam a caller wires the runs.set_overrides
@@ -1120,9 +1244,29 @@ func flattenJoined(err error) []error {
 	return out
 }
 
-func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string, q identity.Quadruple) {
+func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string, q identity.Quadruple, reachAdmitted bool) {
 	startedAt := time.Now()
 	defer func() { telemetry.RecordTurnStage(ctx, telemetry.TurnStageMCPReconcile, time.Since(startedAt)) }()
+	// Prepared state is reused only by a run carrying the same verified
+	// Agent reach the preparation ran under, and only when consume proves it
+	// fresh, successful and stamped over unchanged inputs; the prepared pass
+	// was this exact reconcile, so skipping it changes no attachment.
+	if reachAdmitted && d.preparer != nil {
+		prepared := d.preparer.consume(ctx, q.Identity, agentID)
+		telemetry.RecordTurnPrepared(ctx, prepared)
+		if prepared == telemetry.TurnPreparedHit || prepared == telemetry.TurnPreparedJoined {
+			return
+		}
+	}
+	d.reconcileConnectionsPass(ctx, agentID, q)
+}
+
+// reconcileConnectionsPass is one full run-start reconcile (see
+// reconcileConnections). It reports whether every leg completed without an
+// error, including a re-attach parked by its retry window: only a clean pass
+// may stand in for a later run start's reconcile.
+func (d *RunLoopDriver) reconcileConnectionsPass(ctx context.Context, agentID string, q identity.Quadruple) bool {
+	clean := true
 	// The signed-capability legs converge each durable pair independently and
 	// report every per-pair failure. A failing pair is logged but never skips
 	// the other tier or the provider, connection and discovery-allowance legs
@@ -1130,11 +1274,13 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 	// retains signed pair connections).
 	if d.signedOAuthMCPReconciler != nil {
 		if err := d.signedOAuthMCPReconciler.ReconcileSignedOAuthMCPCapability(ctx, q, agentID); err != nil {
+			clean = false
 			d.logSignedReconcileErrors(ctx, "agent", agentID, q, err)
 		}
 		if q.UserID != "" {
 			if userReconciler, ok := d.signedOAuthMCPReconciler.(signedOAuthMCPUserReconciler); ok {
 				if err := userReconciler.ReconcileSignedOAuthMCPCapabilityForScope(ctx, q, agentID, agentcfg.ConfigScopeUser); err != nil {
+					clean = false
 					d.logSignedReconcileErrors(ctx, "user", agentID, q, err)
 				}
 			}
@@ -1149,6 +1295,7 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 	if d.oauthProviderReconciler != nil {
 		changed, perr := projection.ReconcileOAuthProviders(ctx, d.agentConfig, agentID, q, d.oauthProviderReconciler)
 		if perr != nil {
+			clean = false
 			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start OAuth-provider reconcile failed",
 				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", perr.Error()))
 		} else if changed > 0 {
@@ -1157,7 +1304,7 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 		}
 	}
 	if d.connectionDetacher == nil {
-		return
+		return clean
 	}
 	// The reconcile's two connection passes (detach, then attach) run under a
 	// BOUNDED total when an attach concrete is wired: each attach is separately
@@ -1176,6 +1323,7 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 		d.connectionDetacher, d.connectionReattacher, d.bootDeclaredMCP)
 	telemetry.RecordTurnStage(ctx, telemetry.TurnStageToolAttach, time.Since(attachStartedAt))
 	if err != nil {
+		clean = false
 		// Partition the joined error. A re-attach parked by its bounded retry
 		// window is NOT a new failure (it was counted, and its count rides the next
 		// emitted lifecycle event), so it logs at Debug — otherwise a permanently
@@ -1196,7 +1344,7 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 		if other != nil {
 			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP reconcile detach failed",
 				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", other.Error()))
-			return
+			return false
 		}
 	}
 	if detached > 0 {
@@ -1220,13 +1368,14 @@ func (d *RunLoopDriver) reconcileConnections(ctx context.Context, agentID string
 		if aerr != nil {
 			d.logger.ErrorContext(ctx, "RunLoopDriver: run-start MCP discovery-allowance reconcile failed",
 				slog.String("agent_id", agentID), slog.String("run_id", q.RunID), slog.String("err", aerr.Error()))
-			return
+			return false
 		}
 		if applied > 0 {
 			d.logger.InfoContext(ctx, "RunLoopDriver: run-start MCP discovery-allowance reconcile re-applied",
 				slog.String("agent_id", agentID), slog.Int("reapplied", applied))
 		}
 	}
+	return clean
 }
 
 // logSignedReconcileErrors logs each per-pair signed-capability reconcile
@@ -1542,7 +1691,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// (a removed connection / a rollback past an add). Exposure is next-turn;
 	// teardown is process-global (an in-flight run calling a detached server
 	// fails loud — see the reconcileConnections wrapper doc).
-	d.reconcileConnections(taskCtx, effectiveAgentID, q)
+	d.reconcileConnections(taskCtx, effectiveAgentID, q, agentReachAdmitted)
 
 	// Compile the per-task output schema ONCE at run start (the compile
 	// the run consumes). A compile failure fails the run LOUD with the
@@ -2382,6 +2531,8 @@ func (d *RunLoopDriver) resolveSessionArtifacts(
 // blocked Close eventually surfaces as a graceless exit.
 func (d *RunLoopDriver) Close(_ context.Context) error {
 	d.closedOnce.Do(func() {
+		// Background preparations are joined whether or not Start ran.
+		d.preparer.Close()
 		if !d.started {
 			return
 		}

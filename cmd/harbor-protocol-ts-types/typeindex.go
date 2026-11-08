@@ -411,6 +411,8 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"SizeRange":                                         reflect.TypeOf(types.SizeRange{}),
 	"StartRequest":                                      reflect.TypeOf(types.StartRequest{}),
 	"StartResponse":                                     reflect.TypeOf(types.StartResponse{}),
+	"PrepareRequest":                                    reflect.TypeOf(types.PrepareRequest{}),
+	"PrepareResponse":                                   reflect.TypeOf(types.PrepareResponse{}),
 	"StateArtifactRef":                                  reflect.TypeOf(types.StateArtifactRef{}),
 	"StateEvent":                                        reflect.TypeOf(types.StateEvent{}),
 	"StateHistoryRequest":                               reflect.TypeOf(types.StateHistoryRequest{}),

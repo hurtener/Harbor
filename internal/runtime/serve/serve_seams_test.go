@@ -501,7 +501,7 @@ func TestRunLoopDriver_ReconcileConnections_BootDeclaredNeverDetached(t *testing
 
 	// Nil detacher: reconcile is a no-op (the guard branch).
 	dNil := &RunLoopDriver{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	dNil.reconcileConnections(ctx, dNil.agentConfigID, q) // must not panic / error-log fatally
+	dNil.reconcileConnections(ctx, dNil.agentConfigID, q, false) // must not panic / error-log fatally
 
 	// A wired detacher over a nil registry enumerates no attached sources —
 	// the reconcile runs its full path with nothing to detach (boot-declared
@@ -513,7 +513,7 @@ func TestRunLoopDriver_ReconcileConnections_BootDeclaredNeverDetached(t *testing
 		connectionDetacher: NewMCPConnectionDetacher(nil, nil, nil),
 		bootDeclaredMCP:    BootDeclaredMCPServerSet(cfg),
 	}
-	d.reconcileConnections(ctx, d.agentConfigID, q)
+	d.reconcileConnections(ctx, d.agentConfigID, q, false)
 }
 
 // TestBoot_DefaultsAndSharedProbeSurfaces covers the option defaults (nil

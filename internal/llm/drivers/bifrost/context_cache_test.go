@@ -81,6 +81,8 @@ func TestContextCache_LivePrefixesAndExplicitRewriteBoundaries(t *testing.T) {
 				Timeout: 10 * time.Second, ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
 				DisableCorrections: true, DisableRetry: true, DisableGovernance: true,
 				ModelProfiles: map[string]llm.ModelProfile{"m": profile, "m2": profile},
+				// Continuity must hold with every cache hint off (RFC-002 §5).
+				PromptCache: llm.PromptCacheSettings{Disabled: true},
 			}, deps)
 			if err != nil {
 				t.Fatal(err)

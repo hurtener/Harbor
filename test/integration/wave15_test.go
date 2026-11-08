@@ -280,16 +280,22 @@ func TestE2E_Wave15_PromptBand_ComposesAllFiveSurfaces(t *testing.T) {
 		}
 	}
 
-	// --- 83b: <available_tools> renders name+description only
-	// (Phase 107c — D-167 narrows prompt-side rendering; schemas live
-	// in req.Tools[]).
-	for _, want := range []string{
-		"kb_search",
-		"Search the knowledge base",
-	} {
-		if !strings.Contains(base, want) {
-			t.Errorf("83b <available_tools> missing %q", want)
+	// --- 83b: <available_tools> renders callable names only; the
+	// description and schema live once, in req.Tools[].
+	if !strings.Contains(base, "- kb_search\n") {
+		t.Errorf("83b <available_tools> missing kb_search")
+	}
+	if strings.Contains(base, "Search the knowledge base") {
+		t.Errorf("83b <available_tools> duplicates the kb_search description")
+	}
+	described := false
+	for _, d := range req.Tools {
+		if d.Name == "kb_search" && strings.Contains(d.Description, "Search the knowledge base") {
+			described = true
 		}
+	}
+	if !described {
+		t.Errorf("83b kb_search declaration lost its description")
 	}
 	for _, forbidden := range []string{"args_schema:", "side_effects:", "examples:"} {
 		if strings.Contains(base, forbidden) {

@@ -575,7 +575,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.writeJSON(w, r, http.StatusOK, resp)
+	status := http.StatusOK
+	if method == methods.MethodPrepare {
+		// `prepare` acknowledges background work; its outcome is not part
+		// of the response.
+		status = http.StatusAccepted
+	}
+	h.writeJSON(w, r, status, resp)
 }
 
 // decodeRequest decodes a request body into the wire request type the
@@ -583,6 +589,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // for the nine steering controls. A decode failure surfaces as
 // CodeInvalidRequest — never a silent zero-value request.
 func decodeRequest(method methods.Method, body []byte) (any, *protoerrors.Error) {
+	if method == methods.MethodPrepare {
+		var pr types.PrepareRequest
+		if err := decodeStrict(body, &pr); err != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: request body is not a valid PrepareRequest: %s", string(method), decodeDetail(err))
+		}
+		return &pr, nil
+	}
 	if method == methods.MethodStart {
 		var sr types.StartRequest
 		if err := decodeStrict(body, &sr); err != nil {
@@ -758,6 +772,14 @@ func (h *Handler) reconcileBodyIdentity(r *http.Request, req any) (context.Conte
 	var aud bodyscope.Auditor
 	switch v := req.(type) {
 	case *types.StartRequest:
+		scope = &v.Identity
+	case *types.PrepareRequest:
+		// `prepare` never accepts impersonation; refuse it here so the
+		// impersonation skip below can never bypass reconciliation.
+		if v.Identity.IsImpersonating() {
+			return ctx, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: impersonation is not supported", string(methods.MethodPrepare))
+		}
 		scope = &v.Identity
 	case *types.ControlRequest:
 		scope = &v.Identity
