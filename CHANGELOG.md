@@ -17,6 +17,22 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- **Deferred tool index in the planner prompt.** When a run has
+  deferred-loading tools, the ReAct system prompt gains a `<deferred_tools>`
+  section after `<available_tools>` listing them by provider source
+  (`- <source label> (N tools): name_a, name_b`), so the model knows which
+  sources have on-demand tools and loads them with `tool_search` before
+  calling them. The set is the run's own tool view, named exactly as
+  `tool_search` and `tool_get` accept; it is names only, sorted for
+  byte-stable prompt caching across a run's turns, and bounded per source by
+  `planner.deferred_tool_index.max_tokens_per_source` (default 2200 tokens,
+  chars/4 estimate, about 200 connection-prefixed names) and overall by
+  `planner.deferred_tool_index.max_tokens` (default 8000), with per-source
+  `… and N more; use tool_search` truncation.
+  On by default; `planner.deferred_tool_index.enabled: false` turns it off.
+
 ### Fixed
 
 - **Protocol conformance accepts runtimes without session preparation.**

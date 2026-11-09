@@ -65,8 +65,11 @@ func ConfigFromOperator(cfg config.PlannerConfig) PlannerConfig {
 		// pass the *bool through verbatim so the
 		// react factory distinguishes "unset" (nil → default true) from
 		// an explicit false (107c serialization opt-out).
-		ParallelToolCalls: cfg.ParallelToolCalls,
-		Extra:             extra,
+		ParallelToolCalls:                   cfg.ParallelToolCalls,
+		DeferredToolIndex:                   cfg.DeferredToolIndex.Enabled,
+		DeferredToolIndexMaxTokens:          cfg.DeferredToolIndex.MaxTokens,
+		DeferredToolIndexMaxTokensPerSource: cfg.DeferredToolIndex.MaxTokensPerSource,
+		Extra:                               extra,
 	}
 }
 

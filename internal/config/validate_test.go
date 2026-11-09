@@ -2153,6 +2153,36 @@ func TestValidate_Planner_MaxToolExamplesPerTool(t *testing.T) {
 	}
 }
 
+// TestValidate_Planner_DeferredToolIndex covers the
+// `planner.deferred_tool_index` block: both enable states and a
+// non-negative budget validate; a negative budget fails loud pre-boot
+// with the field named in the error.
+func TestValidate_Planner_DeferredToolIndex(t *testing.T) {
+	t.Parallel()
+	off := false
+	for _, block := range []config.PlannerDeferredToolIndex{{}, {Enabled: &off}, {MaxTokens: 1}, {MaxTokens: 8000, MaxTokensPerSource: 2200}} {
+		cfg := mustLoadValid(t)
+		cfg.Planner = config.PlannerConfig{Driver: "react", DeferredToolIndex: block}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate(planner.deferred_tool_index=%+v): %v", block, err)
+		}
+	}
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", DeferredToolIndex: config.PlannerDeferredToolIndex{MaxTokens: -1}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate(planner.deferred_tool_index.max_tokens=-1) returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "deferred_tool_index.max_tokens") {
+		t.Errorf("err = %q, want it to name the planner.deferred_tool_index.max_tokens field", err.Error())
+	}
+	cfg = mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", DeferredToolIndex: config.PlannerDeferredToolIndex{MaxTokensPerSource: -1}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "deferred_tool_index.max_tokens_per_source") {
+		t.Errorf("Validate(planner.deferred_tool_index.max_tokens_per_source=-1) = %v, want a field error", err)
+	}
+}
+
 // mustLoadValid loads the canonical valid fixture and returns a
 // mutable copy callers can break in subtests.
 func mustLoadValid(t *testing.T) *config.Config {

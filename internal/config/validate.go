@@ -2850,6 +2850,16 @@ func (c *Config) validatePlanner() error {
 			fmt.Sprintf("must be >= 0 (0 = use dev-runtime default of 4), got %d",
 				c.Planner.AbsoluteMaxSpawnDepth))
 	}
+	if c.Planner.DeferredToolIndex.MaxTokens < 0 {
+		return fieldError("planner.deferred_tool_index.max_tokens",
+			fmt.Sprintf("must be >= 0 (0 = use driver default of 8000), got %d",
+				c.Planner.DeferredToolIndex.MaxTokens))
+	}
+	if c.Planner.DeferredToolIndex.MaxTokensPerSource < 0 {
+		return fieldError("planner.deferred_tool_index.max_tokens_per_source",
+			fmt.Sprintf("must be >= 0 (0 = use driver default of 2200), got %d",
+				c.Planner.DeferredToolIndex.MaxTokensPerSource))
+	}
 	if c.Planner.MaxBatchSpawns < 0 {
 		return fieldError("planner.max_batch_spawns",
 			fmt.Sprintf("must be >= 0 (0 = use dev-runtime default of 5), got %d",

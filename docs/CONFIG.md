@@ -2725,6 +2725,37 @@ serialization fallback (one `CallTool` per step via
 to `true` (the native-parallel default). Validation: none (both states
 are correct).
 
+### planner.deferred_tool_index.enabled
+
+Renders the ReAct system prompt's `<deferred_tools>` section, right after
+`<available_tools>`: an index, grouped by provider source, of the
+deferred-loading tools the run may load on demand. It tells the model which
+sources have on-demand tools and their exact declared names, which it loads
+with `tool_search` before calling. The set is the run's own tool view
+(owner scope, exclusions, allowlist, effective loading mode), named exactly
+as `tool_search` and `tool_get` accept; names only, sorted by source
+(stability tier, label) then name, so the section is byte-stable across a
+run's turns. It is omitted when the run has no deferred tools or cannot
+call `tool_search`. Pointer-bool: an omitted key resolves to `true`.
+Validation: none.
+
+### planner.deferred_tool_index.max_tokens_per_source
+
+Budget for one source's `<deferred_tools>` line in the canonical chars/4
+token estimate. Default: `0` → driver default of 2200, sized to list about
+200 names in full even when they carry their source prefix (for a
+runtime-added connection, `<name>_u-<16 hex>_<tool>` or `_a-`), measured at
+about 10.3 tokens per name (bare names cost about 4.5). A source over budget shows its first names in sorted order followed
+by `… and N more; use tool_search`. Validation: >= 0.
+
+### planner.deferred_tool_index.max_tokens
+
+Safety budget for the whole `<deferred_tools>` section in the same
+estimate. Default: `0` → driver default of 8000. Over budget, names are
+shared round-robin across sources (each still within its per-source
+budget); a source that does not fit even as a count-only line is folded
+into one trailing summary line. Validation: >= 0.
+
 ### planner.absolute_max_spawn_depth
 
 Caps the `ParentTaskID`-chain depth of planner-spawned background

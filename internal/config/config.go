@@ -2558,6 +2558,10 @@ const (
 // `Budget`) remain reachable via a custom planner Option, not via
 // `harbor.yaml`. The block is omitted entirely when empty.
 //
+// `DeferredToolIndex` configures the ReAct prompt's bounded
+// `<deferred_tools>` on-demand tool index (see PlannerDeferredToolIndex).
+// On by default.
+//
 // `Extra` is the per-driver opaque extras map. Reserved for future
 // drivers' per-flow knobs (e.g. a deterministic planner's scripted
 // step sequence, a supervisor planner's sub-agent list). The V1 `react`
@@ -2567,17 +2571,36 @@ const (
 // runtime would race with in-flight RunLoop goroutines holding the old
 // concrete.
 type PlannerConfig struct {
-	Driver                 string                  `yaml:"driver,omitempty"`
-	MaxSteps               int                     `yaml:"max_steps,omitempty"`
-	ExtraGuidance          string                  `yaml:"extra_guidance,omitempty"`
-	ReasoningReplay        string                  `yaml:"reasoning_replay,omitempty"`
-	MaxToolExamplesPerTool int                     `yaml:"max_tool_examples_per_tool,omitempty"`
-	ParallelToolCalls      *bool                   `yaml:"parallel_tool_calls,omitempty"`
-	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
-	AbsoluteMaxSpawnDepth  int                     `yaml:"absolute_max_spawn_depth,omitempty"`
-	MaxBatchSpawns         int                     `yaml:"max_batch_spawns,omitempty"`
-	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
-	Extra                  map[string]string       `yaml:"extra,omitempty"`
+	Driver                 string                   `yaml:"driver,omitempty"`
+	MaxSteps               int                      `yaml:"max_steps,omitempty"`
+	ExtraGuidance          string                   `yaml:"extra_guidance,omitempty"`
+	ReasoningReplay        string                   `yaml:"reasoning_replay,omitempty"`
+	MaxToolExamplesPerTool int                      `yaml:"max_tool_examples_per_tool,omitempty"`
+	ParallelToolCalls      *bool                    `yaml:"parallel_tool_calls,omitempty"`
+	SkillsContextMax       int                      `yaml:"skills_context_max,omitempty"`
+	AbsoluteMaxSpawnDepth  int                      `yaml:"absolute_max_spawn_depth,omitempty"`
+	MaxBatchSpawns         int                      `yaml:"max_batch_spawns,omitempty"`
+	PlanningHints          PlannerPlanningHintsCfg  `yaml:"planning_hints,omitempty"`
+	DeferredToolIndex      PlannerDeferredToolIndex `yaml:"deferred_tool_index,omitempty"`
+	Extra                  map[string]string        `yaml:"extra,omitempty"`
+}
+
+// PlannerDeferredToolIndex configures the ReAct prompt's
+// `<deferred_tools>` section: a compact index, grouped by provider source,
+// of the deferred-loading tools the run may load on demand through
+// `tool_search`. Names only, deterministic, and bounded by MaxTokens.
+//
+// `Enabled` is a pointer-bool so an omitted key (nil) resolves to `true`.
+// Budgets use the canonical chars/4 token estimate. `MaxTokensPerSource`
+// bounds one source's line; zero resolves to the react driver's default
+// (2200, about 200 owner-prefixed names). `MaxTokens` is the whole
+// section's safety bound; zero resolves to 8000. Over budget, each source
+// keeps a count-only line before any source is summarized. The validator
+// rejects negative budgets pre-boot. Other drivers ignore these keys.
+type PlannerDeferredToolIndex struct {
+	Enabled            *bool `yaml:"enabled,omitempty"`
+	MaxTokensPerSource int   `yaml:"max_tokens_per_source,omitempty"`
+	MaxTokens          int   `yaml:"max_tokens,omitempty"`
 }
 
 // ParallelToolCallsEnabled resolves the optional `parallel_tool_calls`

@@ -59,5 +59,16 @@ func factory(cfg planner.PlannerConfig, deps planner.FactoryDeps) (planner.Plann
 	if cfg.ParallelToolCalls != nil {
 		opts = append(opts, WithParallelToolCalls(*cfg.ParallelToolCalls))
 	}
+	// The <deferred_tools> index is on by default; only override when the
+	// operator set the knob explicitly (nil = unset = keep the default).
+	if cfg.DeferredToolIndex != nil {
+		opts = append(opts, WithDeferredToolIndex(*cfg.DeferredToolIndex))
+	}
+	if cfg.DeferredToolIndexMaxTokensPerSource > 0 {
+		opts = append(opts, WithDeferredToolIndexMaxTokensPerSource(cfg.DeferredToolIndexMaxTokensPerSource))
+	}
+	if cfg.DeferredToolIndexMaxTokens > 0 {
+		opts = append(opts, WithDeferredToolIndexMaxTokens(cfg.DeferredToolIndexMaxTokens))
+	}
 	return New(deps.LLM, opts...), nil
 }

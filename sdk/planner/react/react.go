@@ -51,6 +51,12 @@ var New = internal.New
 var (
 	// WithArgFillEnabled toggles schema-guided argument filling.
 	WithArgFillEnabled = internal.WithArgFillEnabled
+	// WithDeferredToolIndex toggles the <deferred_tools> prompt index.
+	WithDeferredToolIndex = internal.WithDeferredToolIndex
+	// WithDeferredToolIndexMaxTokens sets the <deferred_tools> section budget.
+	WithDeferredToolIndexMaxTokens = internal.WithDeferredToolIndexMaxTokens
+	// WithDeferredToolIndexMaxTokensPerSource sets the per-source budget.
+	WithDeferredToolIndexMaxTokensPerSource = internal.WithDeferredToolIndexMaxTokensPerSource
 	// WithMaxConsecutiveArgFailures caps consecutive arg failures.
 	WithMaxConsecutiveArgFailures = internal.WithMaxConsecutiveArgFailures
 	// WithMaxSteps caps the planner-step count.

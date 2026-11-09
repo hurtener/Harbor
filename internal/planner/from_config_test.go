@@ -22,9 +22,13 @@ func TestConfigFromOperator_Golden(t *testing.T) {
 		ReasoningReplay:        "text",
 		MaxToolExamplesPerTool: 3,
 		ParallelToolCalls:      &parallel,
+		DeferredToolIndex:      config.PlannerDeferredToolIndex{Enabled: &parallel, MaxTokens: 512, MaxTokensPerSource: 256},
 		Extra:                  map[string]string{"k": "v"},
 	}
 	out := ConfigFromOperator(in)
+	if out.DeferredToolIndex == nil || *out.DeferredToolIndex != false || out.DeferredToolIndexMaxTokens != 512 || out.DeferredToolIndexMaxTokensPerSource != 256 {
+		t.Errorf("DeferredToolIndex = %v / %d / %d, want explicit false / 512 / 256 carried through", out.DeferredToolIndex, out.DeferredToolIndexMaxTokens, out.DeferredToolIndexMaxTokensPerSource)
+	}
 	if out.Driver != "react" {
 		t.Errorf("Driver = %q, want react", out.Driver)
 	}
@@ -61,6 +65,9 @@ func TestConfigFromOperator_Defaults(t *testing.T) {
 	if out.ParallelToolCalls != nil {
 		t.Errorf("nil ParallelToolCalls projected to %v, want nil", out.ParallelToolCalls)
 	}
+	if out.DeferredToolIndex != nil || out.DeferredToolIndexMaxTokens != 0 || out.DeferredToolIndexMaxTokensPerSource != 0 {
+		t.Errorf("unset DeferredToolIndex projected to %v / %d, want nil / 0", out.DeferredToolIndex, out.DeferredToolIndexMaxTokens)
+	}
 	if out.Extra != nil {
 		t.Errorf("empty Extra projected to %v, want nil", out.Extra)
 	}
@@ -94,6 +101,7 @@ func TestConfigFromOperator_FieldParity(t *testing.T) {
 		"ReasoningReplay":        true,
 		"MaxToolExamplesPerTool": true,
 		"ParallelToolCalls":      true,
+		"DeferredToolIndex":      true,
 		"Extra":                  true,
 	}
 	excluded := map[string]string{

@@ -342,6 +342,34 @@ func WithMaxToolExamplesPerTool(n int) Option {
 	}
 }
 
+// WithDeferredToolIndex toggles the default prompt's `<deferred_tools>`
+// section: a bounded, per-source index of the deferred tools the run may
+// load through tool_search. Default `true`. An operator-supplied
+// [WithPromptBuilder] owns its own assembly and ignores it.
+func WithDeferredToolIndex(enabled bool) Option {
+	return func(p *ReActPlanner) {
+		p.deferredIndexDisabled = !enabled
+	}
+}
+
+// WithDeferredToolIndexMaxTokensPerSource sets the per-source
+// `<deferred_tools>` line budget in the canonical chars/4 token estimate. A
+// value ≤ 0 resolves to [DefaultDeferredToolIndexMaxTokensPerSource].
+func WithDeferredToolIndexMaxTokensPerSource(n int) Option {
+	return func(p *ReActPlanner) {
+		p.deferredIndexMaxTokensPerSource = n
+	}
+}
+
+// WithDeferredToolIndexMaxTokens sets the whole `<deferred_tools>` section's
+// safety budget in the canonical chars/4 token estimate. A value ≤ 0
+// resolves to [DefaultDeferredToolIndexMaxTokens].
+func WithDeferredToolIndexMaxTokens(n int) Option {
+	return func(p *ReActPlanner) {
+		p.deferredIndexMaxTokens = n
+	}
+}
+
 // WithParallelToolCalls toggles native parallel tool-call emission.
 // Default `true`: when the LLM returns N>1
 // tool-calls in one response, the projector emits a native
@@ -463,6 +491,16 @@ type ReActPlanner struct {
 	// thereafter.
 	maxToolExamples int
 
+	// deferredIndexDisabled, deferredIndexMaxTokensPerSource and
+	// deferredIndexMaxTokens configure the default builder's
+	// <deferred_tools> index. Set via [WithDeferredToolIndex] /
+	// [WithDeferredToolIndexMaxTokensPerSource] /
+	// [WithDeferredToolIndexMaxTokens]; the zero values keep the index on
+	// at its default budgets. Read-only after construction.
+	deferredIndexDisabled           bool
+	deferredIndexMaxTokensPerSource int
+	deferredIndexMaxTokens          int
+
 	// stepsTaken is a process-wide diagnostic counter. NOT used
 	// for any per-call semantics (those are derived from the
 	// RunContext + ctx); maintained as `atomic.Int64` so the
@@ -516,6 +554,10 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 			extraGuidance:    p.extraGuidance,
 			configuredReplay: p.reasoningReplay,
 			maxToolExamples:  p.maxToolExamples,
+
+			deferredIndexDisabled:           p.deferredIndexDisabled,
+			deferredIndexMaxTokensPerSource: p.deferredIndexMaxTokensPerSource,
+			deferredIndexMaxTokens:          p.deferredIndexMaxTokens,
 		}
 	}
 	return p
