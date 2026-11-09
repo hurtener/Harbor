@@ -15,7 +15,7 @@ func registerToolSearch(rc RegistryContext) error {
 		func(ctx context.Context, args ToolSearchArgs) (ToolSearchOut, error) {
 			return toolSearchWithScopes(ctx, rc.Catalog, args, grantedScopes)
 		},
-		tools.WithDescription("Search the tools available to this run by capability text (tool name, description, or the providing server's name) + optional tag filter. Returns matching tool names, descriptions, and server labels."),
+		tools.WithDescription("Search the tools available to this run by capability text (tool name, description, or the providing server's name) + optional tag filter. An exact `<server label>/<tool name>` as listed in deferred_tools, or an exact declared name, returns just that tool. Returns matching tool names, descriptions, and server labels."),
 		tools.WithSideEffect(tools.SideEffectPure),
 		tools.WithLoading(tools.LoadingAlways),
 		tools.WithTags("builtin", "meta", "discovery"),
@@ -66,8 +66,21 @@ func toolSearchWithScopes(ctx context.Context, cat tools.ToolCatalog, args ToolS
 	}
 	query := strings.TrimSpace(args.Query)
 
+	// An exact reference is resolved ahead of ranked search: a ranked index
+	// stores physical names, so a shortened declared name or a
+	// provider-local name would otherwise rank below unrelated text matches.
+	// A qualified `<source label>/<tool name>`, declared or catalog name
+	// answers alone; a bare readable name returns its matches first, then
+	// the ordinary ranked page (deduplicated below).
 	var names []string
-	if query != "" && cat != nil {
+	exactNames, exactOnly := disc.exactMatches(query)
+	for _, name := range exactNames {
+		if hasAllTags(disc.visible[name].Tags, args.Tags) {
+			names = append(names, name)
+		}
+	}
+	exact := exactOnly && len(names) > 0
+	if !exact && query != "" && cat != nil {
 		hits := cat.Search(ctx, tools.ToolSearchRequest{
 			Query: query,
 			Tags:  args.Tags,
@@ -81,7 +94,7 @@ func toolSearchWithScopes(ctx context.Context, cat tools.ToolCatalog, args ToolS
 			names = append(names, hit.Name)
 		}
 	}
-	if len(names) < args.Limit {
+	if !exact && len(names) < args.Limit {
 		names = append(names, disc.fallbackMatches(query, args.Tags, args.Limit+len(names))...)
 	}
 

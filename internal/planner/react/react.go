@@ -342,6 +342,44 @@ func WithMaxToolExamplesPerTool(n int) Option {
 	}
 }
 
+// WithDeferredToolIndex toggles the default prompt's `<deferred_tools>`
+// section: a bounded, per-source index of the deferred tools the run may
+// load through tool_search. Default `true`. An operator-supplied
+// [WithPromptBuilder] owns its own assembly and ignores it.
+func WithDeferredToolIndex(enabled bool) Option {
+	return func(p *ReActPlanner) {
+		p.deferredIndexDisabled = !enabled
+	}
+}
+
+// WithGrantedScopes sets the operator-granted tool scopes (`tools.granted_scopes`)
+// the discovery meta-tools were registered with, so the `<deferred_tools>`
+// index lists only tools `tool_search` would surface. Nil grants none: a
+// tool requiring any scope is not listed. The slice is copied.
+func WithGrantedScopes(scopes []string) Option {
+	return func(p *ReActPlanner) {
+		p.grantedScopes = append([]string(nil), scopes...)
+	}
+}
+
+// WithDeferredToolIndexMaxTokensPerSource sets the per-source
+// `<deferred_tools>` line budget in the index's conservative token estimate. A
+// value ≤ 0 resolves to [DefaultDeferredToolIndexMaxTokensPerSource].
+func WithDeferredToolIndexMaxTokensPerSource(n int) Option {
+	return func(p *ReActPlanner) {
+		p.deferredIndexMaxTokensPerSource = n
+	}
+}
+
+// WithDeferredToolIndexMaxTokens sets the whole `<deferred_tools>` section's
+// safety budget in the same estimate. A value ≤ 0
+// resolves to [DefaultDeferredToolIndexMaxTokens].
+func WithDeferredToolIndexMaxTokens(n int) Option {
+	return func(p *ReActPlanner) {
+		p.deferredIndexMaxTokens = n
+	}
+}
+
 // WithParallelToolCalls toggles native parallel tool-call emission.
 // Default `true`: when the LLM returns N>1
 // tool-calls in one response, the projector emits a native
@@ -463,6 +501,22 @@ type ReActPlanner struct {
 	// thereafter.
 	maxToolExamples int
 
+	// deferredIndexDisabled, deferredIndexMaxTokensPerSource and
+	// deferredIndexMaxTokens configure the default builder's
+	// <deferred_tools> index. Set via [WithDeferredToolIndex] /
+	// [WithDeferredToolIndexMaxTokensPerSource] /
+	// [WithDeferredToolIndexMaxTokens]; the zero values keep the index on
+	// at its default budgets. Read-only after construction.
+	deferredIndexDisabled           bool
+	deferredIndexMaxTokensPerSource int
+	deferredIndexMaxTokens          int
+
+	// grantedScopes is the operator-granted tool scope list (the same one
+	// the discovery meta-tools are registered with). Set via
+	// [WithGrantedScopes]; the <deferred_tools> index narrows by it exactly
+	// as `tool_search` does. Read-only after construction.
+	grantedScopes []string
+
 	// stepsTaken is a process-wide diagnostic counter. NOT used
 	// for any per-call semantics (those are derived from the
 	// RunContext + ctx); maintained as `atomic.Int64` so the
@@ -516,6 +570,11 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 			extraGuidance:    p.extraGuidance,
 			configuredReplay: p.reasoningReplay,
 			maxToolExamples:  p.maxToolExamples,
+
+			deferredIndexDisabled:           p.deferredIndexDisabled,
+			deferredIndexMaxTokensPerSource: p.deferredIndexMaxTokensPerSource,
+			deferredIndexMaxTokens:          p.deferredIndexMaxTokens,
+			grantedScopes:                   p.grantedScopes,
 		}
 	}
 	return p
@@ -648,7 +707,10 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// informational on `rc.DiscoveredTools`; the same set drives this
 	// turn's `req.Tools` construction.
 	rc.DiscoveredTools = mergeDiscovered(rc.DiscoveredTools, deriveDiscoveredFromTrajectory(rc.Trajectory))
-	projectedTools, declaredToolProjection, listedTools := projectModelToolsListed(rc, rc.DiscoveredTools)
+	// One discovery snapshot per turn, shared by the declaration projection
+	// and the prompt's deferred-tool index (and any context rebuild).
+	discovery := newDiscoverySnapshot(rc.Catalog)
+	projectedTools, declaredToolProjection, listedTools := projectModelToolsListedFrom(rc, rc.DiscoveredTools, discovery)
 
 	// Build the LLM request via the configured prompt builder. The
 	// builder reads from rc; it MUST NOT mutate rc.
@@ -662,13 +724,13 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// silently dropped memory tier. An operator-supplied builder owns
 	// its own assembly and uses the interface `Build` (custom builders
 	// do not render the wrappers).
-	req, buildErr := p.buildContextRequest(rc, projectedTools)
+	req, buildErr := p.buildContextRequest(rc, projectedTools, discovery)
 	if buildErr != nil {
 		return nil, buildErr
 	}
 	req.RebuildMessages = nil
 	if _, prepare := llm.ContextPreparationFrom(ctx); prepare {
-		req.RebuildMessages = p.rebuildMessages(rc, projectedTools)
+		req.RebuildMessages = p.rebuildMessages(rc, projectedTools, discovery)
 	}
 
 	// Apply the run-start-resolved per-run LLM-parameter overrides

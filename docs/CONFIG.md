@@ -2725,6 +2725,67 @@ serialization fallback (one `CallTool` per step via
 to `true` (the native-parallel default). Validation: none (both states
 are correct).
 
+### planner.deferred_tool_index.enabled
+
+Renders the ReAct system prompt's `<deferred_tools>` section, right after
+`<available_tools>`: an index, grouped by provider source, of the
+deferred-loading tools the run may load on demand, e.g.
+
+```
+- Sales CRM (12 tools): add_lead_note, add_leads_to_campaign, create_lead, …
+- Docs (agent) (2 tools): read_document, search_documents
+```
+
+Each entry is the tool's provider-local name (without the owner-scoped
+source prefix of its catalog key) when that name is prompt-safe (1–64 of
+`A–Z a–z 0–9 _ - .`) and unique in its source; otherwise the tool's
+sanitised declared name. Source labels are reduced to letters, digits,
+space, `-`, `_` and `.` (at most 64 runes). The model loads a tool by
+calling `tool_search` with `"<source label>/<tool name>"`, which
+`tool_search` and `tool_get` resolve exactly, against the labels exactly as
+rendered, before any ranked search; the declared name is accepted in place
+of the tool name. `tool_get` only describes a tool and echoes its callable
+declared name. Labels shared by several sources are qualified by tier in
+parentheses (`Docs (agent)`, `Docs (personal)`), then by logical source in
+square brackets (`Docs (agent) [wiki]`), then by a short digest; a base
+label can never contain those delimiters, so one source cannot claim
+another's qualified label. The set is the run's own tool view (owner scope,
+exclusions, allowlist, effective loading mode) narrowed by
+`tools.granted_scopes` exactly as `tool_search` narrows it; a collision
+loser is not listed. Sorted by source (stability tier, label) then name. It
+is omitted when the run has no deferred tools or cannot call `tool_search`.
+Pointer-bool: an omitted key resolves to `true`. Validation: none.
+
+Prompt-cache trade-off: the section sits after the cached system spine and
+depends only on the current run view, so it is byte-identical across the
+turns of a run, including after a tool is discovered. It changes on the
+next turn when a deferred source changes — an MCP `list_changed` refresh,
+a connection attaching or detaching, an allowlist, exclusion or
+loading-mode edit — which also changes the prompt bytes after it. There is
+no per-session pinning: a pinned index could name tools the run can no
+longer call, or hide new ones.
+
+### planner.deferred_tool_index.max_tokens_per_source
+
+Budget for one source's `<deferred_tools>` line, in the index's own
+conservative token estimate (hex digests at ~2.5 characters per token,
+digit runs at 3, words at 6; stricter than the request-wide chars/4).
+Default: `0` → driver default of 1600. Measured on a real owner-scoped
+connection, 200 readable names cost ~1,040 estimated tokens (~5.2 per
+name), so 200 fit in full with headroom; the same names as declared
+(hash-shortened, owner-prefixed) names would cost ~3,180 (~15.9 per name),
+which is why the index lists readable names. A source over budget shows its
+first names in sorted order followed by `… and N more; use tool_search`.
+Validation: >= 0.
+
+### planner.deferred_tool_index.max_tokens
+
+Safety budget for the whole `<deferred_tools>` section in the same
+estimate. Default: `0` → driver default of 8000. Over budget, names are
+shared round-robin across sources (each still within its per-source
+budget); a source that does not fit even as a count-only line is folded
+into one trailing summary line. Validation: >= 0.
+
 ### planner.absolute_max_spawn_depth
 
 Caps the `ParentTaskID`-chain depth of planner-spawned background

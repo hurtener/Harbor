@@ -103,6 +103,18 @@ type defaultBuilder struct {
 	// (schemas live in req.Tools[]), so renderTool no longer reads
 	// this field. It will be deleted when step 9 wires the projector.
 	maxToolExamples int
+	// deferredIndexDisabled turns the <deferred_tools> index off. The zero
+	// value keeps it on, so a bare defaultBuilder{} renders it.
+	deferredIndexDisabled bool
+	// deferredIndexMaxTokensPerSource and deferredIndexMaxTokens are the
+	// <deferred_tools> per-source and whole-section budgets; ≤ 0 resolves
+	// to the Default* constants at render time.
+	deferredIndexMaxTokensPerSource int
+	deferredIndexMaxTokens          int
+	// grantedScopes is the operator-granted tool scope list the discovery
+	// meta-tools narrow by; the <deferred_tools> index applies the same
+	// narrowing. Read-only.
+	grantedScopes []string
 }
 
 // Build implements [PromptBuilder].
@@ -139,20 +151,21 @@ func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Co
 // surface loudly as [planner.ErrMemoryBlockUnserializable] from `Next`
 // (fail-loud, never a silently dropped memory tier).
 func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string) (llm.CompleteRequest, error) {
-	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
-	return b.buildRequestWithProjectedTools(rc, systemPrompt, projected)
+	snapshot := newDiscoverySnapshot(rc.Catalog)
+	projected, _, _ := projectModelToolsListedFrom(rc, rc.DiscoveredTools, snapshot)
+	return b.buildRequestWithProjectedTools(rc, systemPrompt, projected, snapshot)
 }
 
 // buildRequestWithProjectedTools renders the default prompt from the same
 // immutable catalog snapshot Next uses for provider declarations and response
 // resolution. The snapshot is per invocation; no state is retained on the
 // compiled builder or planner.
-func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) (llm.CompleteRequest, error) {
+func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool, snapshot *discoverySnapshot) (llm.CompleteRequest, error) {
 	replayFrom, err := rc.Trajectory.ReplayStart()
 	if err != nil {
 		return llm.CompleteRequest{}, err
 	}
-	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, replayFrom)
+	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, snapshot, replayFrom)
 	if err != nil {
 		return llm.CompleteRequest{}, err
 	}
@@ -205,21 +218,22 @@ func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, sy
 //     `<additional_guidance>`. One-run UserPersonalization renders in its own
 //     escaped lower-authority section. Both survive a spine replacement.
 func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
-	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
+	snapshot := newDiscoverySnapshot(rc.Catalog)
+	projected, _, _ := projectModelToolsListedFrom(rc, rc.DiscoveredTools, snapshot)
 	replayFrom, err := rc.Trajectory.ReplayStart()
 	if err != nil {
 		// Build's legacy signature cannot return an error. Do not construct
 		// a sendable prompt from invalid coverage; Next uses the checked path.
 		return llm.CompleteRequest{}
 	}
-	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, replayFrom)
+	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, snapshot, replayFrom)
 	if err != nil {
 		return llm.CompleteRequest{}
 	}
 	return req
 }
 
-func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool, replayFrom int) (llm.CompleteRequest, error) {
+func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool, snapshot *discoverySnapshot, replayFrom int) (llm.CompleteRequest, error) {
 	// userLayer is the durable lower-trust user-instruction layer; it is
 	// suppressed when a session override replaces the whole spine.
 	var userLayer string
@@ -245,7 +259,11 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 	var messages []llm.ChatMessage
 
 	// 1. System block: the twelve XML-tagged sections.
-	sysContent := buildSystemContentWithProjectedTools(systemPrompt, userLayer, b.extraGuidance, b.maxToolExamples, rc, projected)
+	var deferredIndex string
+	if !b.deferredIndexDisabled {
+		deferredIndex = renderDeferredToolIndexFrom(rc, snapshot, b.grantedScopes, b.deferredIndexMaxTokensPerSource, b.deferredIndexMaxTokens)
+	}
+	sysContent := buildSystemContentWithProjectedTools(systemPrompt, userLayer, b.extraGuidance, b.maxToolExamples, rc, projected, deferredIndex)
 	messages = append(messages, llm.ChatMessage{
 		Role:    llm.RoleSystem,
 		Content: textContent(sysContent),
@@ -511,7 +529,8 @@ If you cannot complete the task after reasonable attempts:
 //     the wire form).
 //  7. <error_handling>       — recovery framing; no requires_followup.
 //  8. <available_tools>      — callable-name quick reference
-//     (schemas live in the provider's native Tools[] declaration —).
+//     (schemas live in the provider's native Tools[] declaration —),
+//     followed by the optional <deferred_tools> on-demand index.
 //  9. <additional_guidance>  — operator-supplied content + the
 //     per-turn repair guidance. OMITTED only when BOTH are empty.
 //  10. <planning_constraints> — runtime-supplied PlanningHints.
@@ -540,7 +559,7 @@ If you cannot complete the task after reasonable attempts:
 // section composed BELOW the operator base sections — it can extend the
 // operator's guidance but the framing subordinates it to the base
 // guardrails. Empty → the section is omitted entirely.
-func buildSystemContentWithProjectedTools(systemPrompt, userLayer, extraGuidance string, maxToolExamples int, rc planner.RunContext, projected []tools.Tool) string {
+func buildSystemContentWithProjectedTools(systemPrompt, userLayer, extraGuidance string, maxToolExamples int, rc planner.RunContext, projected []tools.Tool, deferredIndex string) string {
 	// When the operator overrode the prompt via WithSystemPrompt with a
 	// non-default string, honour the override verbatim as the leading
 	// content — the structured sections ARE the default; an explicit
@@ -568,6 +587,16 @@ func buildSystemContentWithProjectedTools(systemPrompt, userLayer, extraGuidance
 	// is threaded from the builder so each tool's curated examples are
 	// bounded; the builder value carries the resolved knob.
 	sections = append(sections, renderProjectedToolsSection(projected, maxToolExamples))
+
+	// Section: <deferred_tools> — the bounded per-source index of tools the
+	// run may load on demand (see renderDeferredToolIndex). It follows
+	// <available_tools>, outside the cached system spine, so a user's
+	// lazily attached deferred connection never changes the spine digest;
+	// it depends only on the run view, so it is byte-stable across the
+	// turns of a run. Omitted when empty or disabled.
+	if deferredIndex != "" {
+		sections = append(sections, deferredIndex)
+	}
 
 	// Section: <user_instructions> — the durable user prompt layer (the
 	// layered system prompt's optional higher layer). It composes BELOW the
