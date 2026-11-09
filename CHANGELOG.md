@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.42.0] — 2026-11-09
+
 ### Added
 
 - **Deferred tool index in the planner prompt.** When a run has
