@@ -17,6 +17,7 @@ func TestMarkNotFound_DownstreamTypedClassification(t *testing.T) {
 	}{
 		{"unauthorized", fmt.Errorf("%w: %w", mcp.ErrTransportFailed, mcp.ErrDownstreamUnauthorized), protocol.ErrAccessorDownstreamUnauthorized},
 		{"transport", mcp.ErrTransportFailed, protocol.ErrAccessorDownstreamTransportFailed},
+		{"identity before transport", fmt.Errorf("%w: %w", mcp.ErrTransportFailed, mcp.ErrIdentityMissing), protocol.ErrAccessorIdentityRequired},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wrapped := fmt.Errorf("https://private.invalid/mcp?token=fixture-secret body: identity missing from ctx server not found: %w", tc.err)
@@ -29,6 +30,9 @@ func TestMarkNotFound_DownstreamTypedClassification(t *testing.T) {
 			}
 			if tc.want == protocol.ErrAccessorDownstreamUnauthorized && errors.Is(got, protocol.ErrAccessorDownstreamTransportFailed) {
 				t.Fatalf("unauthorized lost precedence: %v", got)
+			}
+			if tc.want == protocol.ErrAccessorIdentityRequired && errors.Is(got, protocol.ErrAccessorDownstreamTransportFailed) {
+				t.Fatalf("identity lost precedence: %v", got)
 			}
 		})
 	}

@@ -139,6 +139,8 @@ func buildHTTPClient(cfg Config) *http.Client {
 			transport.preparationInjection = cfg.Injection
 			transport.source = tools.ToolSourceID(cfg.Name)
 			transport.connection = cfg.Name
+			transport.onChallenge = cfg.OnAuthChallenge
+			transport.onScopeShortfall = cfg.OnScopeShortfall
 		}
 		rt = transport
 	}
@@ -223,7 +225,7 @@ func buildHTTPClient(cfg Config) *http.Client {
 var ErrRedirectToUnlistedHost = errors.New("mcp: redirect target host is not in the bound provider's allowed_downstream_hosts")
 
 func refuseEveryCredentialRedirect(req *http.Request, _ []*http.Request) error {
-	return fmt.Errorf("%w: signed credential binding refuses redirect to %q", ErrRedirectToUnlistedHost, req.URL.String())
+	return fmt.Errorf("%w: signed credential binding refuses redirect to %q", ErrRedirectToUnlistedHost, requestOrigin(req))
 }
 
 // redirectGuardFor builds an http.Client CheckRedirect that refuses any
@@ -357,6 +359,8 @@ type injectedHeaderTransport struct {
 	preparationInjection *CredentialInjection
 	source               tools.ToolSourceID
 	connection           string
+	onChallenge          func(AuthChallenge)
+	onScopeShortfall     func(ScopeShortfall)
 }
 
 // RoundTrip implements http.RoundTripper.
@@ -397,6 +401,9 @@ func (t *injectedHeaderTransport) RoundTrip(req *http.Request) (*http.Response, 
 		(resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden) {
 		return resp, err
 	}
+	// Signed preparation converts the response to a typed refusal. Capture its
+	// challenge here, before the outer observer loses access to the response.
+	recordAuthChallenge(resp, req, time.Now(), t.onChallenge, t.onScopeShortfall)
 	// A receiver refusal rejects this request, not the MCP session. Returning
 	// it through client.Do lets the SDK wrap ErrRejected rather than caching
 	// its generic HTTP status error as a permanent connection failure. Never

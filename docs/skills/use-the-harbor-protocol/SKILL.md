@@ -995,11 +995,14 @@ bindings with `authenticate_preparation` enabled and injected header or Basic
 credentials, an MCP server's HTTP 401 or 403 does not terminate Harbor's shared
 streamable HTTP session. A later call resolves its own credential again. A call
 retries once through a replacement session only when the SDK confirms that a
-closed or missing session rejected it before dispatch; other transport errors
-do not trigger this recovery. Harbor never silently falls back to an
+closed connection rejected it before dispatch. A missing session is repaired
+for later calls without replaying a tool call, since an in-flight call may
+already have executed; only read-only operations may replay once. Other
+transport errors do not trigger this recovery. Harbor never silently falls back to an
 unauthenticated request. At the MCP Protocol edge,
-`downstream_mcp_unauthorized` and `downstream_mcp_transport_failed` both use
-HTTP 502 with fixed summaries that exclude upstream endpoints, response
+`downstream_mcp_unauthorized` uses HTTP 424 (Failed Dependency), requiring
+credential intervention, while `downstream_mcp_transport_failed` uses HTTP
+502. Both have fixed summaries that exclude upstream endpoints, response
 bodies, headers and credentials. They identify downstream failures, so do not
 refresh the Harbor connection JWT or mark the Runtime disconnected because of
 these codes. Resolve a credential refusal before retrying; back off for an

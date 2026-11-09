@@ -511,7 +511,7 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodePayloadInvalid:                      http.StatusUnprocessableEntity,
 	protoerrors.CodeUnknownMethod:                       http.StatusNotFound,
 	protoerrors.CodeNotFound:                            http.StatusNotFound,
-	protoerrors.CodeDownstreamMCPUnauthorized:           http.StatusBadGateway,
+	protoerrors.CodeDownstreamMCPUnauthorized:           http.StatusFailedDependency,
 	protoerrors.CodeDownstreamMCPTransportFailed:        http.StatusBadGateway,
 	protoerrors.CodeRuntimeError:                        http.StatusInternalServerError,
 	protoerrors.CodeAuthRejected:                        http.StatusUnauthorized,

@@ -21,7 +21,7 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 		protoerrors.CodeRestartUnavailable:           http.StatusConflict,
 		protoerrors.CodeRetainedContextUnsettled:     http.StatusConflict,
 		protoerrors.CodeRetainedContextUnavailable:   http.StatusConflict,
-		protoerrors.CodeDownstreamMCPUnauthorized:    http.StatusBadGateway,
+		protoerrors.CodeDownstreamMCPUnauthorized:    http.StatusFailedDependency,
 		protoerrors.CodeDownstreamMCPTransportFailed: http.StatusBadGateway,
 		protoerrors.CodeRuntimeError:                 http.StatusInternalServerError,
 		protoerrors.CodeAuthRejected:                 http.StatusUnauthorized,

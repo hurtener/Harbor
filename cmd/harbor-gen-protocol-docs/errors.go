@@ -30,7 +30,7 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		Retry: "Resolve the downstream credential refusal before retrying; do not refresh the Harbor connection token for this code.",
 	},
 	protoerrors.CodeDownstreamMCPTransportFailed: {
-		When:  "The downstream MCP transport failed. A missing or closed session rejected before dispatch may receive one bounded recovery attempt; other transport errors return directly. The message excludes upstream transport details.",
+		When:  "The downstream MCP transport failed. A closed connection rejected before dispatch may receive one bounded recovery attempt. A missing session is reconnected for later calls, but only read-only operations may replay once; tool calls return the error without replay. The message excludes upstream transport details.",
 		Retry: "Retry with backoff after the MCP server becomes available. Never infer that a side-effecting call is safe to replay from this code alone.",
 	},
 	protoerrors.CodeInvalidRequest: {

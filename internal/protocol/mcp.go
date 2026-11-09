@@ -1130,6 +1130,10 @@ var ErrAccessorDownstreamUnauthorized = stderrors.New("protocol: downstream MCP 
 // by the runtime accessor, without exposing driver types to the Protocol.
 var ErrAccessorDownstreamTransportFailed = stderrors.New("protocol: downstream MCP transport failed")
 
+// ErrAccessorIdentityRequired marks a local MCP identity failure translated
+// by the runtime accessor. It takes precedence over transport wrappers.
+var ErrAccessorIdentityRequired = stderrors.New("protocol: MCP identity required")
+
 // mapMCPError translates an accessor error onto a canonical Protocol
 // error code. The mapping closes the wire surface — every error shape is
 // observable as a Code (CLAUDE.md §13).
@@ -1137,17 +1141,20 @@ func mapMCPError(method string, err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case stderrors.Is(err, ErrAccessorIdentityRequired):
+		return protoerrors.New(protoerrors.CodeIdentityRequired,
+			"MCP request requires a complete identity")
 	case stderrors.Is(err, ErrAccessorDownstreamUnauthorized):
 		return protoerrors.New(protoerrors.CodeDownstreamMCPUnauthorized,
 			"downstream MCP server rejected its credential")
 	case stderrors.Is(err, ErrAccessorDownstreamTransportFailed):
 		return protoerrors.New(protoerrors.CodeDownstreamMCPTransportFailed,
 			"downstream MCP transport failed")
+	case isMCPIdentityMissing(err):
+		return protoerrors.New(protoerrors.CodeIdentityRequired,
+			"MCP request requires a complete identity")
 	case isMCPNotFound(err):
 		return protoerrors.Newf(protoerrors.CodeNotFound,
-			"method %q: %v", method, err)
-	case isMCPIdentityMissing(err):
-		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
 			"method %q: %v", method, err)
 	case isAppToolExposureDenied(err):
 		return protoerrors.Newf(protoerrors.CodeScopeMismatch,

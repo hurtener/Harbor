@@ -486,6 +486,7 @@ func TestMCPSurface_Get_DownstreamFailureSafeSummary(t *testing.T) {
 	}{
 		{"unauthorized", protocol.ErrAccessorDownstreamUnauthorized, protoerrors.CodeDownstreamMCPUnauthorized, "downstream MCP server rejected its credential"},
 		{"transport", protocol.ErrAccessorDownstreamTransportFailed, protoerrors.CodeDownstreamMCPTransportFailed, "downstream MCP transport failed"},
+		{"identity", fmt.Errorf("%w: %w", protocol.ErrAccessorDownstreamTransportFailed, protocol.ErrAccessorIdentityRequired), protoerrors.CodeIdentityRequired, "MCP request requires a complete identity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			accessor := &stubMCP{}

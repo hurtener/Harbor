@@ -50,9 +50,13 @@ import (
 // by text.
 //
 // Also translates typed downstream failures before any Protocol text markers
-// can inspect their unsafe upstream details. Unauthorized takes precedence
-// because it may also wrap ErrTransportFailed. Other errors pass unchanged.
+// can inspect their unsafe upstream details. Identity takes precedence over
+// transport and unauthorized because it can fail before any HTTP request.
+// Other errors pass unchanged.
 func markNotFound(err error) error {
+	if errors.Is(err, mcp.ErrIdentityMissing) {
+		return fmt.Errorf("%w: %w", protocol.ErrAccessorIdentityRequired, err)
+	}
 	if errors.Is(err, mcp.ErrDownstreamUnauthorized) {
 		return fmt.Errorf("%w: %w", protocol.ErrAccessorDownstreamUnauthorized, err)
 	}

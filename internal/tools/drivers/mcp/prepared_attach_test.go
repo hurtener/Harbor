@@ -86,6 +86,9 @@ func preparedFixture(t *testing.T, name string, cat tools.ToolCatalog, reg *Regi
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
+	// Prepared sessions own their transport lifetime, including the SSE
+	// stream, so every fixture must close before its HTTP server shuts down.
+	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
 	return prepared
 }
 

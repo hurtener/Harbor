@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ type recoveryServer struct {
 	credential        string
 	initializeGate    <-chan struct{}
 	initializeEntered chan<- struct{}
+	rejectEntered     chan<- struct{}
 }
 
 func (s *recoveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +66,7 @@ func (s *recoveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	credential := s.credential
 	gate, entered := s.initializeGate, s.initializeEntered
+	rejectEntered := s.rejectEntered
 	s.mu.Unlock()
 	if method == "initialize" && gate != nil {
 		if entered != nil {
@@ -80,6 +83,9 @@ func (s *recoveryServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if reject {
+		if rejectEntered != nil {
+			rejectEntered <- struct{}{}
+		}
 		http.Error(w, "refused", status)
 		return
 	}
@@ -98,10 +104,14 @@ func (s *recoveryServer) refuse(method string, status, remaining int) {
 }
 
 func newRecoveryProvider(t *testing.T) (*Provider, *recoveryServer, context.Context) {
+	return newRecoveryProviderMode(t, true)
+}
+
+func newRecoveryProviderMode(t *testing.T, jsonResponse bool) (*Provider, *recoveryServer, context.Context) {
 	t.Helper()
 	mock := newMockServer()
 	newHandler := func() http.Handler {
-		return mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mock.server }, &mcpsdk.StreamableHTTPOptions{JSONResponse: true})
+		return mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mock.server }, &mcpsdk.StreamableHTTPOptions{JSONResponse: jsonResponse})
 	}
 	front := &recoveryServer{sdkServer: mock.server, inner: newHandler(), counts: make(map[string]int), credential: "cred-tenant-user"}
 	server := httptest.NewServer(front)
@@ -214,6 +224,10 @@ func TestMCPSession_RestartRecoversEverySurface(t *testing.T) {
 				_, err = p.Discover(ctx)
 			case "tool":
 				_, err = findByName(descriptors, "receiver_echo").Invoke(ctx, json.RawMessage(`{"text":"hello"}`))
+				if !errors.Is(err, mcpsdk.ErrSessionMissing) {
+					t.Fatalf("first tool call after restart = %v, want expired session", err)
+				}
+				_, err = findByName(descriptors, "receiver_echo").Invoke(ctx, json.RawMessage(`{"text":"hello"}`))
 			case "resource":
 				_, err = p.ReadResourceWithMetadata(ctx, "mem://hello")
 			case "resource descriptor":
@@ -258,6 +272,124 @@ func TestMCPSession_ClosedAndPermanentlyFailedRecover(t *testing.T) {
 				t.Fatal("session did not reconnect exactly once")
 			}
 		})
+	}
+}
+
+func TestMCPSession_RealSSETool404RecoversWithoutReplay(t *testing.T) {
+	p, server, ctx := newRecoveryProviderMode(t, false)
+	descriptors, err := p.Discover(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo := findByName(descriptors, "receiver_echo")
+	if echo == nil {
+		t.Fatal("echo missing")
+	}
+	server.refuse("tools/call", http.StatusNotFound, 1)
+	_, err = echo.Invoke(ctx, json.RawMessage(`{"text":"hello"}`))
+	if !errors.Is(err, mcpsdk.ErrSessionMissing) {
+		t.Fatalf("first tool call = %v, want missing session", err)
+	}
+	if got := server.count("tools/call"); got != 1 {
+		t.Fatalf("tools/call = %d, want one wire request", got)
+	}
+	if got := server.count("initialize"); got != 2 {
+		t.Fatalf("initialize = %d, want replacement session", got)
+	}
+	if _, err := echo.Invoke(ctx, json.RawMessage(`{"text":"hello"}`)); err != nil {
+		t.Fatalf("next invocation: %v", err)
+	}
+	if got := server.count("tools/call"); got != 2 {
+		t.Fatalf("tools/call = %d, want exactly one request per invocation", got)
+	}
+}
+
+func TestMCPSession_ConcurrentRealSSETool404DoesNotReplay(t *testing.T) {
+	p, server, ctx := newRecoveryProviderMode(t, false)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseTool := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseTool()
+	var executions atomic.Int64
+	mcpsdk.AddTool(server.sdkServer, &mcpsdk.Tool{
+		Name:        "blocked",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
+	}, func(handlerCtx context.Context, _ *mcpsdk.CallToolRequest, _ any) (*mcpsdk.CallToolResult, any, error) {
+		executions.Add(1)
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-handlerCtx.Done():
+			return nil, nil, handlerCtx.Err()
+		}
+		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "done"}}}, nil, nil
+	})
+	descriptors, err := p.Discover(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := findByName(descriptors, "receiver_blocked")
+	if blocked == nil {
+		t.Fatal("blocked tool missing")
+	}
+	original, _ := p.sessionForRead()
+	toolResult := make(chan error, 1)
+	go func() {
+		_, err := blocked.Invoke(ctx, json.RawMessage(`{}`))
+		toolResult <- err
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("tool handler did not start")
+	}
+	listRejected := make(chan struct{}, 1)
+	server.mu.Lock()
+	server.rejectMethod, server.rejectStatus, server.rejectRemaining = "tools/list", http.StatusNotFound, 1
+	server.rejectEntered = listRejected
+	server.mu.Unlock()
+	discoverResult := make(chan error, 1)
+	go func() { _, err := p.Discover(ctx); discoverResult <- err }()
+	select {
+	case <-listRejected:
+	case <-ctx.Done():
+		t.Fatal("concurrent list did not receive 404")
+	}
+	// The middleware signal precedes SDK processing. Wait until the 404 has
+	// actually started replacement, then let the in-flight handler finish.
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		p.mu.RLock()
+		flight, current := p.connectionFlight, p.session
+		p.mu.RUnlock()
+		if flight != nil || current != original {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("concurrent 404 did not begin session replacement")
+		}
+	}
+	releaseTool()
+	select {
+	case err := <-toolResult:
+		if !errors.Is(err, mcpsdk.ErrSessionMissing) || tools.ClassifyError(err, false) != tools.ErrClassPermanent {
+			t.Fatalf("in-flight tool error = %v, want permanent missing session", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("in-flight tool did not retire after concurrent 404")
+	}
+	if err := <-discoverResult; err != nil {
+		t.Fatalf("concurrent discovery recovery: %v", err)
+	}
+	if got := server.count("tools/call"); got != 1 {
+		t.Fatalf("tools/call = %d, want one wire request for in-flight tool", got)
+	}
+	if got := executions.Load(); got != 1 {
+		t.Fatalf("tool executions = %d, want 1", got)
 	}
 }
 
@@ -350,7 +482,7 @@ func TestMCPSession_ConcurrentFailedRecoverySharesAttempt(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := callSession(ctx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ListToolsResult, error) {
+			_, err := callSession(ctx, p, true, func(session *mcpsdk.ClientSession) (*mcpsdk.ListToolsResult, error) {
 				if session == original {
 					ready <- struct{}{}
 					<-release
@@ -501,6 +633,72 @@ func TestMCPSession_StalledInitializeWaiterCancelsIndependently(t *testing.T) {
 				t.Fatalf("initialize = %d, want 2", server.count("initialize"))
 			}
 		})
+	}
+}
+
+func TestMCPSession_StalledReconnectLeaderCancellationDoesNotCancelFollower(t *testing.T) {
+	p, server, ctx := newRecoveryProvider(t)
+	failed, _ := p.sessionForRead()
+	if err := failed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := stallInitialize(server)
+	defer release()
+	leaderCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	leader := make(chan error, 1)
+	go func() { _, err := p.Discover(leaderCtx); leader <- err }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("initialize did not stall")
+	}
+	follower := make(chan error, 1)
+	go func() { _, err := p.Discover(ctx); follower <- err }()
+	select {
+	case err := <-leader:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("leader = %v, want its own deadline", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("leader did not honor its deadline")
+	}
+	release()
+	select {
+	case err := <-follower:
+		if err != nil {
+			t.Fatalf("follower after leader cancellation: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("follower did not use the shared reconnect")
+	}
+	if got := server.count("initialize"); got != 2 {
+		t.Fatalf("initialize = %d, want one replacement", got)
+	}
+}
+
+func TestMCPSession_ReconnectRestoresResourceSubscription(t *testing.T) {
+	p, server, ctx := newRecoveryProvider(t)
+	if err := p.SubscribeResource(ctx, "mem://hello"); err != nil {
+		t.Fatal(err)
+	}
+	if got := server.count("resources/subscribe"); got != 1 {
+		t.Fatalf("subscriptions before restart = %d, want 1", got)
+	}
+	mock := newMockServer()
+	t.Cleanup(func() {
+		for session := range mock.server.Sessions() {
+			_ = session.Close()
+		}
+	})
+	server.mu.Lock()
+	server.inner = mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mock.server }, &mcpsdk.StreamableHTTPOptions{JSONResponse: true})
+	server.mu.Unlock()
+	if _, err := p.Discover(ctx); err != nil {
+		t.Fatalf("discovery after restart: %v", err)
+	}
+	if got := server.count("resources/subscribe"); got != 2 {
+		t.Fatalf("subscriptions after reconnect = %d, want 2", got)
 	}
 }
 

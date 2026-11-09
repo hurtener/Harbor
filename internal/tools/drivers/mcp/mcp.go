@@ -34,8 +34,8 @@ var (
 	// unknown transport mode, etc.
 	ErrInvalidConfig = errors.New("mcp: invalid config")
 	// ErrTransportFailed — every candidate transport failed at
-	// Connect time. The wrapped causes preserve the per-transport
-	// failure messages.
+	// Connect time. The wrapped causes preserve typed identity and refusal
+	// verdicts while suppressing downstream endpoint text.
 	ErrTransportFailed = errors.New("mcp: transport failed")
 	// ErrNotConnected — Discover / Invoke / SubscribeResource called
 	// before Connect (or after Close).
@@ -406,7 +406,7 @@ func (c Config) validate() error {
 			return fmt.Errorf("%w: %s transport requires URL", ErrInvalidConfig, mode)
 		}
 		if _, err := config.NormalizeMCPHTTPURL(c.URL); err != nil {
-			return fmt.Errorf("%w: %s transport URL: %w", ErrInvalidConfig, mode, err)
+			return fmt.Errorf("%w: %s transport URL is invalid", ErrInvalidConfig, mode)
 		}
 	case TransportStdio:
 		if len(c.Command) == 0 {
@@ -421,7 +421,7 @@ func (c Config) validate() error {
 		}
 		if c.URL != "" {
 			if _, err := config.NormalizeMCPHTTPURL(c.URL); err != nil {
-				return fmt.Errorf("%w: auto transport URL: %w", ErrInvalidConfig, err)
+				return fmt.Errorf("%w: auto transport URL is invalid", ErrInvalidConfig)
 			}
 		}
 	}
@@ -543,6 +543,13 @@ type Provider struct {
 	reconnectErr        error
 	connectionFlight    *sessionFlight
 	sessionCancel       context.CancelFunc
+	// sessionBase carries only attach-time identity and preparation authority.
+	// It is immutable after the first Connect and protected by mu.
+	sessionBase context.Context
+	// Subscriptions belong to the provider's active MCP session and must be
+	// re-established when an expired session is replaced.
+	subscriptionMu sync.Mutex
+	subscriptions  map[subscriptionKey]context.Context
 	// closeMu serializes teardown retries. closed blocks new dispatch as soon as
 	// teardown begins; session and provider-close receipts are independent
 	// positive receipts. A failed Close keeps the outstanding handle so the
@@ -645,7 +652,7 @@ func New(cfg Config) (*Provider, error) {
 	// notification handlers attached at New time survive the
 	// re-Connect cycle a ToolPolicy retry might trigger.
 	clientOpts := &mcpsdk.ClientOptions{
-		Logger:                 cfg.Logger,
+		Logger:                 safeSDKLogger(cfg.Logger),
 		KeepAlive:              cfg.KeepAlive,
 		ResourceUpdatedHandler: p.onResourceUpdated,
 	}
@@ -740,6 +747,9 @@ func (p *Provider) SelectedMode() MCPTransportMode {
 // transport-Connect and the MCP initialize handshake), it retries
 // with SSE.
 func (p *Provider) Connect(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -754,11 +764,14 @@ func (p *Provider) Connect(ctx context.Context) error {
 		_, err := awaitSession(ctx, flight)
 		return err
 	}
-	connectCtx, cancel := context.WithCancel(ctx)
-	flight := &sessionFlight{done: make(chan struct{}), cancel: cancel}
+	if p.sessionBase == nil {
+		p.sessionBase = preparationBase(ctx)
+	}
+	flight, connectCtx := newSessionFlight(p.sessionBase, nil)
 	p.connectionFlight = flight
 	p.mu.Unlock()
-	_, err := p.completeConnection(connectCtx, flight, nil)
+	go p.completeConnection(connectCtx, flight, nil)
+	_, err := awaitSession(ctx, flight)
 	return err
 }
 
@@ -785,7 +798,7 @@ func (p *Provider) establishSession(ctx context.Context) (*mcpsdk.ClientSession,
 		classifyConnectError(firstErr) &&
 		(p.cfg.Injection == nil || !p.cfg.Injection.AuthenticatePreparation || p.cfg.Injection.Form != InjectionFormMeta)
 	if !autoFallback {
-		return nil, "", fmt.Errorf("%w: %w", ErrTransportFailed, firstErr)
+		return nil, "", fmt.Errorf("%w: %w", ErrTransportFailed, safeDownstreamCause(firstErr))
 	}
 
 	sseTransport := newSSETransport(p.cfg)
@@ -796,11 +809,11 @@ func (p *Provider) establishSession(ctx context.Context) (*mcpsdk.ClientSession,
 	session, sseErr := p.client.Connect(fallbackCtx, sseTransport, nil)
 	if sseErr != nil {
 		return nil, "", fmt.Errorf("%w: streamable-http failed (%w); sse failed (%w)",
-			ErrTransportFailed, firstErr, sseErr)
+			ErrTransportFailed, safeDownstreamCause(firstErr), safeDownstreamCause(sseErr))
 	}
 	p.logger.Info("mcp: auto-fallback streamable-http -> sse",
 		slog.String("source", string(p.source)),
-		slog.String("primary_error", firstErr.Error()),
+		slog.String("primary_error", safeDownstreamCause(firstErr).Error()),
 	)
 	return session, TransportSSE, nil
 }
@@ -832,11 +845,11 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: resolve bearer before tools discovery: %w", err)
 	}
-	toolsRes, err := callSession(toolsCtx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ListToolsResult, error) {
+	toolsRes, err := callSession(toolsCtx, p, true, func(session *mcpsdk.ClientSession) (*mcpsdk.ListToolsResult, error) {
 		return session.ListTools(toolsCtx, nil)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: list tools: %w", ErrTransportFailed, err)
+		return nil, fmt.Errorf("%w: list tools: %w", ErrTransportFailed, safeDownstreamCause(err))
 	}
 
 	// Capacity is seeded from the tool count; resources/prompts append
@@ -877,11 +890,11 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: resolve bearer before resources discovery: %w", err)
 	}
-	resRes, err := callSession(resourcesCtx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ListResourcesResult, error) {
+	resRes, err := callSession(resourcesCtx, p, true, func(session *mcpsdk.ClientSession) (*mcpsdk.ListResourcesResult, error) {
 		return session.ListResources(resourcesCtx, nil)
 	})
 	if err != nil && !isJSONRPCMethodNotFound(err) {
-		return nil, fmt.Errorf("%w: list resources: %w", ErrTransportFailed, err)
+		return nil, fmt.Errorf("%w: list resources: %w", ErrTransportFailed, safeDownstreamCause(err))
 	}
 	if err == nil && resRes != nil {
 		for _, r := range resRes.Resources {
@@ -900,11 +913,11 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: resolve bearer before prompts discovery: %w", err)
 	}
-	prRes, err := callSession(promptsCtx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ListPromptsResult, error) {
+	prRes, err := callSession(promptsCtx, p, true, func(session *mcpsdk.ClientSession) (*mcpsdk.ListPromptsResult, error) {
 		return session.ListPrompts(promptsCtx, nil)
 	})
 	if err != nil && !isJSONRPCMethodNotFound(err) {
-		return nil, fmt.Errorf("%w: list prompts: %w", ErrTransportFailed, err)
+		return nil, fmt.Errorf("%w: list prompts: %w", ErrTransportFailed, safeDownstreamCause(err))
 	}
 	if err == nil && prRes != nil {
 		for _, pr := range prRes.Prompts {
@@ -1393,7 +1406,7 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 			return tools.ToolResult{}, err
 		}
 	}
-	res, err := callSession(ctx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.CallToolResult, error) {
+	res, err := callSession(ctx, p, false, func(session *mcpsdk.ClientSession) (*mcpsdk.CallToolResult, error) {
 		return session.CallTool(ctx, params)
 	})
 	if err != nil {
@@ -1422,7 +1435,11 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 				Origin:             sf.Origin,
 			}
 		}
-		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
+		if errors.Is(err, mcpsdk.ErrSessionMissing) {
+			return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name,
+				ambiguousToolCall{cause: err})
+		}
+		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, safeDownstreamCause(err))
 	}
 	value, lowerErr := lowerCallToolResult(res)
 	// Materialize typed MCP binary parts before either planner observation or
@@ -1639,11 +1656,11 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 						return tools.ToolResult{}, err
 					}
 				}
-				res, err := callSession(ctx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ReadResourceResult, error) {
+				res, err := callSession(ctx, p, true, func(session *mcpsdk.ClientSession) (*mcpsdk.ReadResourceResult, error) {
 					return session.ReadResource(ctx, params)
 				})
 				if err != nil {
-					return tools.ToolResult{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, err)
+					return tools.ToolResult{}, fmt.Errorf("%w: read resource: %w", ErrTransportFailed, safeDownstreamCause(err))
 				}
 				value, materializeErr := p.materializeValue(ctx, lowerReadResourceResult(res), p.contentProducer("resource", uri))
 				if materializeErr != nil {
@@ -1701,11 +1718,11 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 					return tools.ToolResult{}, mErr
 				}
 				params.Meta = meta
-				res, err := callSession(ctx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.GetPromptResult, error) {
+				res, err := callSession(ctx, p, true, func(session *mcpsdk.ClientSession) (*mcpsdk.GetPromptResult, error) {
 					return session.GetPrompt(ctx, params)
 				})
 				if err != nil {
-					return tools.ToolResult{}, fmt.Errorf("%w: get prompt %q: %w", ErrTransportFailed, name, err)
+					return tools.ToolResult{}, fmt.Errorf("%w: get prompt %q: %w", ErrTransportFailed, name, safeDownstreamCause(err))
 				}
 				value, materializeErr := p.materializeValue(ctx, lowerGetPromptResult(res), p.contentProducer("prompt", name))
 				if materializeErr != nil {
@@ -1770,18 +1787,18 @@ func (p *Provider) ReadResourceWithMetadata(ctx context.Context, uri string) (Re
 			return ResourceRead{}, err
 		}
 	}
-	res, rErr := callSession(ctx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ReadResourceResult, error) {
+	res, rErr := callSession(ctx, p, true, func(session *mcpsdk.ClientSession) (*mcpsdk.ReadResourceResult, error) {
 		return session.ReadResource(ctx, params)
 	})
 	if rErr != nil {
-		return ResourceRead{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, rErr)
+		return ResourceRead{}, fmt.Errorf("%w: read resource: %w", ErrTransportFailed, safeDownstreamCause(rErr))
 	}
 	if res == nil || len(res.Contents) == 0 {
-		return ResourceRead{}, fmt.Errorf("%w: resource %q returned no content", ErrTransportFailed, uri)
+		return ResourceRead{}, fmt.Errorf("%w: resource returned no content", ErrTransportFailed)
 	}
 	rc := res.Contents[0]
 	if rc == nil {
-		return ResourceRead{}, fmt.Errorf("%w: resource %q returned a nil content item", ErrTransportFailed, uri)
+		return ResourceRead{}, fmt.Errorf("%w: resource returned a nil content item", ErrTransportFailed)
 	}
 	out := ResourceRead{MIMEType: rc.MIMEType}
 	if IsUIResourceURI(uri) {
@@ -1854,6 +1871,8 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 	if mErr != nil {
 		return mErr
 	}
+	subscriptionBase := preparationBase(ctx)
+	subscriber, _ := identity.From(ctx)
 	// Per-entry binding: the resource URI is the addressing key so a per-tool
 	// override declared for this resource resolves its bearer (connection-level
 	// fallback when unbound).
@@ -1862,12 +1881,32 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 		return mErr
 	}
 	params.Meta = meta
-	if _, err := callSession(ctx, p, func(session *mcpsdk.ClientSession) (struct{}, error) {
-		return struct{}{}, session.Subscribe(ctx, params)
-	}); err != nil {
-		return fmt.Errorf("%w: subscribe %q: %w", ErrTransportFailed, uri, err)
+	for {
+		var used *mcpsdk.ClientSession
+		if _, err := callSession(ctx, p, true, func(session *mcpsdk.ClientSession) (struct{}, error) {
+			used = session
+			return struct{}{}, session.Subscribe(ctx, params)
+		}); err != nil {
+			return fmt.Errorf("%w: subscribe resource: %w", ErrTransportFailed, safeDownstreamCause(err))
+		}
+		p.subscriptionMu.Lock()
+		current, currentErr := p.sessionForRead()
+		if currentErr == nil && used == current {
+			if p.subscriptions == nil {
+				p.subscriptions = make(map[subscriptionKey]context.Context)
+			}
+			p.subscriptions[subscriptionKey{uri: uri, identity: subscriber}] = subscriptionBase
+			p.subscriptionMu.Unlock()
+			return nil
+		}
+		p.subscriptionMu.Unlock()
+		if currentErr != nil {
+			return currentErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
-	return nil
 }
 
 // onResourceUpdated is the SDK handler for incoming
@@ -1980,6 +2019,9 @@ func (p *Provider) Close(ctx context.Context) error {
 			p.mu.Unlock()
 		}
 	}
+	p.subscriptionMu.Lock()
+	p.subscriptions = nil
+	p.subscriptionMu.Unlock()
 	return errors.Join(errs...)
 }
 

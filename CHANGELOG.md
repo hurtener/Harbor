@@ -22,11 +22,14 @@ Two versions move independently in Harbor (RFC §5.3):
 - **Signed receiver MCP sessions survive downstream HTTP 401/403.** For
   receiver bindings with preparation authentication and injected header or
   Basic credentials, a refusal no longer terminates the shared streamable
-  HTTP session. A call retries once through a replacement session only when
-  the SDK confirms a closed or missing session rejected it before dispatch.
+  HTTP session. A tool call retries once through a replacement session only
+  when the SDK confirms a closed connection rejected it before dispatch.
+  A missing session is repaired for later calls without replaying a tool call;
+  read-only operations may replay once.
   Downstream credential refusals and transport failures return distinct safe Protocol codes
-  (`downstream_mcp_unauthorized` and `downstream_mcp_transport_failed`, HTTP
-  502), without exposing upstream endpoints, response bodies or credentials.
+  (`downstream_mcp_unauthorized`, HTTP 424, and
+  `downstream_mcp_transport_failed`, HTTP 502), without exposing upstream
+  endpoints, response bodies or credentials.
 
 ## [1.42.0] — 2026-11-09
 
