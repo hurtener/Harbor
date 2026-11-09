@@ -392,8 +392,43 @@ func (t *injectedHeaderTransport) RoundTrip(req *http.Request) (*http.Response, 
 	for k, v := range headers {
 		clone.Header.Set(k, v)
 	}
-	return t.base.RoundTrip(clone)
+	resp, err := t.base.RoundTrip(clone)
+	if err != nil || resp == nil || t.preparationInjection == nil ||
+		(resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden) {
+		return resp, err
+	}
+	// A receiver refusal rejects this request, not the MCP session. Returning
+	// it through client.Do lets the SDK wrap ErrRejected rather than caching
+	// its generic HTTP status error as a permanent connection failure. Never
+	// retain response text: it may contain credential material.
+	if resp.Body != nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	return nil, &DownstreamUnauthorizedError{StatusCode: resp.StatusCode}
 }
+
+// ErrDownstreamUnauthorized marks a signed receiver's downstream HTTP 401/403.
+// It does not imply an OAuth requirement or invalidate the MCP session.
+var ErrDownstreamUnauthorized = errors.New("mcp: downstream authorization refused")
+
+// DownstreamUnauthorizedError retains the receiver refusal's HTTP status while
+// wrapping ErrDownstreamUnauthorized. It never retains the response body.
+type DownstreamUnauthorizedError struct {
+	StatusCode int
+}
+
+// Error implements error without exposing downstream response text.
+func (e *DownstreamUnauthorizedError) Error() string {
+	return fmt.Sprintf("%s (HTTP %d)", ErrDownstreamUnauthorized, e.StatusCode)
+}
+
+// Unwrap supports errors.Is with ErrDownstreamUnauthorized.
+func (e *DownstreamUnauthorizedError) Unwrap() error { return ErrDownstreamUnauthorized }
+
+// Permanent stops the tool policy shell from transparently retrying a refused
+// credential. The caller receives the refusal and may make a fresh call later.
+func (e *DownstreamUnauthorizedError) Permanent() bool { return true }
 
 // headerInjectingTransport wraps an http.RoundTripper to add static
 // headers to every outbound request. Used to surface operator-

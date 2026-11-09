@@ -25,6 +25,14 @@ type errorEntry struct {
 // entry MUST have a row (lockstep-pinned); a new canonical code without
 // a row fails the build.
 var errorTable = map[protoerrors.Code]errorEntry{
+	protoerrors.CodeDownstreamMCPUnauthorized: {
+		When:  "An MCP server rejected its downstream credential. Harbor accepted the caller's authentication; this is not a Harbor JWT failure. The message excludes upstream endpoints, bodies, headers and credentials.",
+		Retry: "Resolve the downstream credential refusal before retrying; do not refresh the Harbor connection token for this code.",
+	},
+	protoerrors.CodeDownstreamMCPTransportFailed: {
+		When:  "The downstream MCP transport failed. A missing or closed session rejected before dispatch may receive one bounded recovery attempt; other transport errors return directly. The message excludes upstream transport details.",
+		Retry: "Retry with backoff after the MCP server becomes available. Never infer that a side-effecting call is safe to replay from this code alone.",
+	},
 	protoerrors.CodeInvalidRequest: {
 		When:  "The request was structurally malformed: undecodable JSON, a wrong wire shape for the method, an out-of-range field.",
 		Retry: "No — fix the request shape first.",

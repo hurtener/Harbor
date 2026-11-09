@@ -51,6 +51,9 @@ func HTTPStatus(code protoerrors.Code) int {
 		return http.StatusNotFound // 404
 	case protoerrors.CodeRestartUnavailable, protoerrors.CodeRetainedContextUnsettled, protoerrors.CodeRetainedContextUnavailable:
 		return http.StatusConflict // 409
+	case protoerrors.CodeDownstreamMCPUnauthorized, protoerrors.CodeDownstreamMCPTransportFailed:
+		// A downstream failure says nothing about the Harbor caller's JWT.
+		return http.StatusBadGateway // 502
 	case protoerrors.CodeRuntimeError:
 		// An unclassified runtime-side failure — the catch-all.
 		return http.StatusInternalServerError // 500

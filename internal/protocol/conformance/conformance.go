@@ -511,6 +511,8 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodePayloadInvalid:                      http.StatusUnprocessableEntity,
 	protoerrors.CodeUnknownMethod:                       http.StatusNotFound,
 	protoerrors.CodeNotFound:                            http.StatusNotFound,
+	protoerrors.CodeDownstreamMCPUnauthorized:           http.StatusBadGateway,
+	protoerrors.CodeDownstreamMCPTransportFailed:        http.StatusBadGateway,
 	protoerrors.CodeRuntimeError:                        http.StatusInternalServerError,
 	protoerrors.CodeAuthRejected:                        http.StatusUnauthorized,
 	protoerrors.CodeIdentityScopeRequired:               http.StatusForbidden,
@@ -553,6 +555,10 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 // assertErrorCodeMatrixExhaustive runs at the top of RunSuite — a new
 // error code without a scenario fails the suite at boot.
 var errorCodeMatrix = []protoerrors.Code{
+	// MCP accessor translation and control status tests cover these downstream
+	// failures; the generic Stack has no southbound MCP server.
+	protoerrors.CodeDownstreamMCPUnauthorized,
+	protoerrors.CodeDownstreamMCPTransportFailed,
 	protoerrors.CodeInvalidRequest,
 	protoerrors.CodeIdentityRequired,
 	protoerrors.CodeScopeMismatch,

@@ -990,6 +990,22 @@ render remains. The terminal projection is observable on the stream as
 `tool.policy_exhausted` (`LastClass` / `LastError`), which agree with what the
 planner observed.
 
+**Downstream HTTP authentication and session recovery.** For signed receiver
+bindings with `authenticate_preparation` enabled and injected header or Basic
+credentials, an MCP server's HTTP 401 or 403 does not terminate Harbor's shared
+streamable HTTP session. A later call resolves its own credential again. A call
+retries once through a replacement session only when the SDK confirms that a
+closed or missing session rejected it before dispatch; other transport errors
+do not trigger this recovery. Harbor never silently falls back to an
+unauthenticated request. At the MCP Protocol edge,
+`downstream_mcp_unauthorized` and `downstream_mcp_transport_failed` both use
+HTTP 502 with fixed summaries that exclude upstream endpoints, response
+bodies, headers and credentials. They identify downstream failures, so do not
+refresh the Harbor connection JWT or mark the Runtime disconnected because of
+these codes. Resolve a credential refusal before retrying; back off for an
+unavailable server. A transport failure alone does not establish whether a
+side-effecting operation is safe to replay.
+
 ### 8b. What an MCP connection admin write can reach
 
 The per-server `mcp.servers.*` admin verbs gate on the `admin` scope claim, and the write ones additionally land only where your own identity reaches:

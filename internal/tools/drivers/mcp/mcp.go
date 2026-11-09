@@ -536,6 +536,13 @@ type Provider struct {
 	mu      sync.RWMutex
 	session *mcpsdk.ClientSession
 	closed  bool
+	// reconnectGeneration and reconnectErr share both successful and failed
+	// replacement attempts with callers that observed the same session epoch.
+	// Internally synchronized by mu.
+	reconnectGeneration uint64
+	reconnectErr        error
+	connectionFlight    *sessionFlight
+	sessionCancel       context.CancelFunc
 	// closeMu serializes teardown retries. closed blocks new dispatch as soon as
 	// teardown begins; session and provider-close receipts are independent
 	// positive receipts. A failed Close keeps the outstanding handle so the
@@ -742,56 +749,60 @@ func (p *Provider) Connect(ctx context.Context) error {
 		p.mu.Unlock()
 		return nil
 	}
+	if flight := p.connectionFlight; flight != nil {
+		p.mu.Unlock()
+		_, err := awaitSession(ctx, flight)
+		return err
+	}
+	connectCtx, cancel := context.WithCancel(ctx)
+	flight := &sessionFlight{done: make(chan struct{}), cancel: cancel}
+	p.connectionFlight = flight
 	p.mu.Unlock()
+	_, err := p.completeConnection(connectCtx, flight, nil)
+	return err
+}
 
+// establishSession performs transport initialization without the provider state
+// mutex. Publication and teardown races are resolved by completeConnection.
+func (p *Provider) establishSession(ctx context.Context) (*mcpsdk.ClientSession, MCPTransportMode, error) {
 	transport, mode, err := selectTransport(p.cfg)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	connectCtx, err := p.resolveSessionBearerCtx(ctx)
 	if err != nil {
-		return fmt.Errorf("mcp: resolve bearer before initialize: %w", err)
+		return nil, "", fmt.Errorf("mcp: resolve bearer before initialize: %w", err)
 	}
 	session, firstErr := p.client.Connect(connectCtx, transport, nil)
 	if firstErr == nil {
-		p.mu.Lock()
-		p.session = session
-		p.selectedMode = mode
-		p.mu.Unlock()
-		return nil
+		return session, mode, nil
 	}
 
-	// Auto-mode fallback: a URL+streamable-HTTP first try that
-	// failed, when the operator did not pin TransportMode, retries
-	// with SSE. Explicit modes do NOT fall back.
+	// Auto-mode fallback remains credential-admitted and caller-cancellable.
 	autoFallback := (p.cfg.TransportMode == "" || p.cfg.TransportMode == TransportAuto) &&
 		mode == TransportStreamableHTTP &&
 		p.cfg.URL != "" &&
 		classifyConnectError(firstErr) &&
 		(p.cfg.Injection == nil || !p.cfg.Injection.AuthenticatePreparation || p.cfg.Injection.Form != InjectionFormMeta)
 	if !autoFallback {
-		return fmt.Errorf("%w: %w", ErrTransportFailed, firstErr)
+		return nil, "", fmt.Errorf("%w: %w", ErrTransportFailed, firstErr)
 	}
 
 	sseTransport := newSSETransport(p.cfg)
 	fallbackCtx, bearerErr := p.resolveSessionBearerCtx(ctx)
 	if bearerErr != nil {
-		return fmt.Errorf("mcp: resolve bearer before SSE initialize fallback: %w", bearerErr)
+		return nil, "", fmt.Errorf("mcp: resolve bearer before SSE initialize fallback: %w", bearerErr)
 	}
 	session, sseErr := p.client.Connect(fallbackCtx, sseTransport, nil)
 	if sseErr != nil {
-		return fmt.Errorf("%w: streamable-http failed (%w); sse failed (%w)",
+		return nil, "", fmt.Errorf("%w: streamable-http failed (%w); sse failed (%w)",
 			ErrTransportFailed, firstErr, sseErr)
 	}
 	p.logger.Info("mcp: auto-fallback streamable-http -> sse",
 		slog.String("source", string(p.source)),
 		slog.String("primary_error", firstErr.Error()),
 	)
-	p.mu.Lock()
-	p.session = session
-	p.selectedMode = TransportSSE
-	p.mu.Unlock()
-	return nil
+	return session, TransportSSE, nil
 }
 
 // session returns the active session under read-lock, or
@@ -813,17 +824,17 @@ func (p *Provider) sessionForRead() (*mcpsdk.ClientSession, error) {
 // prompt (`__prompt.<name>`). All descriptors carry Transport =
 // TransportMCP and Source = p.source.
 func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error) {
-	session, err := p.sessionForRead()
-	if err != nil {
+	if _, err := p.sessionForRead(); err != nil {
 		return nil, err
 	}
-
 	// Tools.
 	toolsCtx, err := p.resolveSessionBearerCtx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: resolve bearer before tools discovery: %w", err)
 	}
-	toolsRes, err := session.ListTools(toolsCtx, nil)
+	toolsRes, err := callSession(toolsCtx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ListToolsResult, error) {
+		return session.ListTools(toolsCtx, nil)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: list tools: %w", ErrTransportFailed, err)
 	}
@@ -866,7 +877,9 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: resolve bearer before resources discovery: %w", err)
 	}
-	resRes, err := session.ListResources(resourcesCtx, nil)
+	resRes, err := callSession(resourcesCtx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ListResourcesResult, error) {
+		return session.ListResources(resourcesCtx, nil)
+	})
 	if err != nil && !isJSONRPCMethodNotFound(err) {
 		return nil, fmt.Errorf("%w: list resources: %w", ErrTransportFailed, err)
 	}
@@ -887,7 +900,9 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: resolve bearer before prompts discovery: %w", err)
 	}
-	prRes, err := session.ListPrompts(promptsCtx, nil)
+	prRes, err := callSession(promptsCtx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ListPromptsResult, error) {
+		return session.ListPrompts(promptsCtx, nil)
+	})
 	if err != nil && !isJSONRPCMethodNotFound(err) {
 		return nil, fmt.Errorf("%w: list prompts: %w", ErrTransportFailed, err)
 	}
@@ -921,6 +936,10 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 	// Stamp the server's self-declared display metadata on every descriptor
 	// so discovery can match a server-name query and label results.
 	// Classification only — never a naming, dispatch, or isolation input.
+	session, err := p.sessionForRead()
+	if err != nil {
+		return nil, err
+	}
 	title, description := serverDisplayMetadata(session.InitializeResult())
 	for i := range out {
 		out[i].Tool.SourceTitle = title
@@ -1278,10 +1297,10 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	// Promotion happens inside the reliability shell. Every failure after it,
 	// including result materialization, must stop automatic effect retries.
 	defer func() { callErr = stopAgentOperationRetry(ctx, callErr) }()
-	session, err := p.sessionForRead()
-	if err != nil {
+	if _, err := p.sessionForRead(); err != nil {
 		return tools.ToolResult{}, err
 	}
+	var err error
 	var argMap map[string]any
 	var legacyDecodeErr error
 	switch {
@@ -1374,7 +1393,9 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 			return tools.ToolResult{}, err
 		}
 	}
-	res, err := session.CallTool(ctx, params)
+	res, err := callSession(ctx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.CallToolResult, error) {
+		return session.CallTool(ctx, params)
+	})
 	if err != nil {
 		// When the transport observed a `403` + insufficient_scope step-up on
 		// this exact call, upgrade the opaque transport error to the typed,
@@ -1596,8 +1617,7 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 			ctx, args,
 			func(ctx context.Context, _ json.RawMessage) (result tools.ToolResult, callErr error) {
 				defer func() { callErr = stopAgentOperationRetry(ctx, callErr) }()
-				session, err := p.sessionForRead()
-				if err != nil {
+				if _, err := p.sessionForRead(); err != nil {
 					return tools.ToolResult{}, err
 				}
 				params := &mcpsdk.ReadResourceParams{URI: uri}
@@ -1619,7 +1639,9 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 						return tools.ToolResult{}, err
 					}
 				}
-				res, err := session.ReadResource(ctx, params)
+				res, err := callSession(ctx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ReadResourceResult, error) {
+					return session.ReadResource(ctx, params)
+				})
 				if err != nil {
 					return tools.ToolResult{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, err)
 				}
@@ -1656,8 +1678,7 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 		return tools.RunWithPolicy(
 			ctx, args,
 			func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-				session, err := p.sessionForRead()
-				if err != nil {
+				if _, err := p.sessionForRead(); err != nil {
 					return tools.ToolResult{}, err
 				}
 				var argMap map[string]string
@@ -1680,7 +1701,9 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 					return tools.ToolResult{}, mErr
 				}
 				params.Meta = meta
-				res, err := session.GetPrompt(ctx, params)
+				res, err := callSession(ctx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.GetPromptResult, error) {
+					return session.GetPrompt(ctx, params)
+				})
 				if err != nil {
 					return tools.ToolResult{}, fmt.Errorf("%w: get prompt %q: %w", ErrTransportFailed, name, err)
 				}
@@ -1726,9 +1749,8 @@ func (p *Provider) ReadResourceWithMetadata(ctx context.Context, uri string) (Re
 			return ResourceRead{}, err
 		}
 	}
-	session, sErr := p.sessionForRead()
-	if sErr != nil {
-		return ResourceRead{}, sErr
+	if _, err := p.sessionForRead(); err != nil {
+		return ResourceRead{}, err
 	}
 	meta, mErr := p.buildIdentityMeta(ctx)
 	if mErr != nil {
@@ -1748,7 +1770,9 @@ func (p *Provider) ReadResourceWithMetadata(ctx context.Context, uri string) (Re
 			return ResourceRead{}, err
 		}
 	}
-	res, rErr := session.ReadResource(ctx, params)
+	res, rErr := callSession(ctx, p, func(session *mcpsdk.ClientSession) (*mcpsdk.ReadResourceResult, error) {
+		return session.ReadResource(ctx, params)
+	})
 	if rErr != nil {
 		return ResourceRead{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, rErr)
 	}
@@ -1822,8 +1846,7 @@ var validDisplayModes = map[string]struct{}{
 // published as `mcp.resource_updated` on the configured event bus
 // (see Provider.onResourceUpdated).
 func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
-	session, err := p.sessionForRead()
-	if err != nil {
+	if _, err := p.sessionForRead(); err != nil {
 		return err
 	}
 	params := &mcpsdk.SubscribeParams{URI: uri}
@@ -1839,7 +1862,9 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 		return mErr
 	}
 	params.Meta = meta
-	if err := session.Subscribe(ctx, params); err != nil {
+	if _, err := callSession(ctx, p, func(session *mcpsdk.ClientSession) (struct{}, error) {
+		return struct{}{}, session.Subscribe(ctx, params)
+	}); err != nil {
 		return fmt.Errorf("%w: subscribe %q: %w", ErrTransportFailed, uri, err)
 	}
 	return nil
@@ -1909,10 +1934,20 @@ func (p *Provider) Close(ctx context.Context) error {
 	p.mu.Lock()
 	p.closed = true
 	session := p.session
+	sessionCancel := p.sessionCancel
+	flight := p.connectionFlight
 	oauthProviderClosed := p.oauthProviderClosed
 	injectionProviderClosed := p.injectionProviderClosed
 	p.mu.Unlock()
 	var errs []error
+	if flight != nil {
+		flight.cancel()
+		select {
+		case <-flight.done:
+		case <-ctx.Done():
+			errs = append(errs, fmt.Errorf("mcp: await connecting session cleanup: %w", ctx.Err()))
+		}
+	}
 	if session != nil {
 		if err := session.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("mcp: close session: %w", err))
@@ -1923,6 +1958,9 @@ func (p *Provider) Close(ctx context.Context) error {
 			}
 			p.mu.Unlock()
 		}
+	}
+	if sessionCancel != nil {
+		sessionCancel()
 	}
 	if p.cfg.OwnOAuthProvider && p.cfg.OAuthProvider != nil && !oauthProviderClosed {
 		if err := p.cfg.OAuthProvider.Close(ctx); err != nil {

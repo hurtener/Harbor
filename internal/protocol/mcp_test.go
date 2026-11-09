@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 // stubMCP is a deterministic protocol.MCPAccessor for the MCPSurface
 // unit tests — no `mcp` driver, no wire.
 type stubMCP struct {
+	getError       error
 	servers        map[string]protocol.MCPServerRow
 	notFound       bool
 	missingID      bool
@@ -51,6 +53,9 @@ func (s *stubMCP) ListServers(_ context.Context, _ protocol.MCPListFilter) ([]pr
 }
 
 func (s *stubMCP) GetServer(_ context.Context, name string) (protocol.MCPServerRow, error) {
+	if s.getError != nil {
+		return protocol.MCPServerRow{}, s.getError
+	}
 	if s.notFound {
 		return protocol.MCPServerRow{}, mcpNotFoundErr()
 	}
@@ -468,4 +473,40 @@ func TestMCPSurface_Dispatch_InvalidRequestType(t *testing.T) {
 	s, _ := newMCPSurface(t)
 	_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersList, nil)
 	assertCode(t, err, protoerrors.CodeInvalidRequest)
+}
+
+// Unsafe downstream wording must never control a Harbor classification or
+// escape into the Protocol error message, even when nested in another error.
+func TestMCPSurface_Get_DownstreamFailureSafeSummary(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sentinel error
+		code     protoerrors.Code
+		message  string
+	}{
+		{"unauthorized", protocol.ErrAccessorDownstreamUnauthorized, protoerrors.CodeDownstreamMCPUnauthorized, "downstream MCP server rejected its credential"},
+		{"transport", protocol.ErrAccessorDownstreamTransportFailed, protoerrors.CodeDownstreamMCPTransportFailed, "downstream MCP transport failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accessor := &stubMCP{}
+			s, setupErr := protocol.NewMCPSurface(protocol.MCPDeps{
+				MCP: accessor, OAuth: &stubOAuth{}, Redactor: patterns.New(), Bus: newMCPBus(t),
+				AgentResolver: &stubAppsAgentResolver{}, AgentReach: allowAppsAgentReach{},
+			})
+			if setupErr != nil {
+				t.Fatalf("NewMCPSurface: %v", setupErr)
+			}
+			const unsafe = "https://private.invalid/mcp?token=fixture-secret Authorization: Bearer fixture-secret status=401 body=identity missing from ctx server not found"
+			accessor.getError = fmt.Errorf("accessor: %w: %s", tc.sentinel, unsafe)
+			_, err := s.Dispatch(verifiedCtx(t), methods.MethodMCPServersGet,
+				&types.MCPServerGetRequest{Identity: validScope(), Name: "github-server"})
+			var pe *protoerrors.Error
+			if !stderrors.As(err, &pe) || pe.Code != tc.code {
+				t.Fatalf("error = %v, want %s", err, tc.code)
+			}
+			if pe.Message != tc.message || strings.Contains(err.Error(), "fixture-secret") {
+				t.Fatalf("unsafe Protocol error: %v", err)
+			}
+		})
+	}
 }
