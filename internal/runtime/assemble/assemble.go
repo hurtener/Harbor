@@ -1183,7 +1183,7 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		stack.Planner = opts.PlannerOverride
 	case stack.LLM != nil:
 		plannerCfg := planner.ConfigFromOperator(cfg.Planner)
-		plnr, err := planner.Resolve(ctx, plannerCfg, planner.FactoryDeps{LLM: stack.LLM})
+		plnr, err := planner.Resolve(ctx, plannerCfg, planner.FactoryDeps{LLM: stack.LLM, GrantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...)})
 		if err != nil {
 			return fmt.Errorf("planner: %w", err)
 		}

@@ -128,6 +128,12 @@ type FactoryDeps struct {
 	// safety → driver). The V1 `react` driver consumes this
 	// directly; drivers that don't use an LLM ignore the field.
 	LLM llm.LLMClient
+
+	// GrantedScopes is the operator-granted tool scope list
+	// (`tools.granted_scopes`) the discovery meta-tools are registered
+	// with. The react driver narrows its `<deferred_tools>` prompt index by
+	// it, exactly as `tool_search` does; other drivers ignore it.
+	GrantedScopes []string
 }
 
 // Factory builds a Planner from a PlannerConfig + FactoryDeps. Drivers

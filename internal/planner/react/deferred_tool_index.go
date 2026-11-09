@@ -43,10 +43,7 @@ type deferredIndexOwner struct {
 	key   string
 	label string
 	tier  tools.PromptStabilityTier
-	// qualifiers disambiguate a label shared with another owner, in order
-	// of preference (tier, then logical source name).
-	qualifiers []string
-	names      []string // readable names, sorted, unique within the owner
+	names []string // listed names, sorted, unique within the owner
 	// nameTokens[k] is the estimated token cost of the first k names.
 	nameTokens []int
 }
@@ -93,28 +90,30 @@ func (s *discoverySnapshot) get() ([]tools.Tool, bool, bool) {
 	return s.tools, s.complete, s.ok
 }
 
-// renderDeferredToolIndex renders the index from a fresh snapshot.
+// renderDeferredToolIndex renders the index from a fresh snapshot with no
+// granted scopes.
 func renderDeferredToolIndex(rc planner.RunContext, perSourceTokens, maxTokens int) string {
-	return renderDeferredToolIndexFrom(rc, newDiscoverySnapshot(rc.Catalog), perSourceTokens, maxTokens)
+	return renderDeferredToolIndexFrom(rc, newDiscoverySnapshot(rc.Catalog), nil, perSourceTokens, maxTokens)
 }
 
-// renderDeferredToolIndexFrom renders the `<deferred_tools>` section: the
-// readable names of every deferred tool the run may discover, grouped by
-// the owning provider source, within perSourceTokens per source and
-// maxTokens overall. It returns "" when the index has nothing to say.
+// renderDeferredToolIndexFrom renders the `<deferred_tools>` section: every
+// deferred tool the run may discover, grouped by the owning provider source,
+// within perSourceTokens per source and maxTokens overall. It returns ""
+// when the index has nothing to say.
 //
 // # Source of truth
 //
-// The set is the run view's complete discovery snapshot (DiscoveryTools —
-// owner scope, exclusions, allowlist, effective loading) restricted to
-// effective LoadingDeferred tools, which is exactly what `tool_search`
-// may surface. A tool is listed only when the reserved-control declared
-// name projection `tool_search` uses keeps it, so a residual-collision
-// loser is not listed. Each entry is the tool's provider-local name
-// ([tools.ReadableToolName]) under its source label; `tool_search` and
-// `tool_get` resolve `<source label>/<tool name>` exactly. A view without
-// a complete deferred snapshot, or a run that cannot call `tool_search`,
-// renders nothing: the model could not load what the index would name.
+// The set and every rendered name come from [tools.NewDiscoveryNamespace]
+// over the run view's complete discovery snapshot (owner scope,
+// exclusions, allowlist, effective loading) and grantedScopes — the same
+// constructor, predicate and scopes the discovery meta-tools use — so the
+// index lists exactly the deferred tools `tool_search` may surface, under
+// the disambiguated source labels and listed names that `tool_search` and
+// `tool_get` resolve as `<source label>/<tool name>`. A listed name is the
+// tool's readable provider-local name when prompt-safe, else its declared
+// name. A view without a complete deferred snapshot, or a run that cannot
+// call `tool_search`, renders nothing: the model could not load what the
+// index would name.
 //
 // # Stability
 //
@@ -123,7 +122,7 @@ func renderDeferredToolIndex(rc planner.RunContext, perSourceTokens, maxTokens i
 // is byte-stable across the turns of a run while the view is unchanged. A
 // change to a deferred source (a list_changed refresh, an allowlist or
 // loading-mode edit) changes it on the next turn.
-func renderDeferredToolIndexFrom(rc planner.RunContext, snapshot *discoverySnapshot, perSourceTokens, maxTokens int) string {
+func renderDeferredToolIndexFrom(rc planner.RunContext, snapshot *discoverySnapshot, grantedScopes []string, perSourceTokens, maxTokens int) string {
 	if rc.Catalog == nil {
 		return ""
 	}
@@ -134,58 +133,26 @@ func renderDeferredToolIndexFrom(rc planner.RunContext, snapshot *discoverySnaps
 	if !ok || !complete || len(candidates) == 0 {
 		return ""
 	}
-	names := make([]string, 0, len(candidates))
-	for _, tool := range candidates {
-		names = append(names, tool.Name)
+	ns := tools.NewDiscoveryNamespace(candidates, grantedScopes)
+	byOwner := map[tools.ToolSourceID]*deferredIndexOwner{}
+	var owners []*deferredIndexOwner
+	for _, tool := range ns.DeferredTools() {
+		owner, ok := byOwner[tool.Source]
+		if !ok {
+			label, _ := ns.SourceLabel(tool.Source)
+			owner = &deferredIndexOwner{key: string(tool.Source), label: label, tier: tools.PromptStabilityTierOf(tool)}
+			byOwner[tool.Source] = owner
+			owners = append(owners, owner)
+		}
+		listed, _ := ns.ListedName(tool.Name)
+		owner.names = append(owner.names, listed)
 	}
-	projection := tools.NewModelToolNameProjectionWithReservedControls(names)
-
-	type entry struct{ readable, declared string }
-	byOwner := map[string]*deferredIndexOwner{}
-	entries := map[string][]entry{}
-	seen := make(map[string]struct{}, len(candidates))
-	for _, tool := range candidates {
-		if tool.Loading != tools.LoadingDeferred {
-			continue
-		}
-		if _, dup := seen[tool.Name]; dup {
-			continue
-		}
-		seen[tool.Name] = struct{}{}
-		declared, kept := projection.DeclaredName(tool.Name)
-		if !kept {
-			continue
-		}
-		key := string(tool.Source)
-		if _, ok := byOwner[key]; !ok {
-			owner := &deferredIndexOwner{key: key, label: tools.SourceLabel(tool), tier: tools.PromptStabilityTierOf(tool)}
-			owner.qualifiers = tools.SourceLabelVariants(tool)[1:]
-			byOwner[key] = owner
-		}
-		entries[key] = append(entries[key], entry{readable: tools.ReadableToolName(tool), declared: declared})
-	}
-	if len(byOwner) == 0 {
+	if len(owners) == 0 {
 		return ""
 	}
-	owners := make([]*deferredIndexOwner, 0, len(byOwner))
-	for key, owner := range byOwner {
-		// Readable names are unique within a provider's own namespace; a
-		// residual clash falls back to the declared names, which are unique.
-		count := map[string]int{}
-		for _, e := range entries[key] {
-			count[e.readable]++
-		}
-		for _, e := range entries[key] {
-			name := e.readable
-			if count[name] > 1 {
-				name = e.declared
-			}
-			owner.names = append(owner.names, name)
-		}
+	for _, owner := range owners {
 		owner.finish()
-		owners = append(owners, owner)
 	}
-	disambiguateDeferredOwnerLabels(owners)
 	sort.Slice(owners, func(i, j int) bool {
 		a, b := owners[i], owners[j]
 		if a.tier != b.tier {
@@ -208,31 +175,6 @@ func renderDeferredToolIndexFrom(rc planner.RunContext, snapshot *discoverySnaps
 		maxTokens = DefaultDeferredToolIndexMaxTokens
 	}
 	return layoutDeferredToolIndex(lead, owners, perSourceTokens, maxTokens)
-}
-
-// disambiguateDeferredOwnerLabels qualifies labels shared by several
-// owners, deterministically: first with the owner's tier qualifier
-// ("Docs (agent)"), and where that still collides with its logical source
-// name. Every form is one `tool_search` accepts
-// ([tools.SourceLabelVariants]); an owner that stays ambiguous keeps its
-// label and a qualified search returns every matching source.
-func disambiguateDeferredOwnerLabels(owners []*deferredIndexOwner) {
-	for step := 0; ; step++ {
-		count := map[string]int{}
-		for _, owner := range owners {
-			count[owner.label]++
-		}
-		changed := false
-		for _, owner := range owners {
-			if count[owner.label] > 1 && step < len(owner.qualifiers) {
-				owner.label = owner.qualifiers[step]
-				changed = true
-			}
-		}
-		if !changed {
-			return
-		}
-	}
 }
 
 // layoutDeferredToolIndex fits the owner lines into token budgets (the

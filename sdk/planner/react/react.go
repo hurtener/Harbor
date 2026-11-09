@@ -57,6 +57,8 @@ var (
 	WithDeferredToolIndexMaxTokens = internal.WithDeferredToolIndexMaxTokens
 	// WithDeferredToolIndexMaxTokensPerSource sets the per-source budget.
 	WithDeferredToolIndexMaxTokensPerSource = internal.WithDeferredToolIndexMaxTokensPerSource
+	// WithGrantedScopes narrows the <deferred_tools> index by granted scopes.
+	WithGrantedScopes = internal.WithGrantedScopes
 	// WithMaxConsecutiveArgFailures caps consecutive arg failures.
 	WithMaxConsecutiveArgFailures = internal.WithMaxConsecutiveArgFailures
 	// WithMaxSteps caps the planner-step count.

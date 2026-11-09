@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"strings"
 
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -28,9 +27,12 @@ func (e permanentError) Permanent() bool { return true }
 // the run's sealed view admits for invocation (owner scope, exclusions,
 // allowlist, effective loading — both loading modes, since tool_search is the
 // path by which deferred tools become model-visible), projected onto the
-// model-visible declared names the planner uses.
+// model-visible declared names the planner uses. It is built by the shared
+// [tools.NewDiscoveryNamespace], the same constructor the planner's
+// deferred-tool index uses.
 type runDiscovery struct {
 	view       tools.PlannerCatalogView
+	ns         tools.DiscoveryNamespace
 	projection tools.ModelToolNameProjection
 	// visible maps a physical catalog name to the run view's Tool for every
 	// tool the run may discover: kept by the declared-name projection and
@@ -60,47 +62,18 @@ func discoveryForRun(ctx context.Context, grantedScopes []string) (runDiscovery,
 	// Memoized per seat (one dispatch decision), so a decision's meta-tool
 	// calls share one scan of the view.
 	candidates, _, _ := tools.RunToolDiscovery(ctx)
-	names := make([]string, 0, len(candidates))
-	for _, tool := range candidates {
-		names = append(names, tool.Name)
-	}
-	projection := tools.NewModelToolNameProjectionWithReservedControls(names)
-	granted := make(map[string]struct{}, len(grantedScopes))
-	for _, s := range grantedScopes {
-		granted[s] = struct{}{}
-	}
+	ns := tools.NewDiscoveryNamespace(candidates, grantedScopes)
 	d := runDiscovery{
 		view:       view,
-		projection: projection,
-		visible:    make(map[string]tools.Tool, len(candidates)),
-		order:      make([]string, 0, len(candidates)),
+		ns:         ns,
+		projection: ns.Projection(),
+		visible:    make(map[string]tools.Tool, len(ns.Order())),
+		order:      ns.Order(),
 	}
-	for _, tool := range candidates {
-		if _, dup := d.visible[tool.Name]; dup {
-			continue
-		}
-		// Search indexes can lag catalog changes and a residual-collision
-		// loser is not callable under the declared namespace; neither is
-		// taught to the model.
-		if _, kept := projection.DeclaredName(tool.Name); !kept {
-			continue
-		}
-		if !scopesCovered(tool.AuthScopes, granted) {
-			continue
-		}
-		d.visible[tool.Name] = tool
-		d.order = append(d.order, tool.Name)
+	for _, name := range d.order {
+		d.visible[name], _ = ns.Visible(name)
 	}
 	return d, nil
-}
-
-func scopesCovered(required []string, granted map[string]struct{}) bool {
-	for _, s := range required {
-		if _, ok := granted[s]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // resolveDeclared maps a model-authored declared name to the run view's
@@ -111,6 +84,10 @@ func (d runDiscovery) resolveDeclared(declared string) (tools.Tool, bool) {
 	if !ok {
 		return tools.Tool{}, false
 	}
+	return d.resolveCatalog(catalogName)
+}
+
+func (d runDiscovery) resolveCatalog(catalogName string) (tools.Tool, bool) {
 	if _, ok := d.visible[catalogName]; !ok {
 		return tools.Tool{}, false
 	}
@@ -121,49 +98,19 @@ func (d runDiscovery) resolveDeclared(declared string) (tools.Tool, bool) {
 	return resolved, true
 }
 
-// exactMatches resolves query as an exact tool reference within the run's
-// discovery namespace, in precedence order: a declared model name, a
-// physical catalog name, then the readable provider-local name — bare, or
-// qualified by its source label as `<source label>/<tool name>` (the form
-// the planner's deferred-tool index lists). A bare readable name may match
-// tools of several sources; all of them are returned in namespace order.
-// Only tools in d.visible can match, so scoping is exactly the search's.
-func (d runDiscovery) exactMatches(query string) []string {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil
-	}
-	if catalogName, ok := d.projection.ResolveDeclared(query); ok {
-		if _, visible := d.visible[catalogName]; visible {
-			return []string{catalogName}
-		}
-	}
-	if _, visible := d.visible[query]; visible {
-		return []string{query}
-	}
-	var out []string
-	for _, name := range d.order {
-		t := d.visible[name]
-		if tools.ReadableToolName(t) == query || tools.MatchesQualifiedToolName(t, query) {
-			out = append(out, name)
-		}
-	}
-	return out
+// exactMatches resolves query as an exact tool reference (see
+// [tools.DiscoveryNamespace.ExactMatches]).
+func (d runDiscovery) exactMatches(query string) ([]string, bool) {
+	return d.ns.ExactMatches(query)
 }
 
-// resolveExact maps an exact, unambiguous reference (see exactMatches) to
-// the run view's Tool, re-checked against the view like resolveDeclared.
+// resolveExact maps an unambiguous exact reference — a qualified
+// `<source label>/<tool name>`, a declared, catalog or bare readable name —
+// to the run view's Tool, re-checked against the view like resolveDeclared.
 func (d runDiscovery) resolveExact(query string) (tools.Tool, bool) {
-	if t, ok := d.resolveDeclared(query); ok {
-		return t, true
-	}
-	matches := d.exactMatches(query)
+	matches, _ := d.exactMatches(query)
 	if len(matches) != 1 {
 		return tools.Tool{}, false
 	}
-	resolved, ok := d.view.Resolve(matches[0])
-	if !ok || resolved.Name != matches[0] {
-		return tools.Tool{}, false
-	}
-	return resolved, true
+	return d.resolveCatalog(matches[0])
 }

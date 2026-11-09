@@ -111,6 +111,10 @@ type defaultBuilder struct {
 	// to the Default* constants at render time.
 	deferredIndexMaxTokensPerSource int
 	deferredIndexMaxTokens          int
+	// grantedScopes is the operator-granted tool scope list the discovery
+	// meta-tools narrow by; the <deferred_tools> index applies the same
+	// narrowing. Read-only.
+	grantedScopes []string
 }
 
 // Build implements [PromptBuilder].
@@ -257,7 +261,7 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 	// 1. System block: the twelve XML-tagged sections.
 	var deferredIndex string
 	if !b.deferredIndexDisabled {
-		deferredIndex = renderDeferredToolIndexFrom(rc, snapshot, b.deferredIndexMaxTokensPerSource, b.deferredIndexMaxTokens)
+		deferredIndex = renderDeferredToolIndexFrom(rc, snapshot, b.grantedScopes, b.deferredIndexMaxTokensPerSource, b.deferredIndexMaxTokens)
 	}
 	sysContent := buildSystemContentWithProjectedTools(systemPrompt, userLayer, b.extraGuidance, b.maxToolExamples, rc, projected, deferredIndex)
 	messages = append(messages, llm.ChatMessage{

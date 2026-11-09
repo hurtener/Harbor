@@ -64,7 +64,7 @@ func runAllowedTools(ctx context.Context, grantedScopes []string) ([]string, err
 	}
 	permitted := make([]tools.Tool, 0, len(discovered))
 	for _, t := range discovered {
-		if scopesCovered(t.AuthScopes, granted) {
+		if tools.ScopesGranted(t.AuthScopes, granted) {
 			permitted = append(permitted, t)
 		}
 	}

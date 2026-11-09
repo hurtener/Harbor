@@ -23,7 +23,9 @@ Two versions move independently in Harbor (RFC §5.3):
   deferred-loading tools, the ReAct system prompt gains a `<deferred_tools>`
   section after `<available_tools>` listing them by provider source
   (`- <source label> (N tools): name_a, name_b`), using each tool's readable
-  provider-local name, so the model knows which sources have on-demand tools.
+  provider-local name when prompt-safe (else its sanitised declared name)
+  under a sanitised, disambiguated source label, so the model knows which
+  sources have on-demand tools.
   It loads one with `tool_search("<source label>/<tool name>")`. The set is
   the run's own tool view; names only, sorted, byte-stable across a run's
   turns (it changes only when a deferred source changes), and bounded per
@@ -33,12 +35,14 @@ Two versions move independently in Harbor (RFC §5.3):
   (default 8000), with per-source `… and N more; use tool_search`
   truncation. On by default; `planner.deferred_tool_index.enabled: false`
   turns it off.
-- **Exact tool references in `tool_search` and `tool_get`.** A query that
-  is exactly a declared model name, a catalog name, a readable tool name or
-  `<source label>/<tool name>` resolves within the run's tool view before
-  ranked search: a unique match is returned alone, and a bare name shared by
-  several sources returns all of them first. Previously a hash-shortened
-  declared name searched exactly could miss its own tool.
+- **Exact tool references in `tool_search` and `tool_get`.** Within the
+  run's tool view, `<source label>/<tool name>` (labels exactly as the
+  index renders them; the declared name is also accepted), a declared model
+  name, or a catalog name returns just that tool, ahead of ranked search; a
+  bare readable tool name returns its exact matches first, followed by the
+  ordinary ranked page. `tool_get` accepts the same references and always
+  echoes the callable declared name. Previously a hash-shortened declared
+  name searched exactly could miss its own tool.
 
 ### Fixed
 

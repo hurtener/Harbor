@@ -15,7 +15,7 @@ func registerToolSearch(rc RegistryContext) error {
 		func(ctx context.Context, args ToolSearchArgs) (ToolSearchOut, error) {
 			return toolSearchWithScopes(ctx, rc.Catalog, args, grantedScopes)
 		},
-		tools.WithDescription("Search the tools available to this run by capability text (tool name, description, or the providing server's name) + optional tag filter. An exact tool name, or `<server label>/<tool name>` as listed in deferred_tools, returns just that tool. Returns matching tool names, descriptions, and server labels."),
+		tools.WithDescription("Search the tools available to this run by capability text (tool name, description, or the providing server's name) + optional tag filter. An exact `<server label>/<tool name>` as listed in deferred_tools, or an exact declared name, returns just that tool. Returns matching tool names, descriptions, and server labels."),
 		tools.WithSideEffect(tools.SideEffectPure),
 		tools.WithLoading(tools.LoadingAlways),
 		tools.WithTags("builtin", "meta", "discovery"),
@@ -66,19 +66,20 @@ func toolSearchWithScopes(ctx context.Context, cat tools.ToolCatalog, args ToolS
 	}
 	query := strings.TrimSpace(args.Query)
 
-	// An exact reference (declared, physical, readable or source-qualified
-	// name) is resolved ahead of ranked search: a ranked index stores
-	// physical names, so a shortened declared name or a provider-local name
-	// would otherwise rank below unrelated text matches. A unique match
-	// answers alone; a bare name shared by several sources returns all of
-	// them first, then the ordinary ranked page.
+	// An exact reference is resolved ahead of ranked search: a ranked index
+	// stores physical names, so a shortened declared name or a
+	// provider-local name would otherwise rank below unrelated text matches.
+	// A qualified `<source label>/<tool name>`, declared or catalog name
+	// answers alone; a bare readable name returns its matches first, then
+	// the ordinary ranked page (deduplicated below).
 	var names []string
-	for _, name := range disc.exactMatches(query) {
+	exactNames, exactOnly := disc.exactMatches(query)
+	for _, name := range exactNames {
 		if hasAllTags(disc.visible[name].Tags, args.Tags) {
 			names = append(names, name)
 		}
 	}
-	exact := len(names) == 1
+	exact := exactOnly && len(names) > 0
 	if !exact && query != "" && cat != nil {
 		hits := cat.Search(ctx, tools.ToolSearchRequest{
 			Query: query,

@@ -70,5 +70,8 @@ func factory(cfg planner.PlannerConfig, deps planner.FactoryDeps) (planner.Plann
 	if cfg.DeferredToolIndexMaxTokens > 0 {
 		opts = append(opts, WithDeferredToolIndexMaxTokens(cfg.DeferredToolIndexMaxTokens))
 	}
+	if len(deps.GrantedScopes) > 0 {
+		opts = append(opts, WithGrantedScopes(deps.GrantedScopes))
+	}
 	return New(deps.LLM, opts...), nil
 }

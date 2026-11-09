@@ -352,6 +352,16 @@ func WithDeferredToolIndex(enabled bool) Option {
 	}
 }
 
+// WithGrantedScopes sets the operator-granted tool scopes (`tools.granted_scopes`)
+// the discovery meta-tools were registered with, so the `<deferred_tools>`
+// index lists only tools `tool_search` would surface. Nil grants none: a
+// tool requiring any scope is not listed. The slice is copied.
+func WithGrantedScopes(scopes []string) Option {
+	return func(p *ReActPlanner) {
+		p.grantedScopes = append([]string(nil), scopes...)
+	}
+}
+
 // WithDeferredToolIndexMaxTokensPerSource sets the per-source
 // `<deferred_tools>` line budget in the index's conservative token estimate. A
 // value ≤ 0 resolves to [DefaultDeferredToolIndexMaxTokensPerSource].
@@ -501,6 +511,12 @@ type ReActPlanner struct {
 	deferredIndexMaxTokensPerSource int
 	deferredIndexMaxTokens          int
 
+	// grantedScopes is the operator-granted tool scope list (the same one
+	// the discovery meta-tools are registered with). Set via
+	// [WithGrantedScopes]; the <deferred_tools> index narrows by it exactly
+	// as `tool_search` does. Read-only after construction.
+	grantedScopes []string
+
 	// stepsTaken is a process-wide diagnostic counter. NOT used
 	// for any per-call semantics (those are derived from the
 	// RunContext + ctx); maintained as `atomic.Int64` so the
@@ -558,6 +574,7 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 			deferredIndexDisabled:           p.deferredIndexDisabled,
 			deferredIndexMaxTokensPerSource: p.deferredIndexMaxTokensPerSource,
 			deferredIndexMaxTokens:          p.deferredIndexMaxTokens,
+			grantedScopes:                   p.grantedScopes,
 		}
 	}
 	return p

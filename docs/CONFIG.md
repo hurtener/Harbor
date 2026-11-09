@@ -2737,13 +2737,21 @@ deferred-loading tools the run may load on demand, e.g.
 ```
 
 Each entry is the tool's provider-local name (without the owner-scoped
-source prefix of its catalog key) under its source label. The model loads
-one by calling `tool_search` with `"<source label>/<tool name>"`, which
-`tool_search` and `tool_get` resolve exactly within the run's tool view
-before any ranked search; `tool_get` only describes a tool. Identical
-labels are qualified by tier (`(agent)`, `(personal)`, `(shared)`) or, if
-still identical, by logical source name. The set is the run's own tool view
-(owner scope, exclusions, allowlist, effective loading mode); a collision
+source prefix of its catalog key) when that name is prompt-safe (1–64 of
+`A–Z a–z 0–9 _ - .`) and unique in its source; otherwise the tool's
+sanitised declared name. Source labels are reduced to letters, digits,
+space, `-`, `_` and `.` (at most 64 runes). The model loads a tool by
+calling `tool_search` with `"<source label>/<tool name>"`, which
+`tool_search` and `tool_get` resolve exactly, against the labels exactly as
+rendered, before any ranked search; the declared name is accepted in place
+of the tool name. `tool_get` only describes a tool and echoes its callable
+declared name. Labels shared by several sources are qualified by tier in
+parentheses (`Docs (agent)`, `Docs (personal)`), then by logical source in
+square brackets (`Docs (agent) [wiki]`), then by a short digest; a base
+label can never contain those delimiters, so one source cannot claim
+another's qualified label. The set is the run's own tool view (owner scope,
+exclusions, allowlist, effective loading mode) narrowed by
+`tools.granted_scopes` exactly as `tool_search` narrows it; a collision
 loser is not listed. Sorted by source (stability tier, label) then name. It
 is omitted when the run has no deferred tools or cannot call `tool_search`.
 Pointer-bool: an omitted key resolves to `true`. Validation: none.
