@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"strings"
 
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -115,6 +116,53 @@ func (d runDiscovery) resolveDeclared(declared string) (tools.Tool, bool) {
 	}
 	resolved, ok := d.view.Resolve(catalogName)
 	if !ok || resolved.Name != catalogName {
+		return tools.Tool{}, false
+	}
+	return resolved, true
+}
+
+// exactMatches resolves query as an exact tool reference within the run's
+// discovery namespace, in precedence order: a declared model name, a
+// physical catalog name, then the readable provider-local name — bare, or
+// qualified by its source label as `<source label>/<tool name>` (the form
+// the planner's deferred-tool index lists). A bare readable name may match
+// tools of several sources; all of them are returned in namespace order.
+// Only tools in d.visible can match, so scoping is exactly the search's.
+func (d runDiscovery) exactMatches(query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	if catalogName, ok := d.projection.ResolveDeclared(query); ok {
+		if _, visible := d.visible[catalogName]; visible {
+			return []string{catalogName}
+		}
+	}
+	if _, visible := d.visible[query]; visible {
+		return []string{query}
+	}
+	var out []string
+	for _, name := range d.order {
+		t := d.visible[name]
+		if tools.ReadableToolName(t) == query || tools.MatchesQualifiedToolName(t, query) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// resolveExact maps an exact, unambiguous reference (see exactMatches) to
+// the run view's Tool, re-checked against the view like resolveDeclared.
+func (d runDiscovery) resolveExact(query string) (tools.Tool, bool) {
+	if t, ok := d.resolveDeclared(query); ok {
+		return t, true
+	}
+	matches := d.exactMatches(query)
+	if len(matches) != 1 {
+		return tools.Tool{}, false
+	}
+	resolved, ok := d.view.Resolve(matches[0])
+	if !ok || resolved.Name != matches[0] {
 		return tools.Tool{}, false
 	}
 	return resolved, true

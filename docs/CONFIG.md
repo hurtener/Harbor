@@ -2729,24 +2729,46 @@ are correct).
 
 Renders the ReAct system prompt's `<deferred_tools>` section, right after
 `<available_tools>`: an index, grouped by provider source, of the
-deferred-loading tools the run may load on demand. It tells the model which
-sources have on-demand tools and their exact declared names, which it loads
-with `tool_search` before calling. The set is the run's own tool view
-(owner scope, exclusions, allowlist, effective loading mode), named exactly
-as `tool_search` and `tool_get` accept; names only, sorted by source
-(stability tier, label) then name, so the section is byte-stable across a
-run's turns. It is omitted when the run has no deferred tools or cannot
-call `tool_search`. Pointer-bool: an omitted key resolves to `true`.
-Validation: none.
+deferred-loading tools the run may load on demand, e.g.
+
+```
+- Sales CRM (12 tools): add_lead_note, add_leads_to_campaign, create_lead, …
+- Docs (agent) (2 tools): read_document, search_documents
+```
+
+Each entry is the tool's provider-local name (without the owner-scoped
+source prefix of its catalog key) under its source label. The model loads
+one by calling `tool_search` with `"<source label>/<tool name>"`, which
+`tool_search` and `tool_get` resolve exactly within the run's tool view
+before any ranked search; `tool_get` only describes a tool. Identical
+labels are qualified by tier (`(agent)`, `(personal)`, `(shared)`) or, if
+still identical, by logical source name. The set is the run's own tool view
+(owner scope, exclusions, allowlist, effective loading mode); a collision
+loser is not listed. Sorted by source (stability tier, label) then name. It
+is omitted when the run has no deferred tools or cannot call `tool_search`.
+Pointer-bool: an omitted key resolves to `true`. Validation: none.
+
+Prompt-cache trade-off: the section sits after the cached system spine and
+depends only on the current run view, so it is byte-identical across the
+turns of a run, including after a tool is discovered. It changes on the
+next turn when a deferred source changes — an MCP `list_changed` refresh,
+a connection attaching or detaching, an allowlist, exclusion or
+loading-mode edit — which also changes the prompt bytes after it. There is
+no per-session pinning: a pinned index could name tools the run can no
+longer call, or hide new ones.
 
 ### planner.deferred_tool_index.max_tokens_per_source
 
-Budget for one source's `<deferred_tools>` line in the canonical chars/4
-token estimate. Default: `0` → driver default of 2200, sized to list about
-200 names in full even when they carry their source prefix (for a
-runtime-added connection, `<name>_u-<16 hex>_<tool>` or `_a-`), measured at
-about 10.3 tokens per name (bare names cost about 4.5). A source over budget shows its first names in sorted order followed
-by `… and N more; use tool_search`. Validation: >= 0.
+Budget for one source's `<deferred_tools>` line, in the index's own
+conservative token estimate (hex digests at ~2.5 characters per token,
+digit runs at 3, words at 6; stricter than the request-wide chars/4).
+Default: `0` → driver default of 1600. Measured on a real owner-scoped
+connection, 200 readable names cost ~1,040 estimated tokens (~5.2 per
+name), so 200 fit in full with headroom; the same names as declared
+(hash-shortened, owner-prefixed) names would cost ~3,180 (~15.9 per name),
+which is why the index lists readable names. A source over budget shows its
+first names in sorted order followed by `… and N more; use tool_search`.
+Validation: >= 0.
 
 ### planner.deferred_tool_index.max_tokens
 

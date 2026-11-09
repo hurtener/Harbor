@@ -353,7 +353,7 @@ func WithDeferredToolIndex(enabled bool) Option {
 }
 
 // WithDeferredToolIndexMaxTokensPerSource sets the per-source
-// `<deferred_tools>` line budget in the canonical chars/4 token estimate. A
+// `<deferred_tools>` line budget in the index's conservative token estimate. A
 // value ≤ 0 resolves to [DefaultDeferredToolIndexMaxTokensPerSource].
 func WithDeferredToolIndexMaxTokensPerSource(n int) Option {
 	return func(p *ReActPlanner) {
@@ -362,7 +362,7 @@ func WithDeferredToolIndexMaxTokensPerSource(n int) Option {
 }
 
 // WithDeferredToolIndexMaxTokens sets the whole `<deferred_tools>` section's
-// safety budget in the canonical chars/4 token estimate. A value ≤ 0
+// safety budget in the same estimate. A value ≤ 0
 // resolves to [DefaultDeferredToolIndexMaxTokens].
 func WithDeferredToolIndexMaxTokens(n int) Option {
 	return func(p *ReActPlanner) {
@@ -690,7 +690,10 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// informational on `rc.DiscoveredTools`; the same set drives this
 	// turn's `req.Tools` construction.
 	rc.DiscoveredTools = mergeDiscovered(rc.DiscoveredTools, deriveDiscoveredFromTrajectory(rc.Trajectory))
-	projectedTools, declaredToolProjection, listedTools := projectModelToolsListed(rc, rc.DiscoveredTools)
+	// One discovery snapshot per turn, shared by the declaration projection
+	// and the prompt's deferred-tool index (and any context rebuild).
+	discovery := newDiscoverySnapshot(rc.Catalog)
+	projectedTools, declaredToolProjection, listedTools := projectModelToolsListedFrom(rc, rc.DiscoveredTools, discovery)
 
 	// Build the LLM request via the configured prompt builder. The
 	// builder reads from rc; it MUST NOT mutate rc.
@@ -704,13 +707,13 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// silently dropped memory tier. An operator-supplied builder owns
 	// its own assembly and uses the interface `Build` (custom builders
 	// do not render the wrappers).
-	req, buildErr := p.buildContextRequest(rc, projectedTools)
+	req, buildErr := p.buildContextRequest(rc, projectedTools, discovery)
 	if buildErr != nil {
 		return nil, buildErr
 	}
 	req.RebuildMessages = nil
 	if _, prepare := llm.ContextPreparationFrom(ctx); prepare {
-		req.RebuildMessages = p.rebuildMessages(rc, projectedTools)
+		req.RebuildMessages = p.rebuildMessages(rc, projectedTools, discovery)
 	}
 
 	// Apply the run-start-resolved per-run LLM-parameter overrides

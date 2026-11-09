@@ -2857,7 +2857,7 @@ func (c *Config) validatePlanner() error {
 	}
 	if c.Planner.DeferredToolIndex.MaxTokensPerSource < 0 {
 		return fieldError("planner.deferred_tool_index.max_tokens_per_source",
-			fmt.Sprintf("must be >= 0 (0 = use driver default of 2200), got %d",
+			fmt.Sprintf("must be >= 0 (0 = use driver default of 1600), got %d",
 				c.Planner.DeferredToolIndex.MaxTokensPerSource))
 	}
 	if c.Planner.MaxBatchSpawns < 0 {

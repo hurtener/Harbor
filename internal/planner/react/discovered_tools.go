@@ -350,6 +350,12 @@ func projectModelTools(rc planner.RunContext, discovered []string) ([]tools.Tool
 // leading projected tools came from the always-loaded List (the remainder
 // are per-run discoveries).
 func projectModelToolsListed(rc planner.RunContext, discovered []string) ([]tools.Tool, tools.ModelToolNameProjection, int) {
+	return projectModelToolsListedFrom(rc, discovered, newDiscoverySnapshot(rc.Catalog))
+}
+
+// projectModelToolsListedFrom is projectModelToolsListed over a turn's
+// shared discovery snapshot (read only when discoveries need it).
+func projectModelToolsListedFrom(rc planner.RunContext, discovered []string, snapshot *discoverySnapshot) ([]tools.Tool, tools.ModelToolNameProjection, int) {
 	if rc.Catalog == nil {
 		return nil, tools.NewModelToolNameProjection(nil, nil), 0
 	}
@@ -362,8 +368,8 @@ func projectModelToolsListed(rc planner.RunContext, discovered []string) ([]tool
 	if len(discovered) > 0 {
 		discoveryCandidates := candidates
 		complete := false
-		if discoveryView, ok := rc.Catalog.(interface{ DiscoveryTools() ([]tools.Tool, bool) }); ok {
-			discoveryCandidates, complete = discoveryView.DiscoveryTools()
+		if snapshotTools, snapshotComplete, ok := snapshot.get(); ok {
+			discoveryCandidates, complete = snapshotTools, snapshotComplete
 		}
 		discoveryNames := make([]string, 0, len(discoveryCandidates))
 		for _, tool := range discoveryCandidates {

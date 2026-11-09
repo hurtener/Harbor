@@ -95,8 +95,8 @@ type PlannerConfig struct {
 	DeferredToolIndex *bool
 
 	// DeferredToolIndexMaxTokensPerSource is the per-source
-	// `<deferred_tools>` line budget in the canonical chars/4 token
-	// estimate. Zero resolves to the react driver's default (2200); the
+	// `<deferred_tools>` line budget in the index's conservative token
+	// estimate. Zero resolves to the react driver's default (1600); the
 	// react factory passes it to
 	// `react.WithDeferredToolIndexMaxTokensPerSource`. Other drivers
 	// ignore it.

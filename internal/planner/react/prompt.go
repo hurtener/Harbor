@@ -147,20 +147,21 @@ func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Co
 // surface loudly as [planner.ErrMemoryBlockUnserializable] from `Next`
 // (fail-loud, never a silently dropped memory tier).
 func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string) (llm.CompleteRequest, error) {
-	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
-	return b.buildRequestWithProjectedTools(rc, systemPrompt, projected)
+	snapshot := newDiscoverySnapshot(rc.Catalog)
+	projected, _, _ := projectModelToolsListedFrom(rc, rc.DiscoveredTools, snapshot)
+	return b.buildRequestWithProjectedTools(rc, systemPrompt, projected, snapshot)
 }
 
 // buildRequestWithProjectedTools renders the default prompt from the same
 // immutable catalog snapshot Next uses for provider declarations and response
 // resolution. The snapshot is per invocation; no state is retained on the
 // compiled builder or planner.
-func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool) (llm.CompleteRequest, error) {
+func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool, snapshot *discoverySnapshot) (llm.CompleteRequest, error) {
 	replayFrom, err := rc.Trajectory.ReplayStart()
 	if err != nil {
 		return llm.CompleteRequest{}, err
 	}
-	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, replayFrom)
+	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, snapshot, replayFrom)
 	if err != nil {
 		return llm.CompleteRequest{}, err
 	}
@@ -213,21 +214,22 @@ func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, sy
 //     `<additional_guidance>`. One-run UserPersonalization renders in its own
 //     escaped lower-authority section. Both survive a spine replacement.
 func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
-	projected, _ := projectModelTools(rc, rc.DiscoveredTools)
+	snapshot := newDiscoverySnapshot(rc.Catalog)
+	projected, _, _ := projectModelToolsListedFrom(rc, rc.DiscoveredTools, snapshot)
 	replayFrom, err := rc.Trajectory.ReplayStart()
 	if err != nil {
 		// Build's legacy signature cannot return an error. Do not construct
 		// a sendable prompt from invalid coverage; Next uses the checked path.
 		return llm.CompleteRequest{}
 	}
-	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, replayFrom)
+	req, err := b.baseRequestWithProjectedTools(rc, systemPrompt, projected, snapshot, replayFrom)
 	if err != nil {
 		return llm.CompleteRequest{}
 	}
 	return req
 }
 
-func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool, replayFrom int) (llm.CompleteRequest, error) {
+func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, systemPrompt string, projected []tools.Tool, snapshot *discoverySnapshot, replayFrom int) (llm.CompleteRequest, error) {
 	// userLayer is the durable lower-trust user-instruction layer; it is
 	// suppressed when a session override replaces the whole spine.
 	var userLayer string
@@ -255,7 +257,7 @@ func (b defaultBuilder) baseRequestWithProjectedTools(rc planner.RunContext, sys
 	// 1. System block: the twelve XML-tagged sections.
 	var deferredIndex string
 	if !b.deferredIndexDisabled {
-		deferredIndex = renderDeferredToolIndex(rc, b.deferredIndexMaxTokensPerSource, b.deferredIndexMaxTokens)
+		deferredIndex = renderDeferredToolIndexFrom(rc, snapshot, b.deferredIndexMaxTokensPerSource, b.deferredIndexMaxTokens)
 	}
 	sysContent := buildSystemContentWithProjectedTools(systemPrompt, userLayer, b.extraGuidance, b.maxToolExamples, rc, projected, deferredIndex)
 	messages = append(messages, llm.ChatMessage{

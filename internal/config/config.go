@@ -2591,11 +2591,12 @@ type PlannerConfig struct {
 // `tool_search`. Names only, deterministic, and bounded by MaxTokens.
 //
 // `Enabled` is a pointer-bool so an omitted key (nil) resolves to `true`.
-// Budgets use the canonical chars/4 token estimate. `MaxTokensPerSource`
-// bounds one source's line; zero resolves to the react driver's default
-// (2200, about 200 owner-prefixed names). `MaxTokens` is the whole
-// section's safety bound; zero resolves to 8000. Over budget, each source
-// keeps a count-only line before any source is summarized. The validator
+// Budgets use the index's conservative identifier-aware token estimate
+// (stricter than chars/4). `MaxTokensPerSource` bounds one source's line;
+// zero resolves to the react driver's default (1600, about 200 readable
+// tool names). `MaxTokens` is the whole section's safety bound; zero
+// resolves to 8000. Over budget, each source keeps a count-only line
+// before any source is summarized. The validator
 // rejects negative budgets pre-boot. Other drivers ignore these keys.
 type PlannerDeferredToolIndex struct {
 	Enabled            *bool `yaml:"enabled,omitempty"`

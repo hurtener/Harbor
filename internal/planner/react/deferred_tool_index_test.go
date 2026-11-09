@@ -13,39 +13,66 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/builtin"
+	"github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
+// Real owner-scoped physical sources (32-hex digests), so every catalog key
+// is longer than the 44-byte declared-name bound and is hash-shortened.
+var (
+	crmUserSource  = mcp.PhysicalServerName("crm", auth.Owner{Tenant: "tenant", Agent: "agent", User: "user"})
+	docsAgentSrc   = mcp.PhysicalServerName("docs", auth.Owner{Tenant: "tenant", Agent: "agent"})
+	docsUserSource = mcp.PhysicalServerName("docs", auth.Owner{Tenant: "tenant", Agent: "agent", User: "user"})
+)
+
+// crmTools are twelve tools with heavily overlapping names and descriptions,
+// so a ranked text search alone cannot single one out.
+var crmTools = []string{
+	"add_leads_to_campaign", "add_leads_to_list", "add_lead_note", "campaign_lead_stats",
+	"create_lead", "delete_lead", "get_lead", "lead_activity_for_campaign",
+	"list_campaigns", "list_leads", "search_leads", "update_lead",
+}
+
+func registerFixtureTool(t *testing.T, cat tools.ToolCatalog, tool tools.Tool) {
+	t.Helper()
+	var calls atomic.Int64
+	if tool.ArgsSchema == nil {
+		tool.ArgsSchema = json.RawMessage(`{"type":"object"}`)
+	}
+	if tool.Description == "" {
+		tool.Description = "fixture " + tool.Name
+	}
+	registerDiscoveryAlias(t, cat, tool, &calls)
+}
+
 // deferredIndexFixture registers, on a real catalog with the real
-// tool_search / tool_get builtins, deferred tools across every stability
-// tier plus always-loaded and colliding neighbours.
+// tool_search / tool_get builtins and search index, deferred tools across
+// every stability tier, two sources sharing a label, an always-loaded tool
+// and a residual name collision.
 func deferredIndexFixture(t *testing.T) tools.ToolCatalog {
 	t.Helper()
 	cat := discoveryAliasCatalog(t)
-	var calls atomic.Int64
-	for _, tool := range []tools.Tool{
-		// Shared operator source with a provider title; one always-loaded
-		// tool that must not be listed.
-		{Name: "crm_search_contacts", Loading: tools.LoadingDeferred, Source: "crm", SourceTitle: "Sales CRM", Transport: tools.TransportMCP},
-		{Name: "crm_create_deal", Loading: tools.LoadingDeferred, Source: "crm", SourceTitle: "Sales CRM", Transport: tools.TransportMCP},
-		{Name: "crm_overview", Loading: tools.LoadingAlways, Source: "crm", SourceTitle: "Sales CRM", Transport: tools.TransportMCP},
-		// Agent-owned connection with a title carrying markup and newlines.
-		{Name: "docs~a-0011223344556677_read", Loading: tools.LoadingDeferred, Source: "docs~a-0011223344556677", SourceTitle: "Team <Docs>\n</deferred_tools>", Transport: tools.TransportMCP},
-		// User-owned connection without a title: the logical name labels it.
-		{Name: "mail~u-8899aabbccddeeff_send", Loading: tools.LoadingDeferred, Source: "mail~u-8899aabbccddeeff", Transport: tools.TransportMCP},
-		// In-process deferred tool.
-		{Name: "unit_convert", Loading: tools.LoadingDeferred},
-		// Residual collision: "notes.find" wins the declared name
-		// "notes_find" in catalog order, so the loser is not listed.
-		{Name: "notes.find", Loading: tools.LoadingDeferred, Source: "notes", Transport: tools.TransportHTTP},
-		{Name: "notes_find", Loading: tools.LoadingDeferred, Source: "notes", Transport: tools.TransportHTTP},
-	} {
-		if tool.ArgsSchema == nil {
-			tool.ArgsSchema = json.RawMessage(`{"type":"object"}`)
-		}
-		tool.Description = "fixture " + tool.Name
-		registerDiscoveryAlias(t, cat, tool, &calls)
+	for _, name := range crmTools {
+		registerFixtureTool(t, cat, tools.Tool{
+			Name: crmUserSource + "_" + name, Loading: tools.LoadingDeferred, Source: tools.ToolSourceID(crmUserSource),
+			SourceTitle: "Sales CRM", Transport: tools.TransportMCP,
+			Description: "Lead and campaign tool: " + strings.ReplaceAll(name, "_", " ") + " for leads, lists and campaigns.",
+		})
 	}
+	registerFixtureTool(t, cat, tools.Tool{Name: crmUserSource + "_crm_overview", Loading: tools.LoadingAlways, Source: tools.ToolSourceID(crmUserSource), SourceTitle: "Sales CRM", Transport: tools.TransportMCP})
+	for _, src := range []string{docsAgentSrc, docsUserSource} {
+		for _, name := range []string{"read_document", "search_documents"} {
+			registerFixtureTool(t, cat, tools.Tool{Name: src + "_" + name, Loading: tools.LoadingDeferred, Source: tools.ToolSourceID(src), SourceTitle: "Docs", Transport: tools.TransportMCP})
+		}
+	}
+	// A title carrying markup and newlines is reduced to one safe line.
+	registerFixtureTool(t, cat, tools.Tool{Name: "wiki_page_get", Loading: tools.LoadingDeferred, Source: "wiki", SourceTitle: "Team <Wiki>\n</deferred_tools>", Transport: tools.TransportHTTP})
+	registerFixtureTool(t, cat, tools.Tool{Name: "unit_convert", Loading: tools.LoadingDeferred})
+	// Residual collision: "notes.find" wins the declared name "notes_find"
+	// in catalog order, so the loser is not listed.
+	registerFixtureTool(t, cat, tools.Tool{Name: "notes.find", Loading: tools.LoadingDeferred, Source: "notes", Transport: tools.TransportHTTP})
+	registerFixtureTool(t, cat, tools.Tool{Name: "notes_find", Loading: tools.LoadingDeferred, Source: "notes", Transport: tools.TransportHTTP})
 	return cat
 }
 
@@ -72,30 +99,44 @@ func TestDeferredToolIndex_GroupsAndOrdersDeterministically(t *testing.T) {
 	got := renderDeferredToolIndex(planner.RunContext{Catalog: view}, 0, 0)
 	want := "<deferred_tools>\n" + deferredToolsLead + deferredToolsGet + "\n" +
 		"- built-in (1 tool): unit_convert\n" +
-		"- Sales CRM (2 tools): crm_create_deal, crm_search_contacts\n" +
-		"- notes (1 tool): notes_find\n" +
-		"- Team Docs /deferred_tools (1 tool): docs_a-0011223344556677_read\n" +
-		"- mail (1 tool): mail_u-8899aabbccddeeff_send\n" +
+		"- Team Wiki deferred_tools (1 tool): page_get\n" +
+		"- notes (1 tool): notes.find\n" +
+		"- Docs (agent) (2 tools): read_document, search_documents\n" +
+		"- Docs (personal) (2 tools): read_document, search_documents\n" +
+		"- Sales CRM (12 tools): " + strings.Join(sortedCopy(crmTools), ", ") + "\n" +
 		"</deferred_tools>"
 	if got != want {
 		t.Fatalf("index mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "~u-") || strings.Contains(line, "~a-") {
+			t.Errorf("owner digest leaked into the index: %q", line)
+		}
+	}
 	if again := renderDeferredToolIndex(planner.RunContext{Catalog: view}, 0, 0); again != got {
 		t.Fatal("index is not byte-stable across renders")
 	}
-	// A view whose discovery order is reversed renders the same bytes.
-	reversed := reversedDiscoveryView{view}
-	if other := renderDeferredToolIndex(planner.RunContext{Catalog: reversed}, 0, 0); other != got {
-		t.Fatalf("index depends on discovery order\n--- got ---\n%s", other)
+	// Discovery order does not change the bytes. (The residual-collision
+	// pair is excluded: catalog order is what picks its winner.)
+	noCollision := tools.NewExclusionView(view, []string{"notes"}, nil)
+	ordered := renderDeferredToolIndex(planner.RunContext{Catalog: noCollision}, 0, 0)
+	if other := renderDeferredToolIndex(planner.RunContext{Catalog: reversedDiscoveryView{noCollision}}, 0, 0); other != ordered {
+		t.Fatalf("index depends on discovery order\n--- got ---\n%s\n--- want ---\n%s", other, ordered)
 	}
+}
+
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }
 
 // reversedDiscoveryView reverses the order within each loading tier, so
 // always-loaded tools keep namespace precedence over deferred ones.
-type reversedDiscoveryView struct{ tools.PlannerView }
+type reversedDiscoveryView struct{ tools.ExclusionView }
 
 func (v reversedDiscoveryView) DiscoveryTools() ([]tools.Tool, bool) {
-	in, complete := v.PlannerView.DiscoveryTools()
+	in, complete := v.ExclusionView.DiscoveryTools()
 	var always, deferred []tools.Tool
 	for i := len(in) - 1; i >= 0; i-- {
 		if in[i].Loading == tools.LoadingDeferred {
@@ -107,47 +148,37 @@ func (v reversedDiscoveryView) DiscoveryTools() ([]tools.Tool, bool) {
 	return append(always, deferred...), complete
 }
 
-// Every listed name is accepted by the real tool_get and tool_search
-// under the same run view, and resolves to the tool the planner would
-// declare after discovery.
-func TestDeferredToolIndex_ListedNamesResolve(t *testing.T) {
-	t.Parallel()
-	cat := deferredIndexFixture(t)
-	view := deferredIndexView(cat)
-	section := renderDeferredToolIndex(planner.RunContext{Catalog: view}, 0, 0)
+// listedDeferredRefs parses the index into the `<label>/<name>` references
+// its lead line tells the model to search for.
+func listedDeferredRefs(section string) []string {
+	var refs []string
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		head, list, ok := strings.Cut(line, "): ")
+		if !ok {
+			continue
+		}
+		label := strings.TrimPrefix(head[:strings.LastIndex(head, " (")], "- ")
+		for _, name := range strings.Split(list, ", ") {
+			if name == "" || strings.Contains(name, " ") {
+				continue
+			}
+			refs = append(refs, label+"/"+name)
+		}
+	}
+	return refs
+}
+
+func runToolCtx(t *testing.T, view tools.PlannerCatalogView) context.Context {
+	t.Helper()
 	q := discoveryAliasIdentity()
 	ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = tools.WithRunToolView(ctx, view)
-	get, _ := cat.Resolve("tool_get")
-	search, _ := cat.Resolve("tool_search")
-	names := listedDeferredNames(section)
-	if len(names) != 6 {
-		t.Fatalf("listed %v, want 6 names", names)
-	}
-	for _, name := range names {
-		out := invokeBuiltin[builtin.ToolGetOut](t, ctx, get, builtin.ToolGetArgs{Name: name})
-		if !out.Found {
-			t.Errorf("tool_get(%q) not found", name)
-		}
-		found := invokeBuiltin[builtin.ToolSearchOut](t, ctx, search, builtin.ToolSearchArgs{Query: name})
-		hit := false
-		for _, r := range found.Tools {
-			hit = hit || r.Name == name
-		}
-		if !hit {
-			t.Errorf("tool_search(%q) did not return the listed name: %+v", name, found.Tools)
-		}
-		decls := buildToolDeclarations(planner.RunContext{Catalog: view}, []string{name})
-		if _, ok := declarationNamed(decls, name); !ok {
-			t.Errorf("listed name %q is not declared after discovery", name)
-		}
-	}
-	if strings.Count(section, "notes_find") != 1 {
-		t.Errorf("collision loser listed: %s", section)
-	}
+	return tools.WithRunToolView(ctx, view)
 }
 
 func invokeBuiltin[Out any](t *testing.T, ctx context.Context, desc tools.ToolDescriptor, args any) Out {
@@ -171,56 +202,150 @@ func invokeBuiltin[Out any](t *testing.T, ctx context.Context, desc tools.ToolDe
 	return out
 }
 
-// listedDeferredNames parses the names out of the owner lines.
-func listedDeferredNames(section string) []string {
-	var names []string
-	for _, line := range strings.Split(section, "\n") {
-		if !strings.HasPrefix(line, "- ") {
-			continue
-		}
-		_, list, ok := strings.Cut(line, "): ")
-		if !ok {
-			continue
-		}
-		for _, name := range strings.Split(list, ", ") {
-			if name == "" || strings.Contains(name, " ") {
-				continue
-			}
-			names = append(names, name)
-		}
+func discoveryNames(view tools.PlannerCatalogView) []string {
+	discovered, _ := tools.DiscoveryToolsOf(view)
+	names := make([]string, 0, len(discovered))
+	for _, tool := range discovered {
+		names = append(names, tool.Name)
 	}
 	return names
+}
+
+// Every listed entry, searched exactly as the lead line instructs, comes
+// back alone from the real tool_search (despite >10 competing tools with
+// overlapping text and hash-shortened declared names), is harvested from the
+// search observation, and is declared on the next turn. tool_get describes
+// the same reference.
+func TestDeferredToolIndex_ListedEntriesLoadThroughToolSearch(t *testing.T) {
+	t.Parallel()
+	cat := deferredIndexFixture(t)
+	view := deferredIndexView(cat)
+	section := renderDeferredToolIndex(planner.RunContext{Catalog: view}, 0, 0)
+	ctx := runToolCtx(t, view)
+	get, _ := cat.Resolve("tool_get")
+	search, _ := cat.Resolve("tool_search")
+	projection := tools.NewModelToolNameProjectionWithReservedControls(discoveryNames(view))
+	refs := listedDeferredRefs(section)
+	if len(refs) != 19 {
+		t.Fatalf("listed %d refs %v, want 19", len(refs), refs)
+	}
+	for _, ref := range refs {
+		label, readable, _ := strings.Cut(ref, "/")
+		found := invokeBuiltin[builtin.ToolSearchOut](t, ctx, search, builtin.ToolSearchArgs{Query: ref})
+		if len(found.Tools) != 1 {
+			t.Errorf("tool_search(%q) returned %d results, want exactly the listed tool", ref, len(found.Tools))
+			continue
+		}
+		declared := found.Tools[0].Name
+		catalogName, ok := projection.ResolveDeclared(declared)
+		if !ok {
+			t.Errorf("tool_search(%q) returned undeclarable %q", ref, declared)
+			continue
+		}
+		tool, _ := view.Resolve(catalogName)
+		if tools.ReadableToolName(tool) != readable || !strings.HasPrefix(label, tools.SourceLabel(tool)) {
+			t.Errorf("tool_search(%q) returned %q (%s), a different tool", ref, declared, catalogName)
+		}
+		// The observation is harvested and the tool is declared next turn.
+		obs, err := json.Marshal(found)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := &planner.Trajectory{Steps: []planner.Step{{Action: planner.CallTool{Tool: "tool_search"}, LLMObservation: json.RawMessage(obs)}}}
+		harvested := deriveDiscoveredFromTrajectory(tr)
+		if len(harvested) != 1 || harvested[0] != declared {
+			t.Errorf("harvest of %q = %v, want [%s]", ref, harvested, declared)
+		}
+		if _, ok := declarationNamed(buildToolDeclarations(planner.RunContext{Catalog: view}, harvested), declared); !ok {
+			t.Errorf("%q not declared on the next turn", ref)
+		}
+		if out := invokeBuiltin[builtin.ToolGetOut](t, ctx, get, builtin.ToolGetArgs{Name: ref}); !out.Found {
+			t.Errorf("tool_get(%q) not found", ref)
+		}
+	}
+	// A shortened declared name, the physical name, the qualified and the
+	// bare readable name all resolve exactly to the one tool.
+	physical := crmUserSource + "_add_leads_to_campaign"
+	declared := tools.ModelVisibleToolName(physical)
+	if declared == physical {
+		t.Fatalf("fixture name %q was not shortened; the regression needs a >44-byte key", physical)
+	}
+	for _, query := range []string{declared, physical, "Sales CRM/add_leads_to_campaign", "add_leads_to_campaign"} {
+		found := invokeBuiltin[builtin.ToolSearchOut](t, ctx, search, builtin.ToolSearchArgs{Query: query})
+		if len(found.Tools) != 1 || found.Tools[0].Name != declared {
+			t.Errorf("tool_search(%q) = %+v, want only %s", query, found.Tools, declared)
+		}
+	}
+}
+
+// A bare name shared by several sources returns every match first; the
+// shared unqualified label returns both sources; a tier-qualified label
+// returns one; scoping is exactly the run view's.
+func TestToolSearch_ExactMatchAmbiguityAndScope(t *testing.T) {
+	t.Parallel()
+	cat := deferredIndexFixture(t)
+	view := deferredIndexView(cat)
+	search, _ := cat.Resolve("tool_search")
+	ctx := runToolCtx(t, view)
+	agentDecl := tools.ModelVisibleToolName(docsAgentSrc + "_search_documents")
+	userDecl := tools.ModelVisibleToolName(docsUserSource + "_search_documents")
+	for _, query := range []string{"search_documents", "Docs/search_documents"} {
+		found := invokeBuiltin[builtin.ToolSearchOut](t, ctx, search, builtin.ToolSearchArgs{Query: query})
+		if len(found.Tools) < 2 {
+			t.Fatalf("tool_search(%q) = %+v, want both sources", query, found.Tools)
+		}
+		first := map[string]bool{found.Tools[0].Name: true, found.Tools[1].Name: true}
+		if !first[agentDecl] || !first[userDecl] {
+			t.Errorf("tool_search(%q) did not return both exact matches first: %+v", query, found.Tools)
+		}
+	}
+	found := invokeBuiltin[builtin.ToolSearchOut](t, ctx, search, builtin.ToolSearchArgs{Query: "Docs (personal)/search_documents"})
+	if len(found.Tools) != 1 || found.Tools[0].Name != userDecl {
+		t.Errorf("qualified label did not disambiguate: %+v", found.Tools)
+	}
+	// Excluded from the run view: an exact reference never reaches it.
+	excluded := tools.NewExclusionView(view, nil, []string{crmUserSource + "_delete_lead"})
+	hidden := invokeBuiltin[builtin.ToolSearchOut](t, runToolCtx(t, excluded), search, builtin.ToolSearchArgs{Query: "Sales CRM/delete_lead"})
+	for _, r := range hidden.Tools {
+		if r.Name == tools.ModelVisibleToolName(crmUserSource+"_delete_lead") {
+			t.Fatalf("exact search reached a tool outside the run view: %+v", hidden.Tools)
+		}
+	}
+	get, _ := cat.Resolve("tool_get")
+	if out := invokeBuiltin[builtin.ToolGetOut](t, runToolCtx(t, excluded), get, builtin.ToolGetArgs{Name: "Sales CRM/delete_lead"}); out.Found {
+		t.Fatal("tool_get described a tool outside the run view")
+	}
 }
 
 func TestDeferredToolIndex_RespectsRunView(t *testing.T) {
 	t.Parallel()
 	cat := deferredIndexFixture(t)
-	var calls atomic.Int64
-	registerDiscoveryAlias(t, cat, tools.Tool{Name: "vault_read", Description: "scoped", ArgsSchema: json.RawMessage(`{"type":"object"}`), Loading: tools.LoadingDeferred, Source: "vault", AuthScopes: []string{"vault.read"}, Transport: tools.TransportMCP}, &calls)
+	registerFixtureTool(t, cat, tools.Tool{Name: "vault_read", Loading: tools.LoadingDeferred, Source: "vault", AuthScopes: []string{"vault.read"}, Transport: tools.TransportMCP})
 	base := deferredIndexView(cat)
 	cases := map[string]struct {
 		view   tools.PlannerCatalogView
 		absent []string
 	}{
 		"scope":     {base, []string{"vault_read"}},
-		"disabled":  {tools.NewExclusionView(base, nil, []string{"crm_create_deal"}), []string{"crm_create_deal"}},
-		"paused":    {tools.NewExclusionView(base, []string{"crm"}, nil), []string{"Sales CRM", "crm_search_contacts"}},
-		"allowlist": {tools.NewAllowlistView(base, []string{"tool_search", "unit_convert"}), []string{"crm_", "notes_find", "mail_"}},
+		"disabled":  {tools.NewExclusionView(base, nil, []string{crmUserSource + "_create_lead"}), []string{"create_lead"}},
+		"paused":    {tools.NewExclusionView(base, []string{crmUserSource}, nil), []string{"Sales CRM", "search_leads"}},
+		"allowlist": {tools.NewAllowlistView(base, []string{"tool_search", "unit_convert"}), []string{"Sales CRM", "notes", "Docs"}},
 		"override":  {tools.NewLoadingOverrideView(base, map[string]tools.LoadingMode{"unit_convert": tools.LoadingAlways}, nil), []string{"unit_convert", "built-in"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			section := renderDeferredToolIndex(planner.RunContext{Catalog: tc.view}, 0, 0)
+			body := section[strings.Index(section, "\n- ")+1:]
 			for _, absent := range tc.absent {
-				if strings.Contains(section, absent) {
+				if strings.Contains(body, absent) {
 					t.Errorf("index lists %q outside the run view:\n%s", absent, section)
 				}
 			}
 		})
 	}
 	granted := tools.NewPlannerView(cat, tools.CatalogFilter{TenantID: "tenant", UserID: "user", SessionID: "session", GrantedScopes: []string{"vault.read"}})
-	if section := renderDeferredToolIndex(planner.RunContext{Catalog: granted}, 0, 0); !strings.Contains(section, "vault_read") {
+	if section := renderDeferredToolIndex(planner.RunContext{Catalog: granted}, 0, 0); !strings.Contains(section, "- vault (1 tool): read\n") {
 		t.Errorf("granted scoped tool missing:\n%s", section)
 	}
 	// The allowlist keeps tool_search but not tool_get: tool_get is not offered.
@@ -238,7 +363,7 @@ func TestDeferredToolIndex_EmptyCases(t *testing.T) {
 		"nil catalog":       nil,
 		"no discovery view": &stubCatalog{tools: []tools.Tool{{Name: "tool_search"}, {Name: "x", Loading: tools.LoadingDeferred}}},
 		"no tool_search":    tools.NewAllowlistView(base, []string{"tool_get", "unit_convert"}),
-		"no deferred tools": tools.NewAllowlistView(base, []string{"tool_search", "crm_overview"}),
+		"no deferred tools": tools.NewAllowlistView(base, []string{"tool_search", crmUserSource + "_crm_overview"}),
 		"only tool_search":  tools.NewAllowlistView(base, []string{"tool_search"}),
 	}
 	for name, view := range cases {
@@ -253,11 +378,16 @@ func TestDeferredToolIndex_EmptyCases(t *testing.T) {
 }
 
 func newBudgetOwner(key string, names []string) *deferredIndexOwner {
-	owner := &deferredIndexOwner{key: key, label: key, names: names, nameBytes: make([]int, len(names)+1)}
-	for i, name := range names {
-		owner.nameBytes[i+1] = owner.nameBytes[i] + len(name)
-	}
+	owner := &deferredIndexOwner{key: key, label: key, names: append([]string(nil), names...)}
+	owner.finish()
 	return owner
+}
+
+// deferredOwnerLineLen is the rendered byte length of one owner line.
+func deferredOwnerLineLen(owner *deferredIndexOwner, shown int) int {
+	var b strings.Builder
+	writeDeferredOwnerLine(&b, owner, shown)
+	return b.Len()
 }
 
 func budgetOwners() []*deferredIndexOwner {
@@ -273,12 +403,9 @@ func budgetOwners() []*deferredIndexOwner {
 
 func TestDeferredToolIndex_BudgetTruncation(t *testing.T) {
 	t.Parallel()
-	const budget = 200 // tokens → 800 bytes
-	got := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), 1<<20, budget*4)
-	if len(got) > budget*4 {
-		t.Fatalf("index is %d bytes, over the %d-byte budget", len(got), budget*4)
-	}
-	if got != layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), 1<<20, budget*4) {
+	const budget = 300
+	got := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), 1<<20, budget)
+	if got != layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), 1<<20, budget) {
 		t.Fatal("truncation is not deterministic")
 	}
 	for _, want := range []string{
@@ -300,45 +427,106 @@ func TestDeferredToolIndex_BudgetTruncation(t *testing.T) {
 		if _, err := fmt.Sscanf(line[strings.Index(line, "… and ")+len("… and "):], "%d", &more); err != nil {
 			t.Fatalf("parse %q: %v", line, err)
 		}
-		shown := strings.Count(line, "big_tool_")
-		if shown+more != 200 {
+		if shown := strings.Count(line, "big_tool_"); shown+more != 200 {
 			t.Errorf("shown %d + more %d != 200", shown, more)
 		}
 	}
 
 	owners := budgetOwners()
-	fixed := len(deferredToolsOpen) + len(deferredToolsLead) + 1 + len(deferredToolsClose)
-	countOnlyBytes := fixed
+	fixed := estimateIndexTokens(deferredToolsOpen) + estimateIndexTokens(deferredToolsLead) + 1 + estimateIndexTokens(deferredToolsClose)
+	countOnly := fixed
 	for _, owner := range owners {
-		countOnlyBytes += deferredOwnerLineLen(owner, 0)
+		countOnly += deferredOwnerLineTokens(owner, 0)
 	}
-
 	// Count-only: every owner keeps a line even when no name fits.
-	countOnly := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), 1<<20, countOnlyBytes)
-	if len(countOnly) != countOnlyBytes {
-		t.Errorf("count-only layout is %d bytes, computed %d", len(countOnly), countOnlyBytes)
-	}
-	for _, want := range []string{"- Big (200 tools): names omitted; use tool_search", "- Mid (30 tools): ", "- Small (2 tools): "} {
-		if !strings.Contains(countOnly, want) {
-			t.Errorf("count-only layout missing %q:\n%s", want, countOnly)
+	layout := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), 1<<20, countOnly)
+	for _, want := range []string{"- Big (200 tools): names omitted; use tool_search", "- Mid (30 tools): names omitted", "- Small (2 tools): names omitted"} {
+		if !strings.Contains(layout, want) {
+			t.Errorf("count-only layout missing %q:\n%s", want, layout)
 		}
 	}
-
 	// Below count-only: trailing owners fold into one summary line.
-	foldedBytes := fixed + deferredOwnerLineLen(owners[0], 0) + len(deferredOverflowLine(owners[1:]))
-	folded := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), 1<<20, foldedBytes)
+	folded := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), 1<<20, fixed+deferredOwnerLineTokens(owners[0], 0)+estimateIndexTokens(deferredOverflowLine(owners[1:])))
 	if !strings.Contains(folded, "- Big (200 tools): names omitted; use tool_search\n- … and 2 more sources (32 tools); use tool_search\n") {
 		t.Errorf("folded layout wrong:\n%s", folded)
 	}
-	if len(folded) > foldedBytes {
-		t.Errorf("folded layout is %d bytes, over %d", len(folded), foldedBytes)
-	}
-
 	// A generous budget lists everything with no truncation marker.
 	full := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), 1<<20, 1<<20)
 	if strings.Contains(full, "more;") || strings.Contains(full, "omitted") || strings.Count(full, "big_tool_") != 200 {
 		t.Errorf("unbounded layout truncated")
 	}
+}
+
+// The per-source cap bounds each line independently: a large source is
+// truncated at its own budget while a small one is listed in full, and the
+// overall bound still applies on top.
+func TestDeferredToolIndex_PerSourceBudget(t *testing.T) {
+	t.Parallel()
+	const perSource = 100
+	owners := budgetOwners()
+	got := layoutDeferredToolIndex(deferredToolsLead, owners, perSource, 1<<20)
+	for _, owner := range owners {
+		if cost := deferredOwnerLineTokens(owner, deferredOwnerCap(owner, perSource)); cost > perSource {
+			t.Errorf("%s line costs %d tokens, over the %d per-source budget", owner.label, cost, perSource)
+		}
+	}
+	for _, want := range []string{"- Big (200 tools): big_tool_000, ", "- Small (2 tools): small_a, small_b\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if big := strings.Count(got, "big_tool_"); big == 0 || big == 200 {
+		t.Errorf("big source shows %d names, want a per-source truncation", big)
+	}
+	tight := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), perSource, 150)
+	if !strings.Contains(tight, "- Small (2 tools): ") || strings.Count(tight, "big_tool_") >= strings.Count(got, "big_tool_") {
+		t.Errorf("overall bound not applied:\n%s", tight)
+	}
+}
+
+func TestEstimateIndexTokens(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]int{
+		"":                                 0,
+		"add_leads_to_campaign":            5, // add, leads, to, campaign(2)
+		"0123456789abcdef0123456789abcdef": 13,
+		"big_tool_042":                     3,
+		", ":                               1,
+		"Sales CRM/create_lead":            5,
+	} {
+		if got := estimateIndexTokens(in); got != want {
+			t.Errorf("estimateIndexTokens(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// Measures 200 tool names of one real owner-scoped connection, as the index
+// lists them (readable) and as their declared names would cost, under both
+// the index estimator and the request-wide chars/4 estimate, and pins that
+// the default per-source budget lists 200 readable names in full.
+func TestDeferredToolIndex_DefaultBudgetMeasurement(t *testing.T) {
+	t.Parallel()
+	verbs := []string{"add_leads_to_campaign", "search_contacts", "create_deal", "update_record", "list_accounts", "get_invoice_by_id", "export_report"}
+	source := crmUserSource
+	var readable, declared []string
+	for i := range 200 {
+		physical := fmt.Sprintf("%s_%s_%d", source, verbs[i%len(verbs)], i)
+		readable = append(readable, tools.ReadableToolName(tools.Tool{Name: physical, Source: tools.ToolSourceID(source)}))
+		declared = append(declared, tools.ModelVisibleToolName(physical))
+	}
+	measure := func(names []string) (line string, est, chars4 int) {
+		owner := newBudgetOwner("Sales CRM", names)
+		line = layoutDeferredToolIndex(deferredToolsLead, []*deferredIndexOwner{owner}, DefaultDeferredToolIndexMaxTokensPerSource, DefaultDeferredToolIndexMaxTokens)
+		return line, deferredOwnerLineTokens(owner, len(names)), deferredOwnerLineLen(owner, len(names))/4 + 1
+	}
+	readableLine, readableEst, readableChars4 := measure(readable)
+	if strings.Contains(readableLine, "more; use tool_search") {
+		t.Fatalf("default per-source budget (%d) does not list 200 readable names (estimate %d tokens)", DefaultDeferredToolIndexMaxTokensPerSource, readableEst)
+	}
+	_, declaredEst, declaredChars4 := measure(declared)
+	t.Logf("source %s; sample readable %q, declared %q", source, readable[0], declared[0])
+	t.Logf("200 readable names: index estimate %d tokens (%.1f/name), chars/4 %d tokens", readableEst, float64(readableEst)/200, readableChars4)
+	t.Logf("200 declared names: index estimate %d tokens (%.1f/name), chars/4 %d tokens", declaredEst, float64(declaredEst)/200, declaredChars4)
 }
 
 func TestDeferredToolIndex_DisabledFlag(t *testing.T) {
@@ -366,8 +554,15 @@ func TestDeferredToolIndex_DisabledFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := deferredSection(systemTextFor(t, small.(*ReActPlanner), rc)); !strings.Contains(got, "- … and 5 more sources (6 tools); use tool_search\n") {
+	if got := deferredSection(systemTextFor(t, small.(*ReActPlanner), rc)); !strings.Contains(got, "more sources") {
 		t.Fatalf("factory did not carry max_tokens:\n%s", got)
+	}
+	perSource, err := factory(planner.PlannerConfig{DeferredToolIndexMaxTokensPerSource: 30}, planner.FactoryDeps{LLM: &lastRequestClient{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := deferredSection(systemTextFor(t, perSource.(*ReActPlanner), rc)); !strings.Contains(got, "- Sales CRM (12 tools): add_lead_note, ") || !strings.Contains(got, "more; use tool_search") {
+		t.Fatalf("factory did not carry max_tokens_per_source:\n%s", got)
 	}
 }
 
@@ -410,9 +605,10 @@ func TestNext_DeferredToolIndexStableAcrossTurns(t *testing.T) {
 		t.Fatal("index leaked into the cached system spine")
 	}
 
-	// Discover a deferred tool with the real search, then take turn 3.
-	third := turn(searchAliasTrajectory(t, cat, q, "crm_create_deal"))
-	if _, ok := declarationNamed(third.Tools, "crm_create_deal"); !ok {
+	// Discover a deferred tool exactly as the index instructs, then take turn 3.
+	third := turn(searchAliasTrajectory(t, cat, q, "Sales CRM/create_lead"))
+	declared := tools.ModelVisibleToolName(crmUserSource + "_create_lead")
+	if _, ok := declarationNamed(third.Tools, declared); !ok {
 		t.Fatal("discovered tool not declared on the next turn")
 	}
 	s3 := systemText(t, third)
@@ -424,62 +620,40 @@ func TestNext_DeferredToolIndexStableAcrossTurns(t *testing.T) {
 	}
 }
 
-// The per-source cap bounds each line independently: a large source is
-// truncated at its own budget while a small one is listed in full, and the
-// overall bound is not reached.
-func TestDeferredToolIndex_PerSourceBudget(t *testing.T) {
+// The trade-off: the index reflects the CURRENT run view, so a change to a
+// deferred source between turns — a list_changed refresh adding a tool, an
+// allowlist edit, a loading-mode edit — changes the section (and the
+// prompt bytes after it) on the next turn. Nothing else does.
+func TestNext_DeferredToolIndexChangesOnlyWithDeferredSources(t *testing.T) {
 	t.Parallel()
-	const perSource = 100 // tokens → 400 bytes
-	got := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), perSource*4, 1<<20)
-	for _, line := range strings.Split(got, "\n") {
-		if strings.HasPrefix(line, "- ") && len(line)+1 > perSource*4 {
-			t.Errorf("line is %d bytes, over the %d-byte per-source budget: %q", len(line)+1, perSource*4, line)
-		}
+	q := discoveryAliasIdentity()
+	ctx := promptCacheCtx(t, q, "agent-1")
+	indexOf := func(view tools.PlannerCatalogView) string {
+		return deferredSection(systemText(t, nextRequest(t, ctx, planner.RunContext{Quadruple: q, Goal: "g", Catalog: view})))
 	}
-	for _, want := range []string{"- Big (200 tools): big_tool_000, ", "more; use tool_search\n- Mid (30 tools): mid_tool_00", "- Small (2 tools): small_a, small_b\n"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q in:\n%s", want, got)
-		}
+	cat := deferredIndexFixture(t)
+	view := deferredIndexView(cat)
+	before := indexOf(view)
+	if before != indexOf(view) {
+		t.Fatal("index changed with no source change")
 	}
-	big := strings.Count(got, "big_tool_")
-	if big == 0 || big == 200 {
-		t.Errorf("big source shows %d names, want a per-source truncation", big)
+	// An always-loaded tool attaching does not touch the index.
+	registerFixtureTool(t, cat, tools.Tool{Name: "clock_now", Loading: tools.LoadingAlways})
+	if after := indexOf(view); after != before {
+		t.Fatalf("always-loaded attach changed the index:\n%s", after)
 	}
-	// The overall bound still applies on top of the per-source caps.
-	tight := layoutDeferredToolIndex(deferredToolsLead, budgetOwners(), perSource*4, 600)
-	if len(tight) > 600 || !strings.Contains(tight, "- Small (2 tools): ") {
-		t.Errorf("overall bound not applied (%d bytes):\n%s", len(tight), tight)
+	// list_changed: the deferred source gains a tool.
+	registerFixtureTool(t, cat, tools.Tool{Name: crmUserSource + "_merge_leads", Loading: tools.LoadingDeferred, Source: tools.ToolSourceID(crmUserSource), SourceTitle: "Sales CRM", Transport: tools.TransportMCP})
+	changed := indexOf(view)
+	if changed == before || !strings.Contains(changed, "- Sales CRM (13 tools): ") || !strings.Contains(changed, "merge_leads") {
+		t.Fatalf("list_changed did not update the index:\n%s", changed)
 	}
-}
-
-// Measures the per-name cost under the repo's chars/4 estimator for 200
-// bare names and 200 names declared under a runtime-added connection's
-// owner-scoped source prefix, and pins that the default per-source budget
-// lists both sets of 200 names in full.
-func TestDeferredToolIndex_DefaultBudgetMeasurement(t *testing.T) {
-	t.Parallel()
-	verbs := []string{"search_contacts", "create_deal", "update_record", "list_accounts", "get_invoice"}
-	measure := func(prefix string) (string, int) {
-		names := make([]string, 0, 200)
-		for i := range 200 {
-			names = append(names, tools.ModelVisibleToolName(fmt.Sprintf("%s%s_%d", prefix, verbs[i%len(verbs)], i)))
-		}
-		sort.Strings(names)
-		owner := newBudgetOwner("Sales CRM", names)
-		full := deferredOwnerLineLen(owner, len(names))
-		line := layoutDeferredToolIndex(deferredToolsLead, []*deferredIndexOwner{owner}, DefaultDeferredToolIndexMaxTokensPerSource*4, DefaultDeferredToolIndexMaxTokens*4)
-		return line, full
+	// An allowlist edit and a loading-mode edit each change it.
+	if got := indexOf(tools.NewAllowlistView(view, []string{"tool_search", "unit_convert"})); got == changed || strings.Contains(got, "Sales CRM") {
+		t.Fatalf("allowlist edit did not update the index:\n%s", got)
 	}
-	bare, bareBytes := measure("")
-	if strings.Contains(bare, "more; use tool_search") {
-		t.Fatalf("default per-source budget does not list 200 bare names (%d bytes, %d tokens)", bareBytes, bareBytes/4+1)
+	overridden := tools.NewLoadingOverrideView(view, map[string]tools.LoadingMode{"unit_convert": tools.LoadingAlways}, nil)
+	if got := indexOf(overridden); got == changed || strings.Contains(got, "unit_convert") {
+		t.Fatalf("loading-mode edit did not update the index:\n%s", got)
 	}
-	prefixed, prefixedBytes := measure("crm~u-0123456789abcdef_")
-	if strings.Contains(prefixed, "more; use tool_search") || strings.Count(prefixed, "crm_u-") != 200 {
-		t.Fatalf("default per-source budget lists %d of 200 owner-prefixed names (%d bytes, %d tokens)", strings.Count(prefixed, "crm_u-"), prefixedBytes, prefixedBytes/4+1)
-	}
-	t.Logf("200 bare names: %d bytes = %d tokens (chars/4), %.1f tokens/name", bareBytes, bareBytes/4+1, float64(bareBytes)/4/200)
-	t.Logf("200 owner-prefixed names: %d bytes = %d tokens (chars/4), %.1f tokens/name; listed in full at default: %t",
-		prefixedBytes, prefixedBytes/4+1, float64(prefixedBytes)/4/200, !strings.Contains(prefixed, "more; use tool_search"))
-	t.Logf("owner-prefixed names listed at the default per-source budget: %d of 200", strings.Count(prefixed, "crm_u-"))
 }

@@ -22,16 +22,23 @@ Two versions move independently in Harbor (RFC §5.3):
 - **Deferred tool index in the planner prompt.** When a run has
   deferred-loading tools, the ReAct system prompt gains a `<deferred_tools>`
   section after `<available_tools>` listing them by provider source
-  (`- <source label> (N tools): name_a, name_b`), so the model knows which
-  sources have on-demand tools and loads them with `tool_search` before
-  calling them. The set is the run's own tool view, named exactly as
-  `tool_search` and `tool_get` accept; it is names only, sorted for
-  byte-stable prompt caching across a run's turns, and bounded per source by
-  `planner.deferred_tool_index.max_tokens_per_source` (default 2200 tokens,
-  chars/4 estimate, about 200 connection-prefixed names) and overall by
-  `planner.deferred_tool_index.max_tokens` (default 8000), with per-source
-  `… and N more; use tool_search` truncation.
-  On by default; `planner.deferred_tool_index.enabled: false` turns it off.
+  (`- <source label> (N tools): name_a, name_b`), using each tool's readable
+  provider-local name, so the model knows which sources have on-demand tools.
+  It loads one with `tool_search("<source label>/<tool name>")`. The set is
+  the run's own tool view; names only, sorted, byte-stable across a run's
+  turns (it changes only when a deferred source changes), and bounded per
+  source by `planner.deferred_tool_index.max_tokens_per_source` (default
+  1600, about 200 readable names, in a conservative identifier-aware token
+  estimate) and overall by `planner.deferred_tool_index.max_tokens`
+  (default 8000), with per-source `… and N more; use tool_search`
+  truncation. On by default; `planner.deferred_tool_index.enabled: false`
+  turns it off.
+- **Exact tool references in `tool_search` and `tool_get`.** A query that
+  is exactly a declared model name, a catalog name, a readable tool name or
+  `<source label>/<tool name>` resolves within the run's tool view before
+  ranked search: a unique match is returned alone, and a bare name shared by
+  several sources returns all of them first. Previously a hash-shortened
+  declared name searched exactly could miss its own tool.
 
 ### Fixed
 

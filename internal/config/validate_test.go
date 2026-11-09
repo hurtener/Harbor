@@ -2160,7 +2160,7 @@ func TestValidate_Planner_MaxToolExamplesPerTool(t *testing.T) {
 func TestValidate_Planner_DeferredToolIndex(t *testing.T) {
 	t.Parallel()
 	off := false
-	for _, block := range []config.PlannerDeferredToolIndex{{}, {Enabled: &off}, {MaxTokens: 1}, {MaxTokens: 8000, MaxTokensPerSource: 2200}} {
+	for _, block := range []config.PlannerDeferredToolIndex{{}, {Enabled: &off}, {MaxTokens: 1}, {MaxTokens: 8000, MaxTokensPerSource: 1600}} {
 		cfg := mustLoadValid(t)
 		cfg.Planner = config.PlannerConfig{Driver: "react", DeferredToolIndex: block}
 		if err := cfg.Validate(); err != nil {
