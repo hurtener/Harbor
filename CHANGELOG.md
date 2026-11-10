@@ -42,6 +42,13 @@ Two versions move independently in Harbor (RFC §5.3):
   never grant tools. The description bound is 32000 runes (other text fields
   stay at 2000), and the `skill_get` default budget is 8192 estimated tokens
   (D-498).
+- **Bundled scripts and data in skill packages.** Common script, source, data
+  and template files (`.py`, `.sh`, `.js`, `.ts`, `.sql`, `.yaml`, `.csv`,
+  `.html`, `.j2`, and similar) are accepted as support files. They must be
+  non-blank UTF-8 without NUL bytes, are recorded as
+  `text/plain; charset=utf-8`, and are stored as data that Harbor never
+  executes. Binary executables and archives stay refused. The support MIME
+  allowlist version is now `v1.44` (D-499).
 
 ## [1.43.0] — 2026-11-10
 

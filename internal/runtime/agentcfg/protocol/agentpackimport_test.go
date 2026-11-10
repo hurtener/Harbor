@@ -623,6 +623,7 @@ func agentSkillsPackage() map[string]string {
 		"SKILL.md": "---\nname: release-notes\ndescription: Drafts release notes from merged changes.\nlicense: Apache-2.0\nallowed-tools: Read Grep\nmetadata:\n  version: \"1.0\"\n---\n" +
 			"# Release notes\n\n## Overview\n\nSee the [style guide](references/style.md).\n\n## Instructions\n\n1. Group the changes.\n2. Write one line per change.\n\n## Examples\n\n```text\n- Export to CSV.\n```\n",
 		"references/style.md": "# Style\n\nUse plain words.\n",
+		"scripts/helper.py":   "print('release notes')\n",
 	}
 }
 
@@ -638,7 +639,8 @@ func TestSkillImport_AgentSkillsPackageBothDestinations(t *testing.T) {
 		t.Fatalf("personal validate/commit: %v", err)
 	}
 	if validated.Review.Trigger != wantTrigger || validated.Review.StepCount != 1 || len(validated.Review.RequiredTools) != 0 ||
-		len(validated.Review.SupportFiles) != 1 || validated.Review.SupportFiles[0].Path != "references/style.md" {
+		len(validated.Review.SupportFiles) != 2 || validated.Review.SupportFiles[0].Path != "references/style.md" ||
+		validated.Review.SupportFiles[1].Path != "scripts/helper.py" || validated.Review.SupportFiles[1].Mime != "text/plain; charset=utf-8" {
 		t.Fatalf("personal review = %+v", validated.Review)
 	}
 	if !strings.Contains(committed.Skill.Description, "## Instructions\n\n1. Group the changes.") || committed.Skill.Steps[0] != importer.FreeFormStep {
@@ -647,7 +649,7 @@ func TestSkillImport_AgentSkillsPackageBothDestinations(t *testing.T) {
 
 	fx := newPackImportFixture(t)
 	v := fx.validate(t, importUserA, agentSkillsPackage())
-	if v.Review.Trigger != wantTrigger || len(v.Review.SupportFiles) != 1 || len(v.Warnings) != 0 {
+	if v.Review.Trigger != wantTrigger || len(v.Review.SupportFiles) != 2 || len(v.Warnings) != 0 {
 		t.Fatalf("pack review = %+v warnings=%v", v.Review, v.Warnings)
 	}
 	if _, err := fx.admin.AgentPacksImportCommit(importCtx(importUserA, testAgentID), packCommitReq(importUserA, testAgentID, v, false)); err != nil {

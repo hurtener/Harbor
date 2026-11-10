@@ -289,3 +289,40 @@ func TestImport_AgentSkillsFormatFilePath(t *testing.T) {
 		t.Fatalf("skill = %+v", skill)
 	}
 }
+
+// TestImportPackage_AgentSkillsBundledScript: a standard Agent Skills
+// zip with scripts/helper.py and a references/ file imports; the script
+// is recorded as plain-text data (never a script MIME). A bundled
+// binary executable, or binary bytes behind a script extension, is
+// refused.
+func TestImportPackage_AgentSkillsBundledScript(t *testing.T) {
+	imp, _ := newImporter(t)
+	ctx := context.Background()
+	entries := agentSkillEntries()
+	entries["scripts/helper.py"] = "import sys\n\nprint(sys.argv[1:])\n"
+	ingest, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, entries)})
+	if err != nil {
+		t.Fatalf("ImportPackage: %v", err)
+	}
+	mimes := map[string]string{}
+	for _, f := range ingest.Package.Supports {
+		mimes[f.Path] = f.Mime
+	}
+	if mimes["scripts/helper.py"] != "text/plain; charset=utf-8" || mimes["references/style.md"] != "text/markdown" {
+		t.Fatalf("support MIMEs = %v", mimes)
+	}
+	if _, err := ingest.SupportURI("scripts/helper.py"); err != nil {
+		t.Fatalf("SupportURI(script): %v", err)
+	}
+
+	withBinary := agentSkillEntries()
+	withBinary["scripts/tool"] = "\x7fELF\x02\x01\x01\x00"
+	if _, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, withBinary)}); !errors.Is(err, skillpkg.ErrArchiveMimeUnsupported) {
+		t.Fatalf("binary executable: err = %v, want ErrArchiveMimeUnsupported", err)
+	}
+	disguised := agentSkillEntries()
+	disguised["scripts/helper.py"] = "\x7fELF\x02\x01\x01\x00"
+	if _, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, disguised)}); !errors.Is(err, skillpkg.ErrArchiveMimeContentMismatch) {
+		t.Fatalf("binary behind .py: err = %v, want ErrArchiveMimeContentMismatch", err)
+	}
+}

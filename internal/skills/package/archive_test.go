@@ -131,7 +131,9 @@ func TestValidateArchive_Rejects(t *testing.T) {
 		{"unsupported mime exe", []zipEntry{{name: "tool.exe", data: "MZfake"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
 		{"unsupported mime extensionless", []zipEntry{{name: "LICENSE", data: "text"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
 		{"unsupported mime archive ext", []zipEntry{{name: "bundle.tar", data: "x"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
-		{"unsupported mime yaml", []zipEntry{{name: "config.yaml", data: "a: 1"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
+		{"unsupported mime binary executable", []zipEntry{{name: "bin/tool.so", data: "\x7fELF"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
+		{"text class binary content", []zipEntry{{name: "scripts/helper.py", data: "\x7fELF\x02\x01\x01\x00"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
+		{"text class non-utf8", []zipEntry{{name: "data/rows.csv", data: "a,\xff\xfe"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
 		{"mime content mismatch png", []zipEntry{{name: "assets/logo.png", data: `{"demo": true}`}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
 		{"mime content mismatch json", []zipEntry{{name: "examples/demo.json", data: "\xff\xfe\x00binary"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
 		{"mime content mismatch md", []zipEntry{{name: "docs/guide.md", data: "\x00\x01\x02"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
@@ -222,5 +224,28 @@ func TestValidateArchive_URIPathBoundary(t *testing.T) {
 	}
 	if _, err := skillpkg.NewURI(h, at); err != nil {
 		t.Fatalf("NewURI(at-bound path): %v", err)
+	}
+}
+
+// TestValidateArchive_TextClass: bundled scripts, data and templates
+// are admitted as plain-text data (D-499), never under a script MIME.
+func TestValidateArchive_TextClass(t *testing.T) {
+	z := buildZip(t, []zipEntry{
+		{name: "scripts/helper.py", data: "print('hi')\n"},
+		{name: "scripts/run.sh", data: "#!/bin/sh\necho hi\n"},
+		{name: "config.yaml", data: "a: 1\n"},
+		{name: "templates/page.j2", data: "<p>{{ name }}</p>\n"},
+	})
+	entries, err := skillpkg.ValidateArchive(z, skillpkg.ArchiveLimits{})
+	if err != nil {
+		t.Fatalf("ValidateArchive: %v", err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("entries = %d, want 4", len(entries))
+	}
+	for _, e := range entries {
+		if e.Mime != "text/plain; charset=utf-8" {
+			t.Fatalf("%s recorded as %q, want text/plain", e.Path, e.Mime)
+		}
 	}
 }

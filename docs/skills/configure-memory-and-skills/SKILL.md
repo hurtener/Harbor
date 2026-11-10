@@ -211,7 +211,7 @@ license: Apache-2.0
 3. If it is a bug, pull the last 5 PRs that touched the area.
 ```
 
-Bundled files are support files and must use the support MIME allowlist (Markdown, plain text, JSON, XML, SVG, common images, PDF, fonts); other bundled files, such as scripts, are refused.
+Bundled files are support files and must use the support MIME allowlist: Markdown, plain text, JSON, XML, SVG, common images, PDF and fonts, plus a text class for common script, source, data and template files (`.py`, `.sh`, `.js`, `.ts`, `.sql`, `.yaml`, `.csv`, `.html`, `.j2`, and similar). Text-class files must be non-blank UTF-8 without NUL bytes; they are recorded as `text/plain; charset=utf-8`, stored as data, and never executed by Harbor. Binary executables, archives and extension-less files are refused.
 
 ### Import / remove with the CLI
 

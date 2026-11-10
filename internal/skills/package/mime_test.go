@@ -8,12 +8,12 @@ import (
 	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
-// TestMIMEAllowlist_ClosedAndNarrow pins the v1.28 allowlist: the
-// retained set is deliberately small, every retained MIME has a real
-// content check, and the previously extension-only dialects are gone.
+// TestMIMEAllowlist_ClosedAndNarrow pins the v1.44 allowlist: every
+// retained MIME has a real content check, and source/data/template
+// files are only ever plain-text data.
 func TestMIMEAllowlist_ClosedAndNarrow(t *testing.T) {
-	if skillpkg.MIMEAllowlistVersion != "v1.28" {
-		t.Fatalf("MIMEAllowlistVersion = %q, want v1.28", skillpkg.MIMEAllowlistVersion)
+	if skillpkg.MIMEAllowlistVersion != "v1.44" {
+		t.Fatalf("MIMEAllowlistVersion = %q, want v1.44", skillpkg.MIMEAllowlistVersion)
 	}
 	for _, ext := range []string{"md", "markdown", "txt", "json", "xml", "svg",
 		"png", "jpg", "jpeg", "gif", "webp", "avif", "pdf", "ttf", "otf", "woff", "woff2"} {
@@ -25,12 +25,22 @@ func TestMIMEAllowlist_ClosedAndNarrow(t *testing.T) {
 			t.Fatalf("extension %q -> %q is not a MIME", ext, mime)
 		}
 	}
-	// Dialects without an honest bounded content validator must NOT be
-	// claimable from a suffix alone.
-	for _, ext := range []string{"go", "py", "sh", "yaml", "yml", "toml", "csv", "html", "css",
-		"rs", "c", "h", "java", "rb", "php", "jsonl", "ipynb", "sql", "proto", "ico", "bmp", "tiff"} {
+	// The text class (D-499): scripts, source, data and templates
+	// classify ONLY as plain-text data — never a dialect, script, or
+	// executable MIME.
+	for _, ext := range []string{"go", "py", "sh", "js", "ts", "yaml", "yml", "toml", "csv", "html", "css",
+		"rs", "c", "h", "java", "rb", "php", "sql", "proto", "j2", "jinja", "tmpl"} {
+		mime, ok := skillpkg.ClassifySupportMIME("file." + ext)
+		if !ok || mime != "text/plain; charset=utf-8" {
+			t.Fatalf("extension %q -> %q (ok=%v), want text/plain", ext, mime, ok)
+		}
+	}
+	// Binaries, archives and formats without a bounded validator stay
+	// outside the allowlist.
+	for _, ext := range []string{"exe", "so", "dll", "dylib", "bin", "class", "jar", "pyc", "wasm",
+		"zip", "tar", "gz", "jsonl", "ipynb", "ico", "bmp", "tiff", "env"} {
 		if _, ok := skillpkg.ClassifySupportMIME("file." + ext); ok {
-			t.Fatalf("extension %q must not classify under the v1.28 allowlist", ext)
+			t.Fatalf("extension %q must not classify under the %s allowlist", ext, skillpkg.MIMEAllowlistVersion)
 		}
 	}
 }

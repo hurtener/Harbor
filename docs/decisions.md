@@ -16807,11 +16807,40 @@ to import everywhere Harbor handles skills.
   only make the capability filter hide the skill. Authority-bearing and other
   unknown keys are still refused.
 
-**Not covered:** bundled files keep the v1.28 support MIME allowlist, so
-scripts and other source files in a package are refused. A free-form export
+**Not covered:** bundled scripts were refused by the v1.28 support MIME
+allowlist; D-499 admits them as text data. A free-form export
 is the Harbor form (frontmatter `trigger`, instructions as body prose), not a
 byte copy of the source. Binaries before this change refuse free-form packages
 and descriptions over 2000 runes; rolling back past it leaves such installed
 skills unreadable by the older validator.
 
 **Cross-references:** D-053, D-422, D-496, D-497.
+
+## D-499 — Bundled scripts, data and templates are plain-text support data
+
+**Date:** 2026-11-10. **Scope:** the support-file MIME allowlist
+(`internal/skills/package/mime.go`, `MIMEAllowlistVersion` v1.28 → v1.44). No
+config keys, no Protocol shape change.
+
+Agent Skills packages routinely bundle `scripts/`, data and template files,
+which the v1.28 allowlist refused because no honest bounded validator backs a
+dialect MIME such as `text/x-python`.
+
+- **One text class.** Common script, source, data and template extensions
+  (for example `py`, `sh`, `js`, `ts`, `rb`, `go`, `sql`, `yaml`/`yml`,
+  `toml`, `csv`, `html`, `css`, `ini`, `cfg`, `jinja`/`j2`, `tmpl`) classify
+  as `text/plain; charset=utf-8` and pass only the existing text check: valid
+  UTF-8, no NUL byte, not blank. No script, dialect or executable MIME is ever
+  recorded or served.
+- **Data, never code.** The files are stored and resolved as package support
+  data. Harbor never executes them; a model or tool that reads one gets text.
+- **Unchanged.** The per-file, total, count and ratio limits, nested-archive
+  rejection and path rules apply as before. Binary executables, archives,
+  extension-less files and binary bytes behind a text extension stay refused.
+  Packages without such files keep their exact hashes.
+
+**Residual, stated:** an empty file (such as an empty `__init__.py`) is still
+refused by the shared not-blank text rule. A binary older than v1.44 refuses
+packages that carry text-class files.
+
+**Cross-references:** D-422, D-496, D-498.

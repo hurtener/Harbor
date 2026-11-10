@@ -192,7 +192,7 @@ type SupportFile struct {
 	// Unicode-collision class by construction).
 	Path string `json:"path"`
 	// Mime is the canonical MIME type of the file, drawn from the
-	// closed v1.28 support allowlist (mime.go). Entries outside the
+	// closed support allowlist (mime.go). Entries outside the
 	// allowlist are rejected before a SupportFile ever exists, and
 	// when the entry carries materialized Data the MIME is CONTENT
 	// TRUTH: the bytes must satisfy the MIME's bounded content check
