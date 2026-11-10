@@ -16827,6 +16827,17 @@ to import everywhere Harbor handles skills.
   contains a colon followed by a space (for example `description: Use for:
   reports`) and does not start with a YAML indicator. No other key, and no
   authority-bearing key, is ever repaired.
+- **Zip layouts.** Zips built by `zip -r` or Finder import. An empty
+  directory entry is skipped, but only after its name passes the same
+  canonicalization and traversal checks as a file (an absolute, `..` or
+  otherwise invalid name is still refused, as are symlinks, devices and a
+  directory entry carrying bytes); it creates nothing. When there is no root
+  `SKILL.md` and every entry sits under one top-level `<dir>/` that holds
+  `<dir>/SKILL.md`, that prefix is stripped, so the package hashes exactly
+  like the same content zipped at the root. Two skill folders, a root
+  `SKILL.md` beside a wrapped one, or a file outside the folder keep the
+  root-`SKILL.md` refusal. This relaxes the D-422 archive rule that refused
+  every directory entry and required `SKILL.md` at the root.
 - **Gate.** `ValidateSkillMarkdown` now requires a non-blank body instead of a
   `## Steps` item; the importer then refuses a body without prose or steps.
 - **Advisory keys.** `license`, `compatibility`, `allowed-tools` and
@@ -16841,10 +16852,7 @@ allowlist; D-499 admits them as text data. A free-form export
 is the Harbor form (frontmatter `trigger`, instructions as body prose), not a
 byte copy of the source. Binaries before this change refuse free-form packages
 and descriptions over 2000 runes; rolling back past it leaves such installed
-skills unreadable by the older validator. Zips that wrap the skill in one
-top-level folder, or that carry directory entries, are still refused by the
-archive rules (D-422): `SKILL.md` must be at the archive root and only regular
-files are accepted.
+skills unreadable by the older validator.
 
 **Cross-references:** D-053, D-422, D-496, D-497.
 

@@ -53,6 +53,9 @@ Two versions move independently in Harbor (RFC §5.3):
   executes. Common extension-less text files (`LICENSE`, `NOTICE`,
   `Makefile`, `Dockerfile`, …) are accepted by exact name, `.xsd` / `.xsl` /
   `.xslt` as XML, and macOS `__MACOSX/` and `.DS_Store` entries are skipped.
+  Zips made by `zip -r` or Finder import: empty directory entries are skipped
+  after the usual path checks, and one top-level folder wrapping the whole
+  skill is stripped, hashing like the same content zipped at the root.
   Binary executables and archives stay refused. The support MIME allowlist
   version is now `v1.44` (D-499).
 

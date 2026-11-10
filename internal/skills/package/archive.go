@@ -24,11 +24,13 @@ import (
 //     normalization collision class by construction);
 //   - paths beyond the skillpkg-URI path budget (MaxPackageURIPathRunes
 //     — a path the exact bounded URI constructor could not carry);
-//   - symlink / directory / device / FIFO / socket / irregular
-//     entries (the links/devices class — every non-regular entry
-//     FAILS the archive, including directory-shaped names and
-//     directory mode bits, BEFORE any suffix-based handling can skip
-//     it; there is no "content-free" skip);
+//   - symlink / device / FIFO / socket / irregular entries and
+//     directory entries carrying bytes (the links/devices class). An
+//     empty directory entry is skipped, but only after its name passes
+//     the traversal and path checks above; macOS `__MACOSX/` and
+//     `.DS_Store` metadata is skipped unread;
+//   - (after validation) one top-level folder wrapping the whole
+//     package with its SKILL.md is stripped (stripWrapperFolder);
 //   - nested archives (zip / gzip / tar / bzip2 / xz / zstd / 7z /
 //     rar magic inside an entry's decompressed bytes);
 //   - unsupported MIME (extensions outside the canonical allowlist)
@@ -62,11 +64,10 @@ var (
 	// ErrArchivePathCollision — two entries share an exact or
 	// case-folded canonical path.
 	ErrArchivePathCollision = errors.New("skillpkg: archive path collision")
-	// ErrArchiveNonRegular — an entry is a symlink, directory, device,
-	// FIFO, socket, or other non-regular file. There is no
-	// content-free skip: every non-regular entry (including
-	// directory-shaped names and directory mode bits) fails the
-	// archive before any suffix-based handling.
+	// ErrArchiveNonRegular — an entry is a symlink, device, FIFO,
+	// socket, other non-regular file, or a directory entry carrying
+	// bytes. An empty directory entry is skipped after its name passes
+	// the path checks (it creates nothing).
 	ErrArchiveNonRegular = errors.New("skillpkg: archive contains a non-regular entry (link/directory/device)")
 	// ErrArchiveNested — an entry's content is itself an archive.
 	ErrArchiveNested = errors.New("skillpkg: archive contains a nested archive")
@@ -209,24 +210,28 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 		if isArchiveJunk(f.Name) {
 			continue
 		}
-		// Every non-regular entry — directory (trailing-slash name or
-		// directory mode bits), symlink, device, FIFO, socket — is
-		// REJECTED, never skipped: the check runs BEFORE path
-		// canonicalization so a hostile name (a traversal path, a
-		// SKILL.md case variant, a collision) cannot hide inside a
-		// "content-free" directory-shaped entry, and before any
-		// suffix-based handling exists at all.
-		if mode := f.Mode(); !mode.IsRegular() {
+		// A directory entry (`zip -r` and Finder write them) creates
+		// nothing and is skipped — but only after its name passes the
+		// same canonicalization and traversal checks as a file, and
+		// only when it carries no bytes. Every other non-regular entry
+		// (symlink, device, FIFO, socket) is REJECTED.
+		mode := f.Mode()
+		if mode.IsDir() {
+			if _, err := canonicalArchivePath(strings.TrimSuffix(f.Name, "/")); err != nil {
+				return nil, err
+			}
+			if f.UncompressedSize64 != 0 {
+				return nil, fmt.Errorf("%w: directory %q carries bytes", ErrArchiveNonRegular, f.Name)
+			}
+			continue
+		}
+		if !mode.IsRegular() {
 			return nil, fmt.Errorf("%w: %q mode=%v", ErrArchiveNonRegular, f.Name, mode)
 		}
 
-		path, err := canonicalizePath(f.Name)
+		path, err := canonicalArchivePath(f.Name)
 		if err != nil {
-			var pe *pathErr
-			if errors.As(err, &pe) && pe.class == violationTraversal {
-				return nil, fmt.Errorf("%w: %s", ErrArchiveTraversal, pe.msg)
-			}
-			return nil, fmt.Errorf("%w: %s", ErrArchivePathInvalid, err.Error())
+			return nil, err
 		}
 		// URI representability: every path the archive accepts must be
 		// representable by the exact bounded skillpkg URI constructor.
@@ -316,7 +321,59 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 			Data:   data,
 		})
 	}
-	return out, nil
+	return stripWrapperFolder(out), nil
+}
+
+// canonicalArchivePath canonicalizes one raw entry name, mapping a
+// traversal to ErrArchiveTraversal and any other violation to
+// ErrArchivePathInvalid.
+func canonicalArchivePath(name string) (string, error) {
+	path, err := canonicalizePath(name)
+	if err != nil {
+		var pe *pathErr
+		if errors.As(err, &pe) && pe.class == violationTraversal {
+			return "", fmt.Errorf("%w: %s", ErrArchiveTraversal, pe.msg)
+		}
+		return "", fmt.Errorf("%w: %s", ErrArchivePathInvalid, err.Error())
+	}
+	return path, nil
+}
+
+// stripWrapperFolder removes one top-level folder that wraps the whole
+// package (the layout Finder's "Compress" and most skill downloads
+// produce: `my-skill/SKILL.md`). It applies only when there is no root
+// SKILL.md and every entry sits under the same `<dir>/` whose
+// `<dir>/SKILL.md` exists; otherwise the entries are returned unchanged
+// and the root-SKILL.md rules refuse them as before. Stripping a shared
+// prefix keeps paths canonical, unique and case-unique, so the package
+// hashes exactly like the same content zipped at the root.
+func stripWrapperFolder(entries []ArchiveEntry) []ArchiveEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+	dir, _, ok := strings.Cut(entries[0].Path, "/")
+	if !ok {
+		return entries
+	}
+	prefix := dir + "/"
+	hasSkill := false
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Path, prefix) {
+			return entries
+		}
+		if e.Path == prefix+RootSkillFileName {
+			hasSkill = true
+		}
+	}
+	if !hasSkill {
+		return entries
+	}
+	out := make([]ArchiveEntry, len(entries))
+	for i, e := range entries {
+		e.Path = strings.TrimPrefix(e.Path, prefix)
+		out[i] = e
+	}
+	return out
 }
 
 // isArchiveJunk reports whether a raw zip entry name is operating-system

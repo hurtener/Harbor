@@ -1,6 +1,8 @@
 package importer_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -481,5 +483,77 @@ func TestImportPackage_AgentSkillsRealWorldZip(t *testing.T) {
 	lfIngest, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, lfEntries)})
 	if err != nil || lfIngest.Hash != ingest.Hash {
 		t.Fatalf("LF hash %q vs CRLF %q (err=%v)", lfIngest.Hash, ingest.Hash, err)
+	}
+}
+
+// orderedZip builds a zip from entries in the given order; a name
+// ending in "/" becomes a directory entry, as zip tools write them.
+func orderedZip(t *testing.T, entries [][2]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range entries {
+		w, err := zw.Create(e[0])
+		if err != nil {
+			t.Fatalf("Create(%q): %v", e[0], err)
+		}
+		if _, err := w.Write([]byte(e[1])); err != nil {
+			t.Fatalf("Write(%q): %v", e[0], err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestImportPackage_ZipToolLayouts: a Finder-shaped zip (wrapper folder,
+// directory entries, __MACOSX, .DS_Store) and a `zip -r` zip (root
+// layout with directory entries) import with the flat zip's hash.
+func TestImportPackage_ZipToolLayouts(t *testing.T) {
+	imp, _ := newImporter(t)
+	ctx := context.Background()
+	flat, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, agentSkillEntries())})
+	if err != nil {
+		t.Fatalf("flat: %v", err)
+	}
+	skill, guide := agentSkillEntries()["SKILL.md"], agentSkillEntries()["references/style.md"]
+	layouts := map[string][][2]string{
+		"finder": {
+			{"release-notes/", ""},
+			{"release-notes/SKILL.md", skill},
+			{"release-notes/references/", ""},
+			{"release-notes/references/style.md", guide},
+			{"release-notes/.DS_Store", "\x00\x00\x00\x01Bud1"},
+			{"__MACOSX/", ""},
+			{"__MACOSX/release-notes/", ""},
+			{"__MACOSX/release-notes/._SKILL.md", "\x00\x05\x16\x07"},
+		},
+		"zip -r": {
+			{"SKILL.md", skill},
+			{"references/", ""},
+			{"references/style.md", guide},
+		},
+	}
+	for name, entries := range layouts {
+		got, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: orderedZip(t, entries)})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.Hash != flat.Hash {
+			t.Fatalf("%s hash %q, want flat %q", name, got.Hash, flat.Hash)
+		}
+	}
+	for name, entries := range map[string][][2]string{
+		"two skill folders": {{"a/SKILL.md", skill}, {"b/SKILL.md", skill}},
+		"root and wrapper":  {{"SKILL.md", skill}, {"a/SKILL.md", skill}},
+	} {
+		if _, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: orderedZip(t, entries)}); !errors.Is(err, skillpkg.ErrSkillMDNotRoot) {
+			t.Fatalf("%s: err = %v, want ErrSkillMDNotRoot", name, err)
+		}
+	}
+	traversal := [][2]string{{"../escape/", ""}, {"SKILL.md", skill}}
+	if _, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: orderedZip(t, traversal)}); !errors.Is(err, skillpkg.ErrArchiveTraversal) {
+		t.Fatalf("traversal dir entry: err = %v, want ErrArchiveTraversal", err)
 	}
 }

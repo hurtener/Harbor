@@ -73,26 +73,85 @@ func TestValidateArchive_Valid(t *testing.T) {
 // never skipped as "content-free". A hostile name cannot hide inside a
 // directory-shaped entry, and a SKILL.md case-variant directory cannot
 // slip past the root-entry invariant.
-func TestValidateArchive_RejectsDirectoryEntries(t *testing.T) {
-	cases := []struct {
+// TestValidateArchive_DirectoryEntries: a directory entry creates
+// nothing and is skipped, but only after its name passes the path
+// checks; a traversal or absolute directory name is still refused.
+func TestValidateArchive_DirectoryEntries(t *testing.T) {
+	skipped := []struct {
 		name    string
 		entries []zipEntry
 	}{
 		{"trailing slash", []zipEntry{{name: "dir/", data: ""}, {name: "dir/file.txt", data: "hi"}}},
 		{"directory mode", []zipEntry{{name: "dir", data: "", mode: fs.ModeDir}, {name: "dir/file.txt", data: "hi"}}},
-		{"root skill directory", []zipEntry{{name: "SKILL.md/", data: ""}}},
-		{"case-variant skill directory", []zipEntry{{name: "skill.md/", data: ""}}},
-		{"traversal-shaped directory", []zipEntry{{name: "../escape/", data: ""}}},
+		{"skill-named directory", []zipEntry{{name: "SKILL.md/", data: ""}, {name: "dir/file.txt", data: "hi"}}},
 	}
-	for _, c := range cases {
+	for _, c := range skipped {
 		t.Run(c.name, func(t *testing.T) {
-			z := buildZip(t, c.entries)
-			_, err := skillpkg.ValidateArchive(z, skillpkg.ArchiveLimits{})
-			if err == nil {
-				t.Fatalf("ValidateArchive(%s): expected rejection, got nil", c.name)
+			entries, err := skillpkg.ValidateArchive(buildZip(t, c.entries), skillpkg.ArchiveLimits{})
+			if err != nil {
+				t.Fatalf("ValidateArchive: %v", err)
 			}
-			if !errors.Is(err, skillpkg.ErrArchiveNonRegular) {
-				t.Fatalf("ValidateArchive(%s): err=%v, want ErrArchiveNonRegular", c.name, err)
+			if len(entries) != 1 || entries[0].Path != "dir/file.txt" {
+				t.Fatalf("entries = %+v, want only dir/file.txt", entries)
+			}
+		})
+	}
+	refused := []struct {
+		name    string
+		entries []zipEntry
+		want    error
+	}{
+		{"traversal directory", []zipEntry{{name: "../escape/", data: ""}}, skillpkg.ErrArchiveTraversal},
+		{"nested traversal directory", []zipEntry{{name: "a/../../escape/", data: ""}}, skillpkg.ErrArchiveTraversal},
+		{"absolute directory", []zipEntry{{name: "/abs/", data: ""}}, nil},
+		{"symlink", []zipEntry{{name: "link", data: "target", mode: fs.ModeSymlink}}, skillpkg.ErrArchiveNonRegular},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := skillpkg.ValidateArchive(buildZip(t, c.entries), skillpkg.ArchiveLimits{})
+			if err == nil || (c.want != nil && !errors.Is(err, c.want)) {
+				t.Fatalf("err = %v, want %v", err, c.want)
+			}
+		})
+	}
+}
+
+// TestValidateArchive_WrapperFolder: one top-level folder wrapping the
+// whole package (with its SKILL.md) is stripped; any other layout is
+// left for the root-SKILL.md rules to refuse.
+func TestValidateArchive_WrapperFolder(t *testing.T) {
+	entries, err := skillpkg.ValidateArchive(buildZip(t, []zipEntry{
+		{name: "my-skill/", data: ""},
+		{name: "my-skill/SKILL.md", data: "---\ntrigger: t\n---\nbody\n"},
+		{name: "my-skill/references/guide.md", data: "# Guide\n"},
+	}), skillpkg.ArchiveLimits{})
+	if err != nil {
+		t.Fatalf("ValidateArchive: %v", err)
+	}
+	if len(entries) != 2 || entries[0].Path != "SKILL.md" || entries[1].Path != "references/guide.md" {
+		t.Fatalf("entries = %+v", entries)
+	}
+	for _, c := range []struct {
+		name    string
+		entries []zipEntry
+	}{
+		{"two skill folders", []zipEntry{{name: "a/SKILL.md", data: "x"}, {name: "b/SKILL.md", data: "y"}}},
+		{"root and wrapper", []zipEntry{{name: "SKILL.md", data: "x"}, {name: "a/SKILL.md", data: "y"}}},
+		{"file outside the folder", []zipEntry{{name: "a/SKILL.md", data: "x"}, {name: "notes.txt", data: "y"}}},
+		{"no skill in folder", []zipEntry{{name: "a/notes.txt", data: "x"}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := skillpkg.ValidateArchive(buildZip(t, c.entries), skillpkg.ArchiveLimits{})
+			if err != nil {
+				t.Fatalf("ValidateArchive: %v", err)
+			}
+			for i, e := range got {
+				if e.Path != c.entries[i].name {
+					t.Fatalf("path %q was rewritten to %q", c.entries[i].name, e.Path)
+				}
+			}
+			if skillpkg.ValidateRootSkillEntries(got) == nil {
+				t.Fatal("root-SKILL.md rules must still refuse this layout")
 			}
 		})
 	}

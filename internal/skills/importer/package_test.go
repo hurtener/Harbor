@@ -199,7 +199,9 @@ func TestImportPackage_Rejects(t *testing.T) {
 		{"nested archive", packageZip(t, map[string]string{"SKILL.md": validMD, "payload.txt": "PK\x03\x04nested"}), skills.ErrArchiveNested},
 		{"unsupported mime", packageZip(t, map[string]string{"SKILL.md": validMD, "tool.exe": "MZ"}), skills.ErrArchiveMimeUnsupported},
 		{"missing skillmd", packageZip(t, map[string]string{"README.md": "hi"}), skills.ErrSkillMDMissing},
-		{"non-root skillmd", packageZip(t, map[string]string{"docs/SKILL.md": validMD}), skills.ErrSkillMDNotRoot},
+		// A lone `<dir>/SKILL.md` is a wrapper folder and is stripped;
+		// a SKILL.md below the root beside a root file is not.
+		{"non-root skillmd", packageZip(t, map[string]string{"docs/SKILL.md": validMD, "notes.txt": "n"}), skills.ErrSkillMDNotRoot},
 		{"case-mismatch skillmd", packageZip(t, map[string]string{"skill.md": validMD}), skills.ErrSkillMDCaseMismatch},
 		{"skillmd no frontmatter", packageZip(t, map[string]string{"SKILL.md": "plain"}), skills.ErrSkillMDFrontmatterMissing},
 		{"skillmd missing trigger", packageZip(t, map[string]string{"SKILL.md": "---\nname: x\n---\n## Steps\n- s\n"}), skills.ErrSkillMDMissingTrigger},
