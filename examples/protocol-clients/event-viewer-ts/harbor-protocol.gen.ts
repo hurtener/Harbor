@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:cde2ed10d9d676c261bebcda1007422bfc196db810919dbcec3ccf877ed9b5c3";
+export const WIRE_SURFACE_DIGEST = "sha256:435a681121fd352a8a965b63499876b7203fd3d3cf4b933424e26f8be46b3690";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -184,6 +184,8 @@ export type HarborErrorCode =
   | "agent_retired"
   | "agent_retirement_conflict"
   | "auth_rejected"
+  | "downstream_mcp_transport_failed"
+  | "downstream_mcp_unauthorized"
   | "identity_required"
   | "identity_scope_required"
   | "invalid_cursor"

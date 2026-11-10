@@ -14,6 +14,8 @@ import (
 // Wave 13 (Phase 72 / 72a — D-105 / D-106). If errors.go drifts, the
 // stability test fails.
 var wantCodes = []protoerrors.Code{
+	protoerrors.CodeDownstreamMCPUnauthorized,
+	protoerrors.CodeDownstreamMCPTransportFailed,
 	protoerrors.CodeInvalidRequest,
 	protoerrors.CodeIdentityRequired,
 	protoerrors.CodeScopeMismatch,
@@ -67,6 +69,8 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 	// (RFC §5.3) — a Protocol client branches on them. A casual rename
 	// is a breaking change; this test pins the strings.
 	wire := map[protoerrors.Code]string{
+		protoerrors.CodeDownstreamMCPUnauthorized:        "downstream_mcp_unauthorized",
+		protoerrors.CodeDownstreamMCPTransportFailed:     "downstream_mcp_transport_failed",
 		protoerrors.CodeInvalidRequest:                   "invalid_request",
 		protoerrors.CodeIdentityRequired:                 "identity_required",
 		protoerrors.CodeScopeMismatch:                    "scope_mismatch",

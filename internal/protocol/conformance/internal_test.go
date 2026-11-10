@@ -96,10 +96,10 @@ func TestInternal_ErrorCodeMatrix_AllCanonical(t *testing.T) {
 	// MCP Apps render-admission five + the ambiguous-authority refusal + the
 	// user-skill-import four + the observability budget/cursor two + the
 	// HA-68 skill-publication five + Phase 267 Agent-pack copy distinctions two +
-	// Phase 269 retained-context refusal distinctions two = 40
+	// Phase 269 retained-context refusal distinctions two + downstream MCP failures two = 42
 	// canonical codes at Protocol 0.1.0.
-	if len(errorCodeMatrix) != 40 {
-		t.Errorf("errorCodeMatrix size = %d, want 40 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
+	if len(errorCodeMatrix) != 42 {
+		t.Errorf("errorCodeMatrix size = %d, want 42 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
 	}
 }
 

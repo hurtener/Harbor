@@ -2,7 +2,7 @@
 
 # Protocol errors
 
-The 40 canonical Harbor Protocol error codes, generated from the single-source
+The 42 canonical Harbor Protocol error codes, generated from the single-source
 registry (`internal/protocol/errors`). The HTTP column is read from the same
 code-to-status binding the wire transport serves — the two cannot drift.
 
@@ -22,6 +22,8 @@ Clients branch on `code` (stable across Runtime refactors — RFC §5.3), never 
 | `agent_retired` | 409 | An authorized agent-addressed operation selected a terminally retired agent configuration. | No — choose a different agent; retirement is terminal. |
 | `agent_retirement_conflict` | 409 | A retirement request used a stale active-content hash or a different operation id from the durable replay identity. | Only by replaying `agent_config.retire` with the exact original operation id and expected content hash. |
 | `auth_rejected` | 401 | A bearer token was present but failed verification: malformed, an algorithm outside the asymmetric allowlist, bad signature, expired / not-yet-valid, unknown `kid`, audience or issuer mismatch. | Only after obtaining a fresh valid token. |
+| `downstream_mcp_transport_failed` | 502 | The downstream MCP transport failed. A closed connection rejected before dispatch may receive one bounded recovery attempt. A missing session is reconnected for later calls, but only read-only operations may replay once; tool calls return the error without replay. The message excludes upstream transport details. | Retry with backoff after the MCP server becomes available. Never infer that a side-effecting call is safe to replay from this code alone. |
+| `downstream_mcp_unauthorized` | 424 | An MCP server rejected its downstream credential. Harbor accepted the caller's authentication; this is not a Harbor JWT failure. The message excludes upstream endpoints, bodies, headers and credentials. | Resolve the downstream credential refusal before retrying; do not refresh the Harbor connection token for this code. |
 | `identity_required` | 401 | The request resolved no complete `(tenant, user, session)` identity scope — a missing bearer, a missing session (no `X-Harbor-Session` header and no default claim), or a body identity that contradicts the verified token. Identity is mandatory and fails closed. | No — attach a token / session first ([Auth & identity](./auth-and-identity.md)). |
 | `identity_scope_required` | 403 | The request is authenticated and identified, but the requested cross-tenant fan-in (e.g. `events.subscribe?admin=1`) or admin verb needs a verified `admin` / `console:fleet` scope claim the token does not carry. | No — re-authenticate with a scope-bearing token. |
 | `invalid_cursor` | 400 | The `observability.query` page cursor is malformed or was produced by a differently-shaped query (including a different identity scope). The query never silently restarts at an arbitrary position. | Yes — restart from the first page (no cursor). |

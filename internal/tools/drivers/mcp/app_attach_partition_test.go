@@ -163,6 +163,9 @@ func TestAttach_PartitionsAppOnly_StaleEntryRemovedOnReplacement(t *testing.T) {
 			t.Fatalf("Activate: %v", err)
 		}
 		closers = append(closers, prepared.Close)
+		// A provider-owned session outlives the attach caller's ctx. Close each
+		// generation before the SSE fixture server shuts down.
+		t.Cleanup(func() { _ = prepared.Close(context.Background()) })
 	}
 
 	// Generation 1: callback (app-only), plain + both (ordinary).

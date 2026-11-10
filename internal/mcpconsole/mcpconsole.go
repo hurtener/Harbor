@@ -49,8 +49,20 @@ import (
 // reads as a permanent "this does not exist here". A sentinel cannot be forged
 // by text.
 //
-// Returns err unchanged (including nil) when it is not a driver not-found.
+// Also translates typed downstream failures before any Protocol text markers
+// can inspect their unsafe upstream details. Identity takes precedence over
+// transport and unauthorized because it can fail before any HTTP request.
+// Other errors pass unchanged.
 func markNotFound(err error) error {
+	if errors.Is(err, mcp.ErrIdentityMissing) {
+		return fmt.Errorf("%w: %w", protocol.ErrAccessorIdentityRequired, err)
+	}
+	if errors.Is(err, mcp.ErrDownstreamUnauthorized) {
+		return fmt.Errorf("%w: %w", protocol.ErrAccessorDownstreamUnauthorized, err)
+	}
+	if errors.Is(err, mcp.ErrTransportFailed) {
+		return fmt.Errorf("%w: %w", protocol.ErrAccessorDownstreamTransportFailed, err)
+	}
 	if err == nil || !errors.Is(err, mcp.ErrServerNotFound) {
 		return err
 	}

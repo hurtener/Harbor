@@ -83,6 +83,13 @@ const (
 	// classify into a more specific code. The catch-all; a transport
 	// adapter maps it to a 500.
 	CodeRuntimeError Code = "runtime_error"
+
+	// CodeDownstreamMCPUnauthorized marks an MCP server's refusal of its
+	// downstream credential, distinct from Harbor Protocol authentication.
+	CodeDownstreamMCPUnauthorized Code = "downstream_mcp_unauthorized"
+	// CodeDownstreamMCPTransportFailed marks failure to reach or maintain
+	// an MCP transport, including failures of bounded session recovery.
+	CodeDownstreamMCPTransportFailed Code = "downstream_mcp_transport_failed"
 	// CodeAuthRejected — Protocol auth: the request carried a
 	// JWT bearer that failed cryptographic / structural verification —
 	// a malformed token, an `alg` outside the asymmetric allowlist
@@ -315,6 +322,8 @@ const (
 // new Protocol error code is a new phase that declares a constant +
 // extends this map; there is no registration escape hatch.
 var canonicalCodes = map[Code]struct{}{
+	CodeDownstreamMCPUnauthorized:        {},
+	CodeDownstreamMCPTransportFailed:     {},
 	CodeInvalidRequest:                   {},
 	CodeIdentityRequired:                 {},
 	CodeScopeMismatch:                    {},

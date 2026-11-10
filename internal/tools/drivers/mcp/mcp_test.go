@@ -999,6 +999,9 @@ func TestProvider_ClassifyConnectError(t *testing.T) {
 	if classifyConnectError(context.DeadlineExceeded) {
 		t.Errorf("DeadlineExceeded should not be recoverable")
 	}
+	if classifyConnectError(fmt.Errorf("initialize: %w", &DownstreamUnauthorizedError{StatusCode: http.StatusUnauthorized})) {
+		t.Errorf("downstream authorization refusal should not trigger SSE fallback")
+	}
 	if !classifyConnectError(errors.New("network down")) {
 		t.Errorf("regular error should be recoverable")
 	}

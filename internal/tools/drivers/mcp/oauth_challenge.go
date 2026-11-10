@@ -226,11 +226,19 @@ func (c *challengeCapturingTransport) RoundTrip(req *http.Request) (*http.Respon
 	if c.clock != nil {
 		now = c.clock
 	}
+	recordAuthChallenge(resp, req, now(), c.onChallenge, c.onScopeShortfall)
+	return resp, err
+}
+
+// recordAuthChallenge observes one response. The signed preparation transport
+// calls it before consuming a refusal; the outer observer calls it for ordinary
+// responses. Neither path changes the response or retries the request.
+func recordAuthChallenge(resp *http.Response, req *http.Request, at time.Time, onChallenge func(AuthChallenge), onScopeShortfall func(ScopeShortfall)) {
 	switch resp.StatusCode {
 	case http.StatusUnauthorized:
 		if hv := resp.Header.Get("WWW-Authenticate"); hv != "" {
-			if ch, ok := parseWWWAuthenticate(hv, now()); ok && c.onChallenge != nil {
-				c.onChallenge(ch)
+			if ch, ok := parseWWWAuthenticate(hv, at); ok && onChallenge != nil {
+				onChallenge(ch)
 			}
 		}
 	case http.StatusForbidden:
@@ -238,7 +246,7 @@ func (c *challengeCapturingTransport) RoundTrip(req *http.Request) (*http.Respon
 		if hv == "" {
 			break
 		}
-		ch, ok := parseWWWAuthenticate(hv, now())
+		ch, ok := parseWWWAuthenticate(hv, at)
 		// Construct a structured shortfall ONLY when the challenge is
 		// explicitly marked insufficient_scope — an unmarked 403 stays an
 		// opaque error (no false-positive structured signal).
@@ -250,16 +258,15 @@ func (c *challengeCapturingTransport) RoundTrip(req *http.Request) (*http.Respon
 			DownstreamResource: originHost(req),
 			Origin:             requestOrigin(req),
 			WWWAuthenticate:    ch.Raw,
-			CapturedAt:         now(),
+			CapturedAt:         at,
 		}
 		if slot := scopeShortfallSlotFrom(req.Context()); slot != nil {
 			slot.set(sf)
 		}
-		if c.onScopeShortfall != nil {
-			c.onScopeShortfall(sf)
+		if onScopeShortfall != nil {
+			onScopeShortfall(sf)
 		}
 	}
-	return resp, err
 }
 
 // splitScopeParam splits an RFC 6750 space-delimited `scope` value into a

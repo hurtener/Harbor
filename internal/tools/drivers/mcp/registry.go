@@ -3049,7 +3049,16 @@ func (r *Registry) Probe(ctx context.Context, name string) (*ProbeResult, error)
 		// A probe failure is a successful probe with a failed result:
 		// derr is surfaced inside ProbeResult.Error, not as a top-level
 		// error, so callers always get a populated ProbeResult.
-		return &ProbeResult{OK: false, LatencyMs: latency, Error: derr.Error()}, nil
+		var message string
+		switch {
+		case errors.Is(derr, ErrDownstreamUnauthorized):
+			message = "downstream MCP server rejected its credential"
+		case errors.Is(derr, ErrTransportFailed):
+			message = "downstream MCP transport failed"
+		default:
+			message = derr.Error()
+		}
+		return &ProbeResult{OK: false, LatencyMs: latency, Error: message}, nil
 	}
 	r.mu.Lock()
 	e.stats.recentLatencyMs = latency
