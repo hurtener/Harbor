@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,5 +117,69 @@ func TestMCPSession_PreparationBaseDropsAppOperationAndDeadline(t *testing.T) {
 	}
 	if _, ok := base.Deadline(); ok || base.Done() != nil {
 		t.Fatal("session preparation inherited caller lifetime")
+	}
+}
+
+type recordingPreparationProvider struct {
+	markerPreparationProvider
+	seen []identity.Identity
+	mu   sync.Mutex
+}
+
+func (p *recordingPreparationProvider) Token(ctx context.Context, src tools.ToolSourceID) (auth.Token, error) {
+	if auth.IsSignedCapabilityPreparation(ctx) {
+		id, _ := identity.FromVerified(ctx)
+		p.mu.Lock()
+		p.seen = append(p.seen, id)
+		p.mu.Unlock()
+	}
+	return p.markerPreparationProvider.Token(ctx, src)
+}
+
+// A reconnect observed by a request under a DIFFERENT verified identity still
+// authenticates with the first connect's binding (sessionBase), never the
+// observing request's identity.
+func TestMCPSession_ReconnectNeverSeatsTheObservingRequestIdentity(t *testing.T) {
+	mock := newMockServer()
+	handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return mock.server }, &mcpsdk.StreamableHTTPOptions{JSONResponse: false})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	credential := &recordingPreparationProvider{}
+	credential.allowedHosts = []string{server.Listener.Addr().String()}
+	p, err := New(Config{Name: "receiver", URL: server.URL, TransportMode: TransportStreamableHTTP,
+		Bus: newTestBus(t), DefaultIdentity: defaultIdentity(), OAuthProvider: credential, OwnOAuthProvider: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close(context.Background()) })
+	attacher := defaultIdentity()
+	attachCtx, err := identity.WithVerified(context.Background(), attacher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Connect(auth.WithSignedCapabilityPreparation(attachCtx)); err != nil {
+		t.Fatal(err)
+	}
+	other := identity.Identity{TenantID: attacher.TenantID, UserID: "other-user", SessionID: "other-session"}
+	otherCtx, err := identity.WithVerified(context.Background(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, _ := p.sessionForRead()
+	if err := failed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Discover(otherCtx); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	credential.mu.Lock()
+	defer credential.mu.Unlock()
+	if len(credential.seen) < 2 {
+		t.Fatalf("preparation initializes = %d, want attach + reconnect", len(credential.seen))
+	}
+	for i, id := range credential.seen {
+		if id != attacher {
+			t.Fatalf("initialize %d authenticated as %+v, want the attach identity %+v", i, id, attacher)
+		}
 	}
 }

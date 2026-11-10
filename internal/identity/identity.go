@@ -171,6 +171,21 @@ func WithVerified(ctx context.Context, id Identity) (context.Context, error) {
 	return context.WithValue(ctx, identityKey, id), nil
 }
 
+// CarryVerified copies an ALREADY-verified Identity from src onto dst,
+// seating it as dst's verified anchor and working identity. It cannot mint:
+// the value is only ever one the request edge already verified on src, and
+// when src carries none dst is returned unchanged. It exists for code that
+// must detach a context from a request's lifetime (a background connection
+// base) while keeping exactly that request's verified binding.
+func CarryVerified(dst, src context.Context) context.Context {
+	id, ok := FromVerified(src)
+	if !ok {
+		return dst
+	}
+	dst = context.WithValue(dst, verifiedKey, id)
+	return context.WithValue(dst, identityKey, id)
+}
+
 // FromVerified returns the request-edge verified Identity and a presence
 // bool. Absence is meaningful and must be handled explicitly: a gate
 // that reconciles caller-supplied input against the verified identity
