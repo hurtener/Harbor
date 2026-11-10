@@ -172,24 +172,46 @@ Skills enter the catalog through these producers:
 
 ### Example: a Skills.md file
 
-One skill per file. The frontmatter `description:` is the human-visible explanation of what the skill does (shown in listings and import reviews); it is joined, first, with any prose before the first section. The frontmatter `trigger:` is the planner-visible match cue: when it is absent, it is derived from `description` (whitespace collapsed to one line), and a file with neither is refused. `## Steps` needs at least one item; `## Preconditions` and `## Failure modes` are optional sections.
+One skill per file. Two body forms are accepted.
+
+- **Sectioned (Harbor) form.** Prose, then `## Steps` (at least one dash list item) and the optional `## Preconditions` / `## Failure modes` sections.
+- **Free-form (Agent Skills) form.** Any other non-blank body — arbitrary level-2 headings, numbered lists, code blocks, no `## Steps` — is kept verbatim as the skill's instructions in its description, which `skill_get` returns to the model. Any trailing run of canonical sections is still parsed as sections, and a single step "Follow the instructions in this skill's description." is supplied when none is declared.
+
+The frontmatter `description:` is the human-visible explanation of what the skill does (shown in listings and import reviews); it comes first in the skill's description, followed by the body prose. The frontmatter `trigger:` is the planner-visible match cue: when it is absent, it is derived from `description` (whitespace collapsed to one line), and a file with neither is refused. The Agent Skills keys `license`, `compatibility`, `allowed-tools` and `metadata` are accepted as advisory and are not stored: `allowed-tools` never grants a tool.
 
 ```markdown
 ---
 name: triage-incident
 title: Triage an incident
-description: Classifies a support ticket and recommends the next action.
+description: Classifies a support ticket into bug, feature or question and recommends the next action.
 trigger: when a support ticket needs classification
 tags: [support, triage]
 ---
-Classify a support ticket into {bug, feature, question} and recommend the next action.
-
 ## Steps
 
 - Read the user's report.
 - Match against known categories.
 - If "bug", pull the last 5 PRs that touched the area.
 ```
+
+The same skill in the free-form Agent Skills form, packaged with a `references/` file in a zip:
+
+```markdown
+---
+name: triage-incident
+description: Classifies a support ticket and recommends the next action. Use when a support ticket needs classification.
+license: Apache-2.0
+---
+# Triage an incident
+
+## Instructions
+
+1. Read the user's report.
+2. Match it against the categories in [the guide](references/categories.md).
+3. If it is a bug, pull the last 5 PRs that touched the area.
+```
+
+Bundled files are support files and must use the support MIME allowlist (Markdown, plain text, JSON, XML, SVG, common images, PDF, fonts); other bundled files, such as scripts, are refused.
 
 ### Import / remove with the CLI
 

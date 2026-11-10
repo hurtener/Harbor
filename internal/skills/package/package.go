@@ -74,9 +74,13 @@ const (
 	// MaxPackageVersionRunes bounds the optional package version.
 	MaxPackageVersionRunes = 64
 	// MaxPackageTextRunes bounds each single logical text field
-	// (title, description, trigger, task_type, one step, one
+	// (title, trigger, task_type, one step, one
 	// precondition, one failure mode, one annotation).
 	MaxPackageTextRunes = 2000
+	// MaxPackageDescriptionRunes bounds the description. It is larger
+	// than the other text fields because a free-form SKILL.md keeps its
+	// whole instruction body there.
+	MaxPackageDescriptionRunes = 32000
 	// MaxPackageSteps bounds the ordered procedural steps.
 	MaxPackageSteps = 64
 	// MaxPackageTags bounds the tags.

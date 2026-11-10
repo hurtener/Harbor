@@ -48,8 +48,8 @@ var (
 	// non-empty trigger nor a non-empty description to derive it from
 	// (the planner match cue is mandatory).
 	ErrSkillMDMissingTrigger = errors.New("skillpkg: SKILL.md trigger missing")
-	// ErrSkillMDEmptySteps — SKILL.md body declares no procedural
-	// steps.
+	// ErrSkillMDEmptySteps — SKILL.md body is blank: it declares no
+	// procedural steps and carries no instruction content.
 	ErrSkillMDEmptySteps = errors.New("skillpkg: SKILL.md steps empty")
 )
 
@@ -122,8 +122,10 @@ func ValidateRootSkillEntries(entries []ArchiveEntry) error {
 //   - the frontmatter parses and carries a non-empty `trigger`, or a
 //     non-empty `description` the trigger is derived from
 //     (ErrSkillMDMalformedYAML / ErrSkillMDMissingTrigger);
-//   - the body declares at least one procedural step under a
-//     `## Steps`-family heading (ErrSkillMDEmptySteps).
+//   - the body is not blank (ErrSkillMDEmptySteps). A canonical body
+//     declares its steps under a `## Steps`-family heading; any other
+//     non-blank body is free-form instruction content the importer
+//     keeps verbatim.
 //
 // The full parse (field extraction, section normalization, attachment
 // resolution, round-trip) remains the importer's; this gate is the
@@ -153,7 +155,7 @@ func ValidateSkillMarkdown(b []byte, limits MarkdownLimits) error {
 	if DeriveTrigger(fm.Trigger, fm.Description) == "" {
 		return ErrSkillMDMissingTrigger
 	}
-	if !bodyHasSteps(body) {
+	if len(bytes.TrimSpace(body)) == 0 {
 		return ErrSkillMDEmptySteps
 	}
 	return nil
@@ -208,26 +210,4 @@ func scanFrontmatterFences(b []byte) (raw, body []byte, ok bool) {
 		bodyStart++
 	}
 	return raw, b[bodyStart:], true
-}
-
-// bodyHasSteps reports whether the body declares at least one
-// procedural step: a `## Steps`-family heading (case-insensitive,
-// optional trailing colon) followed by a list item (`- `). This is a
-// minimal mirror of the importer's section classification — the
-// importer's parser remains canonical for the full parse.
-func bodyHasSteps(body []byte) bool {
-	inSteps := false
-	for _, line := range strings.Split(string(body), "\n") {
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "## ") {
-			h := strings.TrimSpace(strings.TrimPrefix(t, "## "))
-			h = strings.TrimSuffix(strings.TrimSpace(h), ":")
-			inSteps = strings.ToLower(h) == "step" || strings.ToLower(h) == "steps"
-			continue
-		}
-		if inSteps && strings.HasPrefix(t, "- ") {
-			return true
-		}
-	}
-	return false
 }

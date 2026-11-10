@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -610,6 +611,50 @@ func TestSkillImport_DescriptionOnlySkillSurfacesDescription(t *testing.T) {
 	}
 	list, err := fx.admin.AgentPacksList(context.Background(), prototypes.AgentConfigAgentPacksListRequest{Identity: wireScope(importUserA), AgentID: testAgentID})
 	if err != nil || len(list.Items) != 1 || list.Items[0].Description != wantDesc || list.Items[0].Trigger != wantTrigger {
+		t.Fatalf("pack list = %+v err=%v", list.Items, err)
+	}
+}
+
+// agentSkillsPackage is a standard Agent Skills package: name +
+// description frontmatter with the advisory license / allowed-tools /
+// metadata keys, a free-form body, and a bundled reference file.
+func agentSkillsPackage() map[string]string {
+	return map[string]string{
+		"SKILL.md": "---\nname: release-notes\ndescription: Drafts release notes from merged changes.\nlicense: Apache-2.0\nallowed-tools: Read Grep\nmetadata:\n  version: \"1.0\"\n---\n" +
+			"# Release notes\n\n## Overview\n\nSee the [style guide](references/style.md).\n\n## Instructions\n\n1. Group the changes.\n2. Write one line per change.\n\n## Examples\n\n```text\n- Export to CSV.\n```\n",
+		"references/style.md": "# Style\n\nUse plain words.\n",
+	}
+}
+
+// TestSkillImport_AgentSkillsPackageBothDestinations installs a standard
+// Agent Skills package through the personal and the shared-pack import:
+// both accept it, keep the body as the description, derive the trigger,
+// carry the support file, and report no required tools.
+func TestSkillImport_AgentSkillsPackageBothDestinations(t *testing.T) {
+	const wantTrigger = "Drafts release notes from merged changes."
+	personal := newImportFixture(t)
+	validated, committed, err := personal.validateCommit(t, importUserA, agentSkillsPackage(), false)
+	if err != nil {
+		t.Fatalf("personal validate/commit: %v", err)
+	}
+	if validated.Review.Trigger != wantTrigger || validated.Review.StepCount != 1 || len(validated.Review.RequiredTools) != 0 ||
+		len(validated.Review.SupportFiles) != 1 || validated.Review.SupportFiles[0].Path != "references/style.md" {
+		t.Fatalf("personal review = %+v", validated.Review)
+	}
+	if !strings.Contains(committed.Skill.Description, "## Instructions\n\n1. Group the changes.") || committed.Skill.Steps[0] != importer.FreeFormStep {
+		t.Fatalf("personal skill = %+v", committed.Skill)
+	}
+
+	fx := newPackImportFixture(t)
+	v := fx.validate(t, importUserA, agentSkillsPackage())
+	if v.Review.Trigger != wantTrigger || len(v.Review.SupportFiles) != 1 || len(v.Warnings) != 0 {
+		t.Fatalf("pack review = %+v warnings=%v", v.Review, v.Warnings)
+	}
+	if _, err := fx.admin.AgentPacksImportCommit(importCtx(importUserA, testAgentID), packCommitReq(importUserA, testAgentID, v, false)); err != nil {
+		t.Fatalf("pack commit: %v", err)
+	}
+	list, err := fx.admin.AgentPacksList(context.Background(), prototypes.AgentConfigAgentPacksListRequest{Identity: wireScope(importUserA), AgentID: testAgentID})
+	if err != nil || len(list.Items) != 1 || !strings.Contains(list.Items[0].Description, "## Examples") || list.Items[0].PackageHash != v.PackageHash {
 		t.Fatalf("pack list = %+v err=%v", list.Items, err)
 	}
 }

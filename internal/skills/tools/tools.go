@@ -80,9 +80,12 @@ const (
 )
 
 // Default budgeter envelope when the caller does not supply
-// `MaxTokens`. Picked to align with the §6.5 LLM safety net's
-// chars/4 estimator at the per-skill scale.
-const defaultMaxTokens = 1024
+// `MaxTokens`, in the §6.5 LLM safety net's chars/4 estimator. It
+// fits one skill whose free-form instruction body fills the package
+// description bound (skillpkg.MaxPackageDescriptionRunes), so a
+// free-form SKILL.md is fetchable without the caller sizing the
+// budget; the ladder still trims multi-skill fetches.
+const defaultMaxTokens = 8192
 
 // ErrSkillTooLarge is returned by `skill_get` when the tiered
 // budgeter cannot fit the requested skills within `max_tokens`
@@ -158,7 +161,7 @@ type GetArgs struct {
 	// a partial response remains useful when one name is stale.
 	Names []string `json:"names"`
 	// MaxTokens caps the returned skills' combined estimated
-	// token count. 0 → `defaultMaxTokens` (1024).
+	// token count. 0 → `defaultMaxTokens` (8192).
 	MaxTokens int `json:"max_tokens,omitempty"`
 	// Capability gates + redacts the returned skills.
 	Capability CapabilityContext `json:"capability"`

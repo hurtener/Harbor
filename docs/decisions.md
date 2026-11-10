@@ -16762,3 +16762,56 @@ key, and the listings never showed what a skill does.
 canonical body parser.
 
 **Cross-references:** D-053, D-422, D-423, D-496.
+
+## D-498 — Agent Skills SKILL.md files import as free-form skills
+
+**Date:** 2026-11-10. **Scope:** the SKILL.md body parse shared by the file
+importer and the package parser (personal import, Agent-pack import, boot
+packs), the SKILL.md gate, the package and pack-item description bound, the
+advisory frontmatter keys, and the `skill_get` default budget. No config keys,
+no storage or Protocol shape change.
+
+Standard Agent Skills files (`name` + `description` frontmatter, then free
+Markdown with any headings and no `## Steps`) were refused by the canonical
+body grammar (`ErrUnknownSection`, `ErrEmptySteps`). The owner requires them
+to import everywhere Harbor handles skills.
+
+- **Canonical first.** A body the canonical grammar accepts with at least one
+  step parses exactly as before: same fields, same package and content hashes
+  (pinned), same byte-stable file round trip.
+- **Free-form fallback.** Any other non-blank body is kept. The longest
+  trailing run of lines that is a valid canonical section tail (canonical,
+  non-duplicate headings with only dash list items and blank lines) is parsed as
+  sections, found in one backward pass; everything before it is the
+  description, verbatim. When no step results and the description is not
+  blank, the single step "Follow the instructions in this skill's
+  description." (`importer.FreeFormStep`) is supplied, so `Steps >= 1` stays
+  a model invariant. A body with neither steps nor prose is still refused.
+- **Where the instructions live.** In `Description`. `skill_get` already
+  returns the whole skill, description included, so the instructions reach
+  the model the same way steps do. No new field was needed. The export writes
+  the description followed by the canonical sections; that document's longest
+  canonical tail is exactly those sections, so reimport reproduces the same
+  description, steps and hash.
+- **Bounds.** The description bound is raised from 2000 to 32000 runes for
+  packages and pack items (`skillpkg.MaxPackageDescriptionRunes`); every other
+  text field keeps 2000. The `skill_get` default budget is raised from 1024 to
+  8192 estimated tokens so one such skill is returned whole without the caller
+  sizing the budget; the ladder still trims multi-skill fetches.
+- **Gate.** `ValidateSkillMarkdown` now requires a non-blank body instead of a
+  `## Steps` item.
+- **Advisory keys.** `license`, `compatibility`, `allowed-tools` and
+  `metadata` are accepted by the closed package frontmatter and are not
+  stored, hashed or exported. `allowed-tools` is not mapped onto
+  `required_tools`: a package grants no tools, and foreign tool names would
+  only make the capability filter hide the skill. Authority-bearing and other
+  unknown keys are still refused.
+
+**Not covered:** bundled files keep the v1.28 support MIME allowlist, so
+scripts and other source files in a package are refused. A free-form export
+is the Harbor form (frontmatter `trigger`, instructions as body prose), not a
+byte copy of the source. Binaries before this change refuse free-form packages
+and descriptions over 2000 runes; rolling back past it leaves such installed
+skills unreadable by the older validator.
+
+**Cross-references:** D-053, D-422, D-496, D-497.

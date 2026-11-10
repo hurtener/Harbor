@@ -204,7 +204,7 @@ func bodyParse(ctx context.Context, store artifacts.ArtifactStore, src ImportSou
 	imports ImportArtifacts,
 	err error,
 ) {
-	description, sections, err = parseBodyLines(ctx, body)
+	description, sections, err = parseSkillBody(ctx, body)
 	if err != nil {
 		return "", nil, ImportArtifacts{}, err
 	}
@@ -292,6 +292,89 @@ func parseBodyLines(ctx context.Context, body []byte) (
 	// final newline. The Export side re-adds exactly one trailing
 	// newline before the first section heading (or end-of-file).
 	return stripTrailingBlankLines(descBuilder.String()), sections, nil
+}
+
+// FreeFormStep is the one procedural step a free-form skill carries.
+// A free-form body (see parseSkillBody) keeps its instructions verbatim
+// in Description, which the model receives with the skill; this step
+// points at it so the canonical "at least one step" rule still holds.
+const FreeFormStep = "Follow the instructions in this skill's description."
+
+// parseSkillBody is the body parse both entry points use. A canonical
+// body (prose, then only `## Steps` / `## Preconditions` /
+// `## Failure modes` sections of `- ` items, with at least one step)
+// parses exactly as parseBodyLines does. Any other non-blank body is
+// FREE-FORM (the common external SKILL.md shape: arbitrary `## `
+// headings, numbered lists, no `## Steps`): it is kept as instruction
+// content instead of being refused.
+//
+//   - The longest trailing run that is a valid canonical section tail
+//     (canonical headings, no duplicates, only `- ` items and blank
+//     lines) is parsed as sections; everything before it is the
+//     description, verbatim.
+//   - When that yields no step, the single FreeFormStep is supplied,
+//     provided the description carries instructions to point at.
+//
+// The free-form result round-trips: the export writes the description
+// followed by the canonical sections, and that document's longest
+// canonical tail is exactly the exported sections, so it re-parses to
+// the same description and steps. A body with no step and no
+// instruction prose (blank, or bare headings) stays the caller's
+// ErrEmptySteps refusal.
+func parseSkillBody(ctx context.Context, body []byte) (string, map[canonicalSection][]string, error) {
+	description, sections, err := parseBodyLines(ctx, body)
+	if err == nil && len(sections[sectionSteps]) > 0 {
+		return description, sections, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
+	}
+	if strings.TrimSpace(string(body)) == "" {
+		return description, sections, err
+	}
+	lines := splitLinesKeepEmpty(body)
+	tail := canonicalTailStart(lines)
+	description = stripTrailingBlankLines(strings.Join(lines[:tail], ""))
+	sections = make(map[canonicalSection][]string, 3)
+	if tail < len(lines) {
+		_, tailSections, tailErr := parseBodyLines(ctx, []byte(strings.Join(lines[tail:], "")))
+		if tailErr != nil {
+			return "", nil, tailErr
+		}
+		sections = tailSections
+	}
+	if len(sections[sectionSteps]) == 0 && strings.TrimSpace(description) != "" {
+		sections[sectionSteps] = []string{FreeFormStep}
+	}
+	return description, sections, nil
+}
+
+// canonicalTailStart returns the index of the first line of the
+// longest trailing run of lines that parseBodyLines accepts as
+// sections (a canonical heading, then only canonical, non-duplicate
+// headings, `- ` items and blank lines), or len(lines) when there is
+// none. One backward pass, mirroring parseBodyLines' line rules.
+func canonicalTailStart(lines []string) int {
+	start := len(lines)
+	seen := make(map[canonicalSection]bool, 3)
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		if strings.HasPrefix(line, "## ") {
+			sec := classifySection(line)
+			if sec == sectionUnknown || seen[sec] {
+				break
+			}
+			seen[sec] = true
+			start = i
+			continue
+		}
+		t := strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(t, "- ") || strings.TrimSpace(t) == "" {
+			continue
+		}
+		break
+	}
+	return start
 }
 
 // resolvedBody is the intermediate after attachment-substitution.

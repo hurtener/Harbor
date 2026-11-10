@@ -3,7 +3,7 @@ package importer
 import (
 	"context"
 	"errors"
-	"strings"
+	"reflect"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
@@ -175,36 +175,42 @@ func TestHasSchemeOrAbs(t *testing.T) {
 	}
 }
 
-func TestBodyParse_UnknownSection(t *testing.T) {
+// TestBodyParse_FreeFormFallback pins the free-form path: a body the
+// canonical grammar refuses (unknown heading, duplicate section, prose
+// in a section) is kept verbatim as the description, its trailing
+// canonical section run (if any) is parsed, and FreeFormStep is
+// supplied when no step remains.
+func TestBodyParse_FreeFormFallback(t *testing.T) {
 	store := newInmemStore(t)
-	src := ImportSource{}
-	body := []byte("desc\n\n## Examples\n\n- something\n")
-	_, _, _, err := bodyParse(context.Background(), store, src, body)
-	if !errors.Is(err, ErrUnknownSection) {
-		t.Errorf("err = %v, want ErrUnknownSection", err)
+	cases := []struct {
+		name, body, wantDesc string
+		wantSteps            []string
+		wantPre              []string
+	}{
+		{"unknown section", "desc\n\n## Examples\n\n- something\n", "desc\n\n## Examples\n\n- something", []string{FreeFormStep}, nil},
+		{"duplicate section", "desc\n\n## Steps\n\n- one\n\n## Steps\n\n- two\n", "desc\n\n## Steps\n\n- one", []string{"two"}, nil},
+		{"prose in section", "desc\n\n## Steps\n\nthis is prose not a list item\n", "desc\n\n## Steps\n\nthis is prose not a list item", []string{FreeFormStep}, nil},
+		{"canonical tail after free-form prose", "## Overview\ntext\n\n## Preconditions\n- ready\n", "## Overview\ntext", []string{FreeFormStep}, []string{"ready"}},
 	}
-}
-
-func TestBodyParse_DuplicateSection(t *testing.T) {
-	store := newInmemStore(t)
-	src := ImportSource{}
-	body := []byte("desc\n\n## Steps\n\n- one\n\n## Steps\n\n- two\n")
-	_, _, _, err := bodyParse(context.Background(), store, src, body)
-	if !errors.Is(err, ErrUnknownSection) {
-		t.Errorf("err = %v, want ErrUnknownSection on duplicate", err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			desc, sections, _, err := bodyParse(context.Background(), store, ImportSource{}, []byte(c.body))
+			if err != nil {
+				t.Fatalf("bodyParse: %v", err)
+			}
+			if desc != c.wantDesc {
+				t.Errorf("description = %q, want %q", desc, c.wantDesc)
+			}
+			if !reflect.DeepEqual(sections[sectionSteps], c.wantSteps) || !reflect.DeepEqual(sections[sectionPreconditions], c.wantPre) {
+				t.Errorf("sections = %v", sections)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), "duplicate") {
-		t.Errorf("err message should mention duplicate: %v", err)
-	}
-}
-
-func TestBodyParse_NonListProseInSection(t *testing.T) {
-	store := newInmemStore(t)
-	src := ImportSource{}
-	body := []byte("desc\n\n## Steps\n\nthis is prose not a list item\n")
-	_, _, _, err := bodyParse(context.Background(), store, src, body)
-	if !errors.Is(err, ErrUnknownSection) {
-		t.Errorf("err = %v, want ErrUnknownSection on prose-in-section", err)
+	// Bare headings carry no instructions: no step is supplied, so the
+	// caller's ErrEmptySteps refusal stands.
+	_, sections, _, err := bodyParse(context.Background(), store, ImportSource{}, []byte("## Steps\n\n"))
+	if err != nil || len(sections[sectionSteps]) != 0 {
+		t.Fatalf("bare heading: sections=%v err=%v", sections, err)
 	}
 }
 

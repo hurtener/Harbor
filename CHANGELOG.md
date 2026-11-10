@@ -32,6 +32,16 @@ Two versions move independently in Harbor (RFC §5.3):
   the composition preview), the import review, and the installed-skill
   summary gain an optional `description` excerpt (at most 500 runes).
   `skill_create_draft` now asks for a short human description (D-497).
+- **Agent Skills `SKILL.md` files import.** A body with arbitrary headings,
+  numbered lists and no `## Steps` is no longer refused: it is kept verbatim as
+  the skill's instructions (its description, which `skill_get` returns), any
+  trailing canonical sections are still parsed, and one step pointing at the
+  instructions is supplied when none is declared. Sectioned Harbor documents
+  parse, hash and round-trip exactly as before. The frontmatter keys `license`,
+  `compatibility`, `allowed-tools` and `metadata` are accepted as advisory and
+  never grant tools. The description bound is 32000 runes (other text fields
+  stay at 2000), and the `skill_get` default budget is 8192 estimated tokens
+  (D-498).
 
 ## [1.43.0] — 2026-11-10
 

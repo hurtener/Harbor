@@ -102,11 +102,16 @@ func TestImportPackageMarkdown_FrontmatterDescription(t *testing.T) {
 		}
 	})
 
-	t.Run("an over-bound description is refused", func(t *testing.T) {
-		long := strings.Repeat("é", skillpkg.MaxPackageTextRunes+1)
+	t.Run("over-bound description and derived trigger are refused", func(t *testing.T) {
+		long := strings.Repeat("é", skillpkg.MaxPackageDescriptionRunes+1)
 		md := "---\nname: x\ntrigger: t\ndescription: " + long + "\n---\n## Steps\n- s\n"
 		if _, err := imp.ImportPackageMarkdown(ctx, importer.PackageMarkdownSource{Markdown: []byte(md)}); !errors.Is(err, skillpkg.ErrInvalidSkillContent) {
-			t.Fatalf("err = %v, want ErrInvalidSkillContent", err)
+			t.Fatalf("description: err = %v, want ErrInvalidSkillContent", err)
+		}
+		// The derived trigger keeps the ordinary text bound.
+		derived := "---\nname: x\ndescription: " + strings.Repeat("é", skillpkg.MaxPackageTextRunes+1) + "\n---\n## Steps\n- s\n"
+		if _, err := imp.ImportPackageMarkdown(ctx, importer.PackageMarkdownSource{Markdown: []byte(derived)}); !errors.Is(err, skillpkg.ErrInvalidSkillContent) {
+			t.Fatalf("derived trigger: err = %v, want ErrInvalidSkillContent", err)
 		}
 	})
 
@@ -166,5 +171,121 @@ func TestImport_FrontmatterDescriptionRoundTrip(t *testing.T) {
 	}
 	if string(out) != src {
 		t.Fatalf("round trip differs:\n got %q\nwant %q", out, src)
+	}
+}
+
+// agentSkillMD is a realistic skill in the open Agent Skills format:
+// `name` + `description` (plus the advisory license / allowed-tools /
+// metadata keys), a free-form body with arbitrary headings, numbered
+// lists, a fenced example, and a link to a bundled reference file.
+const agentSkillMD = "---\n" +
+	"name: release-notes\n" +
+	"description: Drafts release notes from a list of merged changes. Use when the user asks for release notes or a changelog entry.\n" +
+	"license: Apache-2.0\n" +
+	"allowed-tools: Read, Grep\n" +
+	"metadata:\n" +
+	"  version: \"1.2\"\n" +
+	"  author: example\n" +
+	"---\n" +
+	"# Release notes\n" +
+	"\n" +
+	"## Overview\n" +
+	"\n" +
+	"Turn merged changes into reader-facing notes. Follow the [style guide](references/style.md).\n" +
+	"\n" +
+	"## Instructions\n" +
+	"\n" +
+	"1. Group the changes into Added, Changed and Fixed.\n" +
+	"2. Write one line per change, in the past tense.\n" +
+	"3. Drop internal-only changes.\n" +
+	"\n" +
+	"## Examples\n" +
+	"\n" +
+	"```markdown\n" +
+	"### Added\n" +
+	"- Export to CSV.\n" +
+	"```\n"
+
+func agentSkillEntries() map[string]string {
+	return map[string]string{
+		"SKILL.md":            agentSkillMD,
+		"references/style.md": "# Style\n\nUse plain words.\n",
+	}
+}
+
+// TestImportPackage_AgentSkillsFormat imports a standard Agent Skills
+// package: the body is kept verbatim as the instructions, the trigger
+// is derived from the description, the advisory keys grant nothing,
+// the bundled reference stays a support file, and export -> reimport
+// reproduces the package hash.
+func TestImportPackage_AgentSkillsFormat(t *testing.T) {
+	imp, _ := newImporter(t)
+	ctx := context.Background()
+	ingest, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, agentSkillEntries())})
+	if err != nil {
+		t.Fatalf("ImportPackage: %v", err)
+	}
+	sk := ingest.Skill
+	const wantTrigger = "Drafts release notes from a list of merged changes. Use when the user asks for release notes or a changelog entry."
+	if sk.Name != "release-notes" || sk.Trigger != wantTrigger {
+		t.Fatalf("name=%q trigger=%q", sk.Name, sk.Trigger)
+	}
+	_, body, ok := strings.Cut(agentSkillMD, "---\n# Release notes")
+	if !ok {
+		t.Fatal("fixture lost its body")
+	}
+	body = "# Release notes" + body
+	if want := wantTrigger + "\n\n" + strings.TrimSuffix(body, "\n"); sk.Description != want {
+		t.Fatalf("description =\n%q\nwant\n%q", sk.Description, want)
+	}
+	if len(sk.Steps) != 1 || sk.Steps[0] != importer.FreeFormStep {
+		t.Fatalf("steps = %q", sk.Steps)
+	}
+	if len(sk.RequiredTools) != 0 || len(sk.Extra) != 0 {
+		t.Fatalf("advisory keys leaked into the skill: tools=%v extra=%v", sk.RequiredTools, sk.Extra)
+	}
+	if len(ingest.Package.Supports) != 1 || ingest.Package.Supports[0].Path != "references/style.md" {
+		t.Fatalf("supports = %+v", ingest.Package.Supports)
+	}
+	uri, err := ingest.SupportURI("references/style.md")
+	if err != nil {
+		t.Fatalf("SupportURI: %v", err)
+	}
+	materialized, err := imp.MaterializePackageBody(ctx, ingest)
+	if err != nil || !strings.Contains(materialized, uri.String()) {
+		t.Fatalf("materialized body lacks %s (err=%v)", uri, err)
+	}
+	ex, err := imp.ExportPackage(ctx, ingest, materialized)
+	if err != nil {
+		t.Fatalf("ExportPackage: %v", err)
+	}
+	again, err := imp.ReimportPackage(ctx, ex)
+	if err != nil {
+		t.Fatalf("ReimportPackage: %v\n%s", err, ex.Document)
+	}
+	if again.Hash != ingest.Hash || again.Skill.Description != sk.Description || again.Skill.Steps[0] != importer.FreeFormStep {
+		t.Fatalf("reimport drifted: %q vs %q", again.Hash, ingest.Hash)
+	}
+	// The advisory keys are not authority: changing them does not change
+	// the package identity.
+	other := agentSkillEntries()
+	other["SKILL.md"] = strings.Replace(agentSkillMD, "allowed-tools: Read, Grep", "allowed-tools: [Bash]", 1)
+	alt, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, other)})
+	if err != nil || alt.Hash != ingest.Hash {
+		t.Fatalf("advisory key changed identity: %v %q vs %q", err, alt.Hash, ingest.Hash)
+	}
+}
+
+// TestImport_AgentSkillsFormatFilePath: the file importer (CLI, boot
+// file path) accepts the same document.
+func TestImport_AgentSkillsFormatFilePath(t *testing.T) {
+	imp, _ := newImporter(t)
+	md := strings.Replace(agentSkillMD, "Follow the [style guide](references/style.md).", "Keep it short.", 1)
+	skill, _, err := imp.Import(context.Background(), importer.ImportSource{Bytes: []byte(md), Scope: goldenScope("agent-skill")})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if !strings.Contains(skill.Description, "## Instructions\n\n1. Group the changes") || skill.Steps[0] != importer.FreeFormStep {
+		t.Fatalf("skill = %+v", skill)
 	}
 }

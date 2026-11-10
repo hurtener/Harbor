@@ -347,3 +347,29 @@ func TestListHandler_HappyPath(t *testing.T) {
 		t.Fatalf("got %v, want [a] — b's RequiredTools=fs_write should be filtered out", outNames(out.Skills))
 	}
 }
+
+// TestGetHandler_DefaultBudgetFitsFreeFormSkill — with no max_tokens a
+// skill whose free-form instruction body fills most of the package
+// description bound is returned whole: the instructions reach the model.
+func TestGetHandler_DefaultBudgetFitsFreeFormSkill(t *testing.T) {
+	t.Parallel()
+
+	bus := newTestBus(t)
+	instructions := strings.Repeat("Write one line per change. ", 1000) // ~27k chars
+	store := newFakeStore(bus,
+		skills.Skill{Name: "free-form", Trigger: "t", Description: instructions, Steps: []string{"Follow the instructions in this skill's description."}, Origin: skills.OriginPack, Scope: skills.ScopeProject},
+	)
+	catalog := tcat.NewCatalog()
+	if err := skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d, _ := catalog.Resolve(skilltools.ToolNameSkillGet)
+	res, err := d.Invoke(ctxWithIdentity(t), mustMarshal(t, skilltools.GetArgs{Names: []string{"free-form"}}))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	out := unmarshalGetResult(t, res)
+	if len(out.Skills) != 1 || out.Skills[0].Description != instructions || out.Summarized {
+		t.Fatalf("free-form skill not returned whole: summarized=%v n=%d", out.Summarized, len(out.Skills))
+	}
+}

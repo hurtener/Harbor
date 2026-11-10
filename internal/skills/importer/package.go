@@ -14,7 +14,9 @@
 //
 // The package frontmatter is CLOSED: the pure parser accepts only the
 // canonical key set (name, title, description, trigger, task_type,
-// tags, required_tools, required_namespaces, required_tags) and REJECTS
+// tags, required_tools, required_namespaces, required_tags, plus the
+// advisory Agent Skills keys license, compatibility, allowed-tools and
+// metadata, which are accepted but not stored) and REJECTS
 // authority-bearing fields (scope, origin, tenant, user, agent,
 // authority, audience) and any other unknown key
 // (ErrPackageFrontmatterDisallowed). The stored-skill envelope
@@ -92,7 +94,8 @@ var ErrPackageMarkdownNotUTF8 = errors.New("importer: package SKILL.md is not va
 // ErrPackageFrontmatterDisallowed — the root SKILL.md frontmatter of a
 // complete skill package carries a field outside the CLOSED package
 // key set (name, title, description, trigger, task_type, tags,
-// required_tools, required_namespaces, required_tags). Authority-bearing fields
+// required_tools, required_namespaces, required_tags, and the advisory
+// license / compatibility / allowed-tools / metadata). Authority-bearing fields
 // (scope, origin, tenant, user, agent, authority, audience) and any
 // other unknown key are rejected: the pure package ingest must not
 // let caller YAML set storage / authority envelope fields that the
@@ -262,6 +265,18 @@ type packageFrontmatterFields struct {
 	RequiredTools      []string `yaml:"required_tools"`
 	RequiredNamespaces []string `yaml:"required_namespaces"`
 	RequiredTags       []string `yaml:"required_tags"`
+
+	// Optional keys of the open Agent Skills SKILL.md format. They are
+	// accepted so standard skills import, and they are ADVISORY: none
+	// is stored, hashed, or exported, and none carries authority.
+	// `allowed-tools` in particular never grants a tool and is not
+	// mapped onto required_tools (a package grants no tools, and
+	// foreign tool names would only make the capability filter hide
+	// the skill).
+	License       string         `yaml:"license"`
+	Compatibility string         `yaml:"compatibility"`
+	AllowedTools  any            `yaml:"allowed-tools"`
+	Metadata      map[string]any `yaml:"metadata"`
 }
 
 // parsePackageFrontmatter parses the raw package frontmatter through
@@ -324,7 +339,7 @@ func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, s
 		return skills.Skill{}, skillpkg.Package{}, fmt.Errorf("%w: %w",
 			ErrMissingTrigger, skills.ErrInvalidSkill)
 	}
-	bodyDescription, sections, err := parseBodyLines(ctx, body)
+	bodyDescription, sections, err := parseSkillBody(ctx, body)
 	if err != nil {
 		return skills.Skill{}, skillpkg.Package{}, err
 	}

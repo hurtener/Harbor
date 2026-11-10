@@ -81,8 +81,7 @@ func TestValidateSkillMarkdown_Rejects(t *testing.T) {
 		{"malformed yaml", "---\n[unclosed\n---\n## Steps\n- s\n", skillpkg.ErrSkillMDMalformedYAML},
 		{"missing trigger", "---\nname: x\n---\n## Steps\n- s\n", skillpkg.ErrSkillMDMissingTrigger},
 		{"blank trigger", "---\ntrigger: \"\"\n---\n## Steps\n- s\n", skillpkg.ErrSkillMDMissingTrigger},
-		{"no steps section", "---\ntrigger: t\n---\njust prose\n", skillpkg.ErrSkillMDEmptySteps},
-		{"steps without items", "---\ntrigger: t\n---\n## Steps\nsome prose, not a list item\n", skillpkg.ErrSkillMDEmptySteps},
+		{"blank body", "---\ntrigger: t\n---\n\n  \n", skillpkg.ErrSkillMDEmptySteps},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -153,5 +152,19 @@ func TestDescriptionSummary_Bounded(t *testing.T) {
 	got := []rune(skillpkg.DescriptionSummary(long))
 	if len(got) != skillpkg.MaxDescriptionSummaryRunes || got[len(got)-1] != '…' {
 		t.Fatalf("long summary has %d runes, last %q", len(got), got[len(got)-1])
+	}
+}
+
+// TestValidateSkillMarkdown_FreeFormBody: a non-blank body passes the
+// gate without a `## Steps` section (free-form instructions).
+func TestValidateSkillMarkdown_FreeFormBody(t *testing.T) {
+	for _, md := range []string{
+		"---\ntrigger: t\n---\njust prose\n",
+		"---\ntrigger: t\n---\n## Steps\nsome prose, not a list item\n",
+		"---\ndescription: d\n---\n## Overview\ntext\n",
+	} {
+		if err := skillpkg.ValidateSkillMarkdown([]byte(md), skillpkg.MarkdownLimits{}); err != nil {
+			t.Fatalf("free-form body %q rejected: %v", md, err)
+		}
 	}
 }

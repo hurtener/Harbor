@@ -35,9 +35,10 @@
 //
 //   - ErrMissingFrontmatter      — no `---` fence found at line 1
 //   - ErrMalformedYAML           — `---` fence found but YAML parse failed
-//   - ErrMissingTrigger          — frontmatter parsed but `trigger:` empty (wraps skills.ErrInvalidSkill)
-//   - ErrEmptySteps              — body parsed but `## Steps` absent or empty (wraps skills.ErrInvalidSkill)
-//   - ErrUnknownSection          — body section heading not in the canonical set
+//   - ErrMissingTrigger          — frontmatter has neither `trigger:` nor `description:` (wraps skills.ErrInvalidSkill)
+//   - ErrEmptySteps              — body declares no step and carries no instruction prose (wraps skills.ErrInvalidSkill)
+//   - ErrUnknownSection          — a frontmatter description carries a section-heading line (a non-canonical
+//     body section is no longer an error: the body is kept as free-form instructions, D-498)
 //   - ErrAttachmentOutsideRoot   — relative attachment path escapes AllowedRoot
 //   - ErrInvalidAttachmentRef    — Export saw a body ref not in ImportArtifacts
 //   - ErrRoundTripDrift          — bytes.Equal(src, Export(Import(src))) failed (used in tests)
@@ -192,13 +193,15 @@ var (
 	// empty. Wraps skills.ErrInvalidSkill — the planner match cue
 	// is mandatory.
 	ErrMissingTrigger = errors.New("importer: missing trigger (planner match cue mandatory)")
-	// ErrEmptySteps — body parsed but `## Steps` was absent or
-	// contained zero list items. Wraps skills.ErrInvalidSkill —
-	// Skills.md requires >= 1 step.
+	// ErrEmptySteps — the body declares no step and carries no
+	// instruction prose a free-form step could point at. Wraps
+	// skills.ErrInvalidSkill — Skills.md requires >= 1 step.
 	ErrEmptySteps = errors.New("importer: empty steps (Skills.md requires >= 1 step)")
-	// ErrUnknownSection — body contained a `## Heading` that does
-	// not normalise to one of {Steps, Preconditions, Failure
-	// modes}. V1 fails closed (no lenient flag — CLAUDE.md §13).
+	// ErrUnknownSection — a `## Heading` that does not normalise to
+	// one of {Steps, Preconditions, Failure modes} where only a
+	// canonical section can stand: the canonical grammar's internal
+	// rejection, and a frontmatter description carrying a heading
+	// line. A body with such headings is imported free-form (D-498).
 	ErrUnknownSection = errors.New("importer: unknown section heading")
 	// ErrAttachmentOutsideRoot — an `![alt](path)` reference
 	// resolved to a path outside AllowedRoot, or AllowedRoot is
