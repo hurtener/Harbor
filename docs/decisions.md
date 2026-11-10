@@ -16738,28 +16738,35 @@ key, and the listings never showed what a skill does.
   so export and reimport are hash-stable; a frontmatter description with a
   section-heading line (`##` followed by a space) is refused because it would re-parse as a section. The
   file exporter, which re-emits the original frontmatter verbatim, strips the
-  prefix again so its byte-stable round trip holds.
+  prefix again so its byte-stable round trip holds; when the skill's
+  description no longer starts with the stashed frontmatter description
+  (it changed after import), the stale frontmatter is dropped and
+  synthesized instead, so no text is duplicated.
 - **Trigger derivation.** `trigger` stays mandatory in the canonical model.
   When the frontmatter `trigger` is blank, it is derived from the frontmatter
   `description` with every whitespace run collapsed to one space
-  (`skillpkg.DeriveTrigger`); an explicit `trigger` always wins. A document
-  with neither is refused as before. Synthesized export frontmatter now
-  YAML-quotes scalars that need it, so a derived trigger containing a colon
+  (`skillpkg.DeriveTrigger`) and capped at 2000 runes on a rune boundary
+  (an ellipsis marks the cut), so a long description is never refused for
+  its trigger and the file-import path never stores an unbounded one. The
+  whole collapsed description is kept rather than its first sentence,
+  because the "use when" cue usually follows the first sentence. An
+  explicit `trigger` always wins. A document with neither is refused as
+  before. Synthesized export frontmatter YAML-quotes scalars and list
+  entries that need it, so a derived trigger or a tag containing a colon
   followed by a space survives the round trip.
-- **Bounds.** The joined description and the derived trigger keep the
-  package text bound (2000 runes). Listings and reviews carry
+- **Bounds.** The derived trigger keeps the package text bound (2000
+  runes); the description bound is D-498's. Listings and reviews carry
   `skillpkg.DescriptionSummary`, at most 500 runes; the full description
   stays on the stored skill and the pack item.
 - **Wire.** `description` (string, omitempty) is added to
   `AgentConfigSkillSummary`, `AgentConfigUserSkillImportReview` and
   `AgentConfigUserSkillInstalledSummary`. Pack items already carried the full
   description. Additive only; the Protocol version does not change.
-- **Drafter.** `skill_create_draft` asks the model for a required one- or
-  two-sentence human description, kept distinct from the trigger.
+- **Drafter.** `skill_create_draft` tells the model to always include a one-
+  or two-sentence human description, kept distinct from the trigger. The
+  decoder stays lenient: a draft without one is still accepted.
 
-**Not covered:** external SKILL.md files whose bodies use headings other than
-`## Steps` / `## Preconditions` / `## Failure modes` are still refused by the
-canonical body parser.
+**Not covered:** free-form bodies are D-498.
 
 **Cross-references:** D-053, D-422, D-423, D-496.
 
@@ -16781,25 +16788,47 @@ to import everywhere Harbor handles skills.
   (pinned), same byte-stable file round trip.
 - **Free-form fallback.** Any other non-blank body is kept. The longest
   trailing run of lines that is a valid canonical section tail (canonical,
-  non-duplicate headings with only dash list items and blank lines) is parsed as
-  sections, found in one backward pass; everything before it is the
-  description, verbatim. When no step results and the description is not
-  blank, the single step "Follow the instructions in this skill's
-  description." (`importer.FreeFormStep`) is supplied, so `Steps >= 1` stays
-  a model invariant. A body with neither steps nor prose is still refused.
+  non-duplicate headings, each followed by at least one dash list item, with
+  only list items and blank lines) is parsed as sections, found in one
+  backward pass; everything before it is the description, verbatim. An empty
+  canonical heading ends the tail, because the export never writes an empty
+  section; without that rule a body such as `Intro`, a Preconditions item,
+  then a second empty Preconditions heading exported to a document that
+  re-parsed differently. When no step results and the description carries a
+  prose line (a non-blank line that is not a Markdown heading), the single
+  step "Follow the instructions in this skill's description."
+  (`importer.FreeFormStep`) is supplied, so `Steps >= 1` stays a model
+  invariant. A body with neither steps nor prose (blank, or headings only) is
+  refused with `ErrEmptySteps`.
 - **Where the instructions live.** In `Description`. `skill_get` already
   returns the whole skill, description included, so the instructions reach
   the model the same way steps do. No new field was needed. The export writes
   the description followed by the canonical sections; that document's longest
   canonical tail is exactly those sections, so reimport reproduces the same
   description, steps and hash.
-- **Bounds.** The description bound is raised from 2000 to 32000 runes for
-  packages and pack items (`skillpkg.MaxPackageDescriptionRunes`); every other
-  text field keeps 2000. The `skill_get` default budget is raised from 1024 to
-  8192 estimated tokens so one such skill is returned whole without the caller
-  sizing the budget; the ladder still trims multi-skill fetches.
+- **Bounds and budget.** The description bound is raised from 2000 runes to
+  32 KiB of UTF-8 for packages and pack items
+  (`skillpkg.MaxPackageDescriptionBytes`). It is measured in bytes because the
+  `skill_get` budgeter estimates tokens as bytes/4, so a description at the
+  bound is 8192 estimated tokens in any script. No ladder rung trims a
+  description, so the `skill_get` default budget is raised from 1024 to 12288
+  estimated tokens: the bound plus 4096 tokens of headroom, which covers a
+  derived trigger and a title at their 2000-rune bounds. Every other text
+  field keeps 2000 runes; multi-skill fetches still go through the ladder.
+- **Listings.** `skill_list` and `skill_search` share one summary projection
+  that cuts the description to `skillpkg.DescriptionSummary` (500 runes); the
+  full instructions are `skill_get`'s.
+- **Line endings and lenient scalars.** A CRLF `SKILL.md` is normalized to LF
+  before the frontmatter and body are scanned (both importers and the gate).
+  The package hash covers the parsed fields, so a CRLF document hashes like
+  its LF form and LF documents are unchanged. When the strict frontmatter
+  decode fails, it is retried once after quoting the value of a top-level
+  `name`, `description`, `license` or `compatibility` line whose plain value
+  contains a colon followed by a space (for example `description: Use for:
+  reports`) and does not start with a YAML indicator. No other key, and no
+  authority-bearing key, is ever repaired.
 - **Gate.** `ValidateSkillMarkdown` now requires a non-blank body instead of a
-  `## Steps` item.
+  `## Steps` item; the importer then refuses a body without prose or steps.
 - **Advisory keys.** `license`, `compatibility`, `allowed-tools` and
   `metadata` are accepted by the closed package frontmatter and are not
   stored, hashed or exported. `allowed-tools` is not mapped onto
@@ -16812,7 +16841,10 @@ allowlist; D-499 admits them as text data. A free-form export
 is the Harbor form (frontmatter `trigger`, instructions as body prose), not a
 byte copy of the source. Binaries before this change refuse free-form packages
 and descriptions over 2000 runes; rolling back past it leaves such installed
-skills unreadable by the older validator.
+skills unreadable by the older validator. Zips that wrap the skill in one
+top-level folder, or that carry directory entries, are still refused by the
+archive rules (D-422): `SKILL.md` must be at the archive root and only regular
+files are accepted.
 
 **Cross-references:** D-053, D-422, D-496, D-497.
 
@@ -16829,18 +16861,28 @@ dialect MIME such as `text/x-python`.
 - **One text class.** Common script, source, data and template extensions
   (for example `py`, `sh`, `js`, `ts`, `rb`, `go`, `sql`, `yaml`/`yml`,
   `toml`, `csv`, `html`, `css`, `ini`, `cfg`, `jinja`/`j2`, `tmpl`) classify
-  as `text/plain; charset=utf-8` and pass only the existing text check: valid
-  UTF-8, no NUL byte, not blank. No script, dialect or executable MIME is ever
-  recorded or served.
+  as `text/plain; charset=utf-8` and pass only the text check: valid UTF-8
+  and no NUL byte. An empty text file (an empty `__init__.py`) is valid text;
+  JSON and XML still parse, so an empty one stays refused. Common
+  extension-less text files are matched by exact, case-sensitive basename
+  (`LICENSE`, `LICENCE`, `NOTICE`, `COPYING`, `AUTHORS`, `README`,
+  `CHANGELOG`, `VERSION`, `CODEOWNERS`, `Makefile`, `Dockerfile`,
+  `Containerfile`, `Gemfile`, `Rakefile`, `Procfile`, `Brewfile`, `Pipfile`,
+  `Vagrantfile`) into the same class. `xsd`, `xsl` and `xslt` map to
+  `application/xml` under its well-formedness check (office-format skills
+  ship schema trees). No script, dialect or executable MIME is ever recorded
+  or served.
+- **Archive junk.** The macOS `__MACOSX/` tree and `.DS_Store` files are
+  skipped by raw entry name before any other check and never read; they do
+  not enter the manifest or the hash.
 - **Data, never code.** The files are stored and resolved as package support
   data. Harbor never executes them; a model or tool that reads one gets text.
 - **Unchanged.** The per-file, total, count and ratio limits, nested-archive
   rejection and path rules apply as before. Binary executables, archives,
-  extension-less files and binary bytes behind a text extension stay refused.
-  Packages without such files keep their exact hashes.
+  other extension-less files and binary bytes behind a text extension stay
+  refused. Packages without such files keep their exact hashes.
 
-**Residual, stated:** an empty file (such as an empty `__init__.py`) is still
-refused by the shared not-blank text rule. A binary older than v1.44 refuses
-packages that carry text-class files.
+**Residual, stated:** a binary older than v1.44 refuses packages that carry
+text-class, empty-text, schema or basename-matched files.
 
 **Cross-references:** D-422, D-496, D-498.

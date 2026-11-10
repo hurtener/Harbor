@@ -39,16 +39,22 @@ Two versions move independently in Harbor (RFC §5.3):
   instructions is supplied when none is declared. Sectioned Harbor documents
   parse, hash and round-trip exactly as before. The frontmatter keys `license`,
   `compatibility`, `allowed-tools` and `metadata` are accepted as advisory and
-  never grant tools. The description bound is 32000 runes (other text fields
-  stay at 2000), and the `skill_get` default budget is 8192 estimated tokens
-  (D-498).
+  never grant tools. The description bound is 32 KiB (other text fields stay
+  at 2000 runes), the `skill_get` default budget is 12288 estimated tokens,
+  and `skill_list` / `skill_search` return a 500-rune description excerpt.
+  A derived trigger is capped at 2000 runes. CRLF `SKILL.md` files and an
+  unquoted colon in a `name` / `description` / `license` / `compatibility`
+  value are accepted (D-498).
 - **Bundled scripts and data in skill packages.** Common script, source, data
   and template files (`.py`, `.sh`, `.js`, `.ts`, `.sql`, `.yaml`, `.csv`,
   `.html`, `.j2`, and similar) are accepted as support files. They must be
-  non-blank UTF-8 without NUL bytes, are recorded as
+  UTF-8 without NUL bytes (empty files included), are recorded as
   `text/plain; charset=utf-8`, and are stored as data that Harbor never
-  executes. Binary executables and archives stay refused. The support MIME
-  allowlist version is now `v1.44` (D-499).
+  executes. Common extension-less text files (`LICENSE`, `NOTICE`,
+  `Makefile`, `Dockerfile`, …) are accepted by exact name, `.xsd` / `.xsl` /
+  `.xslt` as XML, and macOS `__MACOSX/` and `.DS_Store` entries are skipped.
+  Binary executables and archives stay refused. The support MIME allowlist
+  version is now `v1.44` (D-499).
 
 ## [1.43.0] — 2026-11-10
 

@@ -11,8 +11,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/goccy/go-yaml"
-
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/skills"
 	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
@@ -184,7 +182,7 @@ func scanFrontmatter(src []byte) (frontmatterRaw, []byte, error) {
 // ErrMalformedYAML on YAML parse failure.
 func parseFrontmatter(raw []byte) (frontmatterFields, error) {
 	var f frontmatterFields
-	if err := yaml.Unmarshal(raw, &f); err != nil {
+	if err := skillpkg.UnmarshalFrontmatter(raw, &f); err != nil {
 		return frontmatterFields{}, fmt.Errorf("%w: %w", ErrMalformedYAML, err)
 	}
 	return f, nil
@@ -343,7 +341,7 @@ func parseSkillBody(ctx context.Context, body []byte) (string, map[canonicalSect
 		}
 		sections = tailSections
 	}
-	if len(sections[sectionSteps]) == 0 && strings.TrimSpace(description) != "" {
+	if len(sections[sectionSteps]) == 0 && hasProse(description) {
 		sections[sectionSteps] = []string{FreeFormStep}
 	}
 	return description, sections, nil
@@ -353,28 +351,50 @@ func parseSkillBody(ctx context.Context, body []byte) (string, map[canonicalSect
 // longest trailing run of lines that parseBodyLines accepts as
 // sections (a canonical heading, then only canonical, non-duplicate
 // headings, `- ` items and blank lines), or len(lines) when there is
-// none. One backward pass, mirroring parseBodyLines' line rules.
+// none. One backward pass, mirroring parseBodyLines' line rules, with
+// one addition: every tail section must carry at least one item. The
+// export never emits an empty section, so an empty heading stays in
+// the description; that keeps export -> reimport exact.
 func canonicalTailStart(lines []string) int {
 	start := len(lines)
 	seen := make(map[canonicalSection]bool, 3)
+	hasItem := false
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
 		if strings.HasPrefix(line, "## ") {
 			sec := classifySection(line)
-			if sec == sectionUnknown || seen[sec] {
+			if sec == sectionUnknown || seen[sec] || !hasItem {
 				break
 			}
 			seen[sec] = true
 			start = i
+			hasItem = false
 			continue
 		}
 		t := strings.TrimRight(line, "\r\n")
-		if strings.HasPrefix(t, "- ") || strings.TrimSpace(t) == "" {
+		if strings.HasPrefix(t, "- ") {
+			hasItem = true
+			continue
+		}
+		if strings.TrimSpace(t) == "" {
 			continue
 		}
 		break
 	}
 	return start
+}
+
+// hasProse reports whether text carries an instruction line: a
+// non-blank line that is not a Markdown heading. A body of bare
+// headings has nothing for a free-form step to point at.
+func hasProse(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		t := strings.TrimSpace(line)
+		if t != "" && !strings.HasPrefix(t, "#") {
+			return true
+		}
+	}
+	return false
 }
 
 // resolvedBody is the intermediate after attachment-substitution.
@@ -584,7 +604,7 @@ func doImport(ctx context.Context, store artifacts.ArtifactStore, src ImportSour
 		return skills.Skill{}, ImportArtifacts{}, fmt.Errorf("%w: empty source",
 			ErrMissingFrontmatter)
 	}
-	rawFM, body, err := scanFrontmatter(src.Bytes)
+	rawFM, body, err := scanFrontmatter(skillpkg.NormalizeNewlines(src.Bytes))
 	if err != nil {
 		return skills.Skill{}, ImportArtifacts{}, err
 	}
@@ -674,17 +694,19 @@ func joinDescription(frontmatter, body string) (string, error) {
 // splitDescription is the inverse of joinDescription for an export
 // that re-emits the original frontmatter verbatim: it strips the
 // frontmatter description prefix so the body prose is not duplicated.
-func splitDescription(frontmatter, description string) string {
+// ok is false when the description no longer carries that prefix (the
+// stashed frontmatter is stale).
+func splitDescription(frontmatter, description string) (string, bool) {
 	fm := strings.TrimSpace(frontmatter)
 	switch {
 	case fm == "":
-		return description
+		return description, true
 	case description == fm:
-		return ""
+		return "", true
 	case strings.HasPrefix(description, fm+"\n\n"):
-		return description[len(fm)+2:]
+		return description[len(fm)+2:], true
 	default:
-		return description
+		return description, false
 	}
 }
 

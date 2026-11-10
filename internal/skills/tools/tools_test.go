@@ -13,6 +13,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 	skilltools "github.com/hurtener/Harbor/internal/skills/tools"
 	tcat "github.com/hurtener/Harbor/internal/tools"
 )
@@ -349,15 +350,20 @@ func TestListHandler_HappyPath(t *testing.T) {
 }
 
 // TestGetHandler_DefaultBudgetFitsFreeFormSkill — with no max_tokens a
-// skill whose free-form instruction body fills most of the package
-// description bound is returned whole: the instructions reach the model.
+// free-form skill at the description byte bound, in a multi-byte
+// script, with a trigger and title at their rune bounds, is returned
+// whole: the instructions reach the model.
 func TestGetHandler_DefaultBudgetFitsFreeFormSkill(t *testing.T) {
 	t.Parallel()
 
 	bus := newTestBus(t)
-	instructions := strings.Repeat("Write one line per change. ", 1000) // ~27k chars
+	instructions := strings.Repeat("説", skillpkg.MaxPackageDescriptionBytes/3) // 3 bytes per rune
 	store := newFakeStore(bus,
-		skills.Skill{Name: "free-form", Trigger: "t", Description: instructions, Steps: []string{"Follow the instructions in this skill's description."}, Origin: skills.OriginPack, Scope: skills.ScopeProject},
+		skills.Skill{
+			Name: "free-form", Title: strings.Repeat("題", skillpkg.MaxPackageTextRunes),
+			Trigger: strings.Repeat("時", skillpkg.MaxPackageTextRunes), Description: instructions,
+			Steps: []string{"Follow the instructions in this skill's description."}, Origin: skills.OriginPack, Scope: skills.ScopeProject,
+		},
 	)
 	catalog := tcat.NewCatalog()
 	if err := skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
@@ -371,5 +377,40 @@ func TestGetHandler_DefaultBudgetFitsFreeFormSkill(t *testing.T) {
 	out := unmarshalGetResult(t, res)
 	if len(out.Skills) != 1 || out.Skills[0].Description != instructions || out.Summarized {
 		t.Fatalf("free-form skill not returned whole: summarized=%v n=%d", out.Summarized, len(out.Skills))
+	}
+}
+
+// TestListAndSearch_SummarizeDescription — skill_list and skill_search
+// carry the bounded description excerpt; the full body is skill_get's.
+func TestListAndSearch_SummarizeDescription(t *testing.T) {
+	t.Parallel()
+
+	bus := newTestBus(t)
+	long := strings.Repeat("instructions ", 1000)
+	store := newFakeStore(bus,
+		skills.Skill{Name: "free-form", Trigger: "release notes", Description: long, Steps: []string{"s"}, Origin: skills.OriginPack, Scope: skills.ScopeProject},
+	)
+	catalog := tcat.NewCatalog()
+	if err := skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	ctx := ctxWithIdentity(t)
+	want := skillpkg.DescriptionSummary(long)
+
+	list, _ := catalog.Resolve(skilltools.ToolNameSkillList)
+	res, err := list.Invoke(ctx, mustMarshal(t, skilltools.ListArgs{}))
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got := unmarshalListResult(t, res); len(got.Skills) != 1 || got.Skills[0].Description != want {
+		t.Fatalf("list description not summarized: %d skills", len(got.Skills))
+	}
+	search, _ := catalog.Resolve(skilltools.ToolNameSkillSearch)
+	res, err = search.Invoke(ctx, mustMarshal(t, skilltools.SearchArgs{Query: "release", Limit: 5}))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if got := unmarshalSearchResult(t, res); len(got.Skills) != 1 || got.Skills[0].Skill.Description != want {
+		t.Fatalf("search description not summarized: %d skills", len(got.Skills))
 	}
 }

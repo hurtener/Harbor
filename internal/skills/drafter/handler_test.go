@@ -393,9 +393,9 @@ func TestCreateDraft_ArtifactPassesValidateIngest(t *testing.T) {
 	}
 }
 
-func TestSystemPrompt_RequiresHumanDescription(t *testing.T) {
+func TestSystemPrompt_AsksForHumanDescription(t *testing.T) {
 	p := systemPrompt()
-	if !strings.Contains(p, "all optional except name, description, trigger, steps") {
+	if !strings.Contains(p, "always include description") {
 		t.Fatalf("prompt does not require a description: %q", p)
 	}
 	if !strings.Contains(p, "telling a person what the skill does") {

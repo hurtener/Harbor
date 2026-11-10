@@ -45,11 +45,19 @@ func doExport(skill skills.Skill, attachments ImportArtifacts) ([]byte, error) {
 	if ok {
 		// The verbatim frontmatter re-carries its own `description`, so
 		// only the body-prose remainder of the joined Description is
-		// emitted below (the inverse of joinDescription).
-		if fields, err := parseFrontmatter(rawFM); err == nil {
-			description = splitDescription(fields.Description, description)
+		// emitted below (the inverse of joinDescription). A stashed
+		// frontmatter whose description no longer prefixes the skill's
+		// (the skill changed after import) is stale: it is dropped and
+		// the frontmatter synthesized instead.
+		fields, err := parseFrontmatter(rawFM)
+		if err == nil {
+			description, ok = splitDescription(fields.Description, description)
+		} else {
+			ok = false
 		}
-	} else {
+	}
+	if !ok {
+		description = skill.Description
 		// Synthesise from structured fields. Round-trip from a
 		// synthetic Skill is not byte-stable against an unrelated
 		// source — the round-trip invariant gates Import->Export
@@ -142,14 +150,7 @@ func synthesiseFrontmatter(s skills.Skill) []byte {
 		if v == "" {
 			return
 		}
-		// Marshal the scalar so a value carrying `: `, `#`, or a
-		// leading indicator (common in a trigger derived from a
-		// description) is quoted; a plain value emits unchanged.
-		out, err := yaml.Marshal(v)
-		if err != nil {
-			out = []byte(v + "\n")
-		}
-		fmt.Fprintf(&b, "%s: %s", k, out)
+		fmt.Fprintf(&b, "%s: %s", k, yamlScalar(v))
 	}
 	emitList := func(k string, v []string) {
 		if len(v) == 0 {
@@ -157,7 +158,7 @@ func synthesiseFrontmatter(s skills.Skill) []byte {
 		}
 		fmt.Fprintf(&b, "%s:\n", k)
 		for _, item := range v {
-			fmt.Fprintf(&b, "  - %s\n", item)
+			fmt.Fprintf(&b, "  - %s", yamlScalar(item))
 		}
 	}
 	emitStr("name", s.Name)
@@ -203,4 +204,16 @@ func desubstituteArtifacts(s string, idToPath map[string]string) (string, error)
 		return "", firstErr
 	}
 	return out, nil
+}
+
+// yamlScalar renders one frontmatter scalar (with its newline) through
+// the YAML marshaler, so a value carrying `: `, `#`, or a leading
+// indicator (common in a trigger derived from a description) is
+// quoted; a plain value emits unchanged.
+func yamlScalar(v string) string {
+	out, err := yaml.Marshal(v)
+	if err != nil {
+		return v + "\n"
+	}
+	return string(out)
 }

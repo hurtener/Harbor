@@ -138,6 +138,7 @@ func ValidateSkillMarkdown(b []byte, limits MarkdownLimits) error {
 	if !utf8.Valid(b) {
 		return fmt.Errorf("%w: %d bytes are not valid UTF-8", ErrSkillMDNotUTF8, len(b))
 	}
+	b = NormalizeNewlines(b)
 	if !bytes.HasPrefix(b, []byte("---\n")) {
 		return ErrSkillMDFrontmatterMissing
 	}
@@ -149,7 +150,7 @@ func ValidateSkillMarkdown(b []byte, limits MarkdownLimits) error {
 		Trigger     string `yaml:"trigger"`
 		Description string `yaml:"description"`
 	}
-	if err := yaml.Unmarshal(raw, &fm); err != nil {
+	if err := UnmarshalFrontmatter(raw, &fm); err != nil {
 		return fmt.Errorf("%w: %w", ErrSkillMDMalformedYAML, err)
 	}
 	if DeriveTrigger(fm.Trigger, fm.Description) == "" {
@@ -166,12 +167,91 @@ func ValidateSkillMarkdown(b []byte, limits MarkdownLimits) error {
 // derived from the frontmatter `description` with every whitespace run
 // (newlines included) collapsed to one space, so a description-only
 // document (the common external SKILL.md shape) imports with a
-// deterministic single-line trigger. Returns "" when both are blank.
+// deterministic single-line trigger. A derived trigger is capped at
+// MaxPackageTextRunes on a rune boundary (ellipsis included), keeping
+// the whole "use when" cue of an ordinary description. Returns "" when
+// both are blank.
 func DeriveTrigger(trigger, description string) string {
 	if strings.TrimSpace(trigger) != "" {
 		return trigger
 	}
-	return strings.Join(strings.Fields(description), " ")
+	return truncateRunes(strings.Join(strings.Fields(description), " "), MaxPackageTextRunes)
+}
+
+// truncateRunes returns s when it fits max runes, otherwise its first
+// max-1 runes plus an ellipsis.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
+// NormalizeNewlines rewrites CRLF line endings to LF. SKILL.md
+// documents written on Windows parse exactly like their LF form (the
+// package hash covers the parsed fields, so both hash identically); an
+// LF document is returned unchanged.
+func NormalizeNewlines(b []byte) []byte {
+	if !bytes.Contains(b, []byte("\r\n")) {
+		return b
+	}
+	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+}
+
+// lenientScalarKeys are the descriptive top-level frontmatter keys
+// whose unquoted values may carry `: ` (a common hand-written form,
+// e.g. `description: Use for: reports`). Authority-bearing and list
+// keys are never repaired.
+var lenientScalarKeys = map[string]bool{"name": true, "description": true, "license": true, "compatibility": true}
+
+// RepairPlainScalars quotes the value of a top-level `name` /
+// `description` / `license` / `compatibility` line whose plain value
+// contains `: ` — YAML reads that as a nested mapping and refuses it.
+// A value that starts with a YAML indicator is left alone (it is not a
+// plain prose scalar).
+// Every other line is returned verbatim, and ok reports whether any
+// line changed. Callers retry a failed strict decode with the repaired
+// bytes only.
+func RepairPlainScalars(raw []byte) (out []byte, ok bool) {
+	lines := strings.Split(string(raw), "\n")
+	for i, line := range lines {
+		key, value, found := strings.Cut(line, ": ")
+		if !found || !lenientScalarKeys[key] {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if !strings.Contains(value, ": ") || strings.ContainsAny(value[:1], "\"'|>[{&*!%@`:?-,#") {
+			continue
+		}
+		quoted, err := yaml.Marshal(value)
+		if err != nil {
+			continue
+		}
+		lines[i] = key + ": " + strings.TrimSuffix(string(quoted), "\n")
+		ok = true
+	}
+	if !ok {
+		return raw, false
+	}
+	return []byte(strings.Join(lines, "\n")), true
+}
+
+// UnmarshalFrontmatter decodes raw frontmatter into v, retrying once
+// with RepairPlainScalars when the strict decode fails and a repair
+// applies. The original error is returned when no repair applies or
+// the repaired document still fails.
+func UnmarshalFrontmatter(raw []byte, v any, opts ...yaml.DecodeOption) error {
+	err := yaml.UnmarshalWithOptions(raw, v, opts...)
+	if err == nil {
+		return nil
+	}
+	if repaired, ok := RepairPlainScalars(raw); ok {
+		if retryErr := yaml.UnmarshalWithOptions(repaired, v, opts...); retryErr == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // MaxDescriptionSummaryRunes bounds the description excerpt that skill

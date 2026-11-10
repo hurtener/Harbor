@@ -77,10 +77,13 @@ const (
 	// (title, trigger, task_type, one step, one
 	// precondition, one failure mode, one annotation).
 	MaxPackageTextRunes = 2000
-	// MaxPackageDescriptionRunes bounds the description. It is larger
-	// than the other text fields because a free-form SKILL.md keeps its
-	// whole instruction body there.
-	MaxPackageDescriptionRunes = 32000
+	// MaxPackageDescriptionBytes bounds the description in UTF-8
+	// bytes — the unit skill_get's chars/4 token estimator counts, so
+	// a description at the bound is a fixed 8192 estimated tokens
+	// whatever its script. It is larger than the other text fields
+	// because a free-form SKILL.md keeps its whole instruction body
+	// there.
+	MaxPackageDescriptionBytes = 32 << 10
 	// MaxPackageSteps bounds the ordered procedural steps.
 	MaxPackageSteps = 64
 	// MaxPackageTags bounds the tags.

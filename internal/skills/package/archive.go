@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 )
 
 // archive.go — the archive validation primitives for complete skill
@@ -202,6 +203,12 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 	var claimedTotal, actualTotal int64
 
 	for _, f := range zr.File {
+		// Operating-system metadata a zip tool adds (the macOS
+		// `__MACOSX/` resource-fork tree and `.DS_Store` files) is
+		// ignored, never read: it is not package content.
+		if isArchiveJunk(f.Name) {
+			continue
+		}
 		// Every non-regular entry — directory (trailing-slash name or
 		// directory mode bits), symlink, device, FIFO, socket — is
 		// REJECTED, never skipped: the check runs BEFORE path
@@ -310,4 +317,18 @@ func ValidateArchive(b []byte, limits ArchiveLimits) ([]ArchiveEntry, error) {
 		})
 	}
 	return out, nil
+}
+
+// isArchiveJunk reports whether a raw zip entry name is operating-system
+// metadata (macOS `__MACOSX/` trees and `.DS_Store` files) that is
+// skipped rather than validated as package content.
+func isArchiveJunk(name string) bool {
+	if name == "__MACOSX" || strings.HasPrefix(name, "__MACOSX/") {
+		return true
+	}
+	base := name
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		base = name[i+1:]
+	}
+	return base == ".DS_Store"
 }

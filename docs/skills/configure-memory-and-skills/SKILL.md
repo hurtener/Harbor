@@ -175,7 +175,7 @@ Skills enter the catalog through these producers:
 One skill per file. Two body forms are accepted.
 
 - **Sectioned (Harbor) form.** Prose, then `## Steps` (at least one dash list item) and the optional `## Preconditions` / `## Failure modes` sections.
-- **Free-form (Agent Skills) form.** Any other non-blank body — arbitrary level-2 headings, numbered lists, code blocks, no `## Steps` — is kept verbatim as the skill's instructions in its description, which `skill_get` returns to the model. Any trailing run of canonical sections is still parsed as sections, and a single step "Follow the instructions in this skill's description." is supplied when none is declared.
+- **Free-form (Agent Skills) form.** Any other body with instruction prose — arbitrary level-2 headings, numbered lists, code blocks, no `## Steps` — is kept verbatim as the skill's instructions in its description, which `skill_get` returns to the model. Any trailing run of canonical sections is still parsed as sections, and a single step "Follow the instructions in this skill's description." is supplied when none is declared.
 
 The frontmatter `description:` is the human-visible explanation of what the skill does (shown in listings and import reviews); it comes first in the skill's description, followed by the body prose. The frontmatter `trigger:` is the planner-visible match cue: when it is absent, it is derived from `description` (whitespace collapsed to one line), and a file with neither is refused. The Agent Skills keys `license`, `compatibility`, `allowed-tools` and `metadata` are accepted as advisory and are not stored: `allowed-tools` never grants a tool.
 
@@ -211,7 +211,7 @@ license: Apache-2.0
 3. If it is a bug, pull the last 5 PRs that touched the area.
 ```
 
-Bundled files are support files and must use the support MIME allowlist: Markdown, plain text, JSON, XML, SVG, common images, PDF and fonts, plus a text class for common script, source, data and template files (`.py`, `.sh`, `.js`, `.ts`, `.sql`, `.yaml`, `.csv`, `.html`, `.j2`, and similar). Text-class files must be non-blank UTF-8 without NUL bytes; they are recorded as `text/plain; charset=utf-8`, stored as data, and never executed by Harbor. Binary executables, archives and extension-less files are refused.
+Bundled files are support files and must use the support MIME allowlist: Markdown, plain text, JSON, XML, SVG, common images, PDF and fonts, plus a text class for common script, source, data and template files (`.py`, `.sh`, `.js`, `.ts`, `.sql`, `.yaml`, `.csv`, `.html`, `.j2`, and similar). Text-class files must be UTF-8 without NUL bytes (empty files are fine); they are recorded as `text/plain; charset=utf-8`, stored as data, and never executed by Harbor. Common extension-less text files (`LICENSE`, `NOTICE`, `Makefile`, `Dockerfile`, and similar) are matched by exact name, `.xsd` / `.xsl` / `.xslt` files are XML, and macOS `__MACOSX/` and `.DS_Store` entries are skipped. `SKILL.md` must sit at the archive root (not inside a wrapper folder) and the zip must not carry directory entries (for example, build it with `zip -r -D`). Binary executables, archives and other extension-less files are refused.
 
 ### Import / remove with the CLI
 

@@ -37,6 +37,19 @@ func TestMIMEAllowlist_ClosedAndNarrow(t *testing.T) {
 	}
 	// Binaries, archives and formats without a bounded validator stay
 	// outside the allowlist.
+	for _, name := range []string{"LICENSE", "NOTICE", "Makefile", "Dockerfile", "dir/README", "Procfile"} {
+		if mime, ok := skillpkg.ClassifySupportMIME(name); !ok || mime != "text/plain; charset=utf-8" {
+			t.Fatalf("basename %q -> %q (ok=%v), want text/plain", name, mime, ok)
+		}
+	}
+	for _, ext := range []string{"xsd", "xsl", "xslt"} {
+		if mime, ok := skillpkg.ClassifySupportMIME("schema." + ext); !ok || mime != "application/xml" {
+			t.Fatalf("extension %q -> %q, want application/xml", ext, mime)
+		}
+	}
+	if _, ok := skillpkg.ClassifySupportMIME("license"); ok {
+		t.Fatal("basename match must be exact (case-sensitive)")
+	}
 	for _, ext := range []string{"exe", "so", "dll", "dylib", "bin", "class", "jar", "pyc", "wasm",
 		"zip", "tar", "gz", "jsonl", "ipynb", "ico", "bmp", "tiff", "env"} {
 		if _, ok := skillpkg.ClassifySupportMIME("file." + ext); ok {
@@ -55,6 +68,9 @@ func TestValidateMimeContent_Accepted(t *testing.T) {
 	}{
 		{"text/markdown", "# A heading\n\nbody text\n"},
 		{"text/plain; charset=utf-8", "plain text\n"},
+		{"text/plain; charset=utf-8", ""},
+		{"text/plain; charset=utf-8", "   \n\t"},
+		{"application/xml", "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"/>"},
 		{"application/json", `{"a": [1, 2, {"b": true}]}`},
 		{"application/xml", "<?xml version=\"1.0\"?>\n<root><item>v</item></root>"},
 		{"image/svg+xml", "<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"><circle/></svg>"},
@@ -90,8 +106,8 @@ func TestValidateMimeContent_Rejected(t *testing.T) {
 		// Text claims reject binary / non-UTF-8 / ambiguous data.
 		{"markdown binary", "text/markdown", "\xff\xfe\x00binary"},
 		{"markdown nul", "text/markdown", "text\x00with nul"},
-		{"plain empty", "text/plain; charset=utf-8", ""},
-		{"plain whitespace", "text/plain; charset=utf-8", "   \n\t"},
+		{"plain nul", "text/plain; charset=utf-8", "a\x00b"},
+		{"json empty", "application/json", ""},
 		{"markdown invalid utf8", "text/markdown", "caf\xc3\xa9 \xff\xfe"},
 		// Structured claims reject unparseable content.
 		{"json not json", "application/json", `{"a": }`},

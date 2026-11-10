@@ -20,7 +20,7 @@ type SkillGetArgs struct {
 	Names []string `json:"names"`
 	// MaxTokens caps the combined estimated token count of the
 	// returned skills via the tiered budgeter ladder. 0 → the
-	// handler default (8192).
+	// handler default (12288).
 	MaxTokens int `json:"max_tokens,omitempty"`
 }
 

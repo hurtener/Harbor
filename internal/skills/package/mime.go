@@ -75,6 +75,8 @@ var extensionMIME = map[string]string{
 	"md":       "text/markdown",
 	"markdown": "text/markdown",
 	"txt":      "text/plain; charset=utf-8",
+	// XML schemas and stylesheets (office-format skills ship these).
+	"xsd": "application/xml", "xsl": "application/xml", "xslt": "application/xml",
 	// Text class (v1.44): scripts, source, data and templates bundled
 	// as plain-text data. Recorded as text/plain, never executed.
 	"py": textPlain, "js": textPlain, "mjs": textPlain, "cjs": textPlain,
@@ -148,11 +150,23 @@ func classifyMIME(path string) string {
 		last = path[i+1:]
 	}
 	dot := strings.LastIndexByte(last, '.')
+	if dot < 0 && textBasenames[last] {
+		return textPlain
+	}
 	if dot < 0 || dot == len(last)-1 {
 		return ""
 	}
 	ext := strings.ToLower(last[dot+1:])
 	return extensionMIME[ext]
+}
+
+// textBasenames are the common extension-less text files, matched by
+// exact basename, recorded as plain-text data under the text check.
+var textBasenames = map[string]bool{
+	"LICENSE": true, "LICENCE": true, "NOTICE": true, "COPYING": true, "AUTHORS": true,
+	"README": true, "CHANGELOG": true, "VERSION": true, "CODEOWNERS": true,
+	"Makefile": true, "Dockerfile": true, "Containerfile": true, "Gemfile": true,
+	"Rakefile": true, "Procfile": true, "Brewfile": true, "Pipfile": true, "Vagrantfile": true,
 }
 
 // supportMIME reports whether path classifies to a supported MIME.
@@ -237,19 +251,16 @@ func ValidateMimeContent(mime string, data []byte) error {
 	}
 }
 
-// validateTextContent enforces the shared text claim: valid UTF-8, no
-// NUL bytes, and at least one non-whitespace rune (an empty or
-// whitespace-only file carries no content a text claim can be checked
-// against — it is ambiguous data).
+// validateTextContent enforces the shared text claim: valid UTF-8 and
+// no NUL bytes. An empty text file (an empty `__init__.py`, a blank
+// placeholder) is valid text; the structured types reject it through
+// their own parse.
 func validateTextContent(mime string, data []byte) error {
 	if !utf8.Valid(data) {
 		return fmt.Errorf("%w: %s carries non-UTF-8 bytes", ErrMimeContentMismatch, mime)
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
 		return fmt.Errorf("%w: %s carries a NUL byte", ErrMimeContentMismatch, mime)
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return fmt.Errorf("%w: %s is empty or whitespace-only (ambiguous data)", ErrMimeContentMismatch, mime)
 	}
 	return nil
 }

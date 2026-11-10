@@ -102,16 +102,20 @@ func TestImportPackageMarkdown_FrontmatterDescription(t *testing.T) {
 		}
 	})
 
-	t.Run("over-bound description and derived trigger are refused", func(t *testing.T) {
-		long := strings.Repeat("é", skillpkg.MaxPackageDescriptionRunes+1)
+	t.Run("over-bound description is refused and a long derived trigger is capped", func(t *testing.T) {
+		long := strings.Repeat("é", skillpkg.MaxPackageDescriptionBytes/2+1) // 2 bytes per rune
 		md := "---\nname: x\ntrigger: t\ndescription: " + long + "\n---\n## Steps\n- s\n"
 		if _, err := imp.ImportPackageMarkdown(ctx, importer.PackageMarkdownSource{Markdown: []byte(md)}); !errors.Is(err, skillpkg.ErrInvalidSkillContent) {
 			t.Fatalf("description: err = %v, want ErrInvalidSkillContent", err)
 		}
-		// The derived trigger keeps the ordinary text bound.
-		derived := "---\nname: x\ndescription: " + strings.Repeat("é", skillpkg.MaxPackageTextRunes+1) + "\n---\n## Steps\n- s\n"
-		if _, err := imp.ImportPackageMarkdown(ctx, importer.PackageMarkdownSource{Markdown: []byte(derived)}); !errors.Is(err, skillpkg.ErrInvalidSkillContent) {
-			t.Fatalf("derived trigger: err = %v, want ErrInvalidSkillContent", err)
+		// A derived trigger is capped on a rune boundary, never refused.
+		derived := "---\nname: x\ndescription: " + strings.Repeat("é", skillpkg.MaxPackageTextRunes+50) + "\n---\n## Steps\n- s\n"
+		ingest, err := imp.ImportPackageMarkdown(ctx, importer.PackageMarkdownSource{Markdown: []byte(derived)})
+		if err != nil {
+			t.Fatalf("long description: %v", err)
+		}
+		if r := []rune(ingest.Skill.Trigger); len(r) != skillpkg.MaxPackageTextRunes || r[len(r)-1] != '…' {
+			t.Fatalf("derived trigger has %d runes", len(r))
 		}
 	})
 
@@ -324,5 +328,158 @@ func TestImportPackage_AgentSkillsBundledScript(t *testing.T) {
 	disguised["scripts/helper.py"] = "\x7fELF\x02\x01\x01\x00"
 	if _, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, disguised)}); !errors.Is(err, skillpkg.ErrArchiveMimeContentMismatch) {
 		t.Fatalf("binary behind .py: err = %v, want ErrArchiveMimeContentMismatch", err)
+	}
+}
+
+// roundTripMarkdown imports one SKILL.md, exports it, reimports the
+// export, and requires the same package hash and logical content.
+func roundTripMarkdown(t *testing.T, imp importer.Importer, md string) importer.PackageIngest {
+	t.Helper()
+	ctx := context.Background()
+	ingest, err := imp.ImportPackageMarkdown(ctx, importer.PackageMarkdownSource{Markdown: []byte(md)})
+	if err != nil {
+		t.Fatalf("ImportPackageMarkdown: %v", err)
+	}
+	body, err := imp.MaterializePackageBody(ctx, ingest)
+	if err != nil {
+		t.Fatalf("MaterializePackageBody: %v", err)
+	}
+	ex, err := imp.ExportPackage(ctx, ingest, body)
+	if err != nil {
+		t.Fatalf("ExportPackage: %v", err)
+	}
+	again, err := imp.ReimportPackage(ctx, ex)
+	if err != nil {
+		t.Fatalf("ReimportPackage: %v\n%s", err, ex.Document)
+	}
+	if again.Hash != ingest.Hash || again.Skill.Description != ingest.Skill.Description {
+		t.Fatalf("round trip drifted:\n got %+v\nwant %+v", again.Skill, ingest.Skill)
+	}
+	return ingest
+}
+
+// TestFreeForm_EmptyHeadingRoundTrip pins the review regressions: a
+// canonical heading without items inside a free-form body stays in the
+// description, so export -> reimport is exact.
+func TestFreeForm_EmptyHeadingRoundTrip(t *testing.T) {
+	imp, _ := newImporter(t)
+	for _, body := range []string{
+		"Intro\n## Preconditions\n- p\n## Preconditions\n",
+		"Intro\n## Failure modes\n- f\n## Failure modes\n",
+		"## Preconditions\n- earlier\n## Preconditions\n\n## Steps\n- x\n",
+		"Intro\n## Steps\n\n## Preconditions\n- p\n",
+		"Intro\n## Steps\n- a\n## Usage\ntext\n",
+	} {
+		roundTripMarkdown(t, imp, "---\nname: x\ntrigger: t\n---\n"+body)
+	}
+}
+
+// TestFreeForm_BareHeadingsRefused: a body of headings only carries no
+// instructions and is refused like a blank body.
+func TestFreeForm_BareHeadingsRefused(t *testing.T) {
+	imp, _ := newImporter(t)
+	md := "---\nname: x\ntrigger: t\n---\n# Title\n\n## Overview\n\n## Usage\n"
+	if _, err := imp.ImportPackageMarkdown(context.Background(), importer.PackageMarkdownSource{Markdown: []byte(md)}); !errors.Is(err, importer.ErrEmptySteps) {
+		t.Fatalf("err = %v, want ErrEmptySteps", err)
+	}
+}
+
+// TestExport_StaleFrontmatterDescriptionSynthesizes: when a skill's
+// description no longer starts with its stashed frontmatter description,
+// the export synthesizes frontmatter instead of duplicating text.
+func TestExport_StaleFrontmatterDescriptionSynthesizes(t *testing.T) {
+	imp, _ := newImporter(t)
+	src := "---\nname: notes\ndescription: Summarizes notes.\n---\nKeep it short.\n\n## Steps\n\n- Read the notes.\n"
+	skill, attachments, err := imp.Import(context.Background(), importer.ImportSource{Bytes: []byte(src), Scope: goldenScope("stale")})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	skill.Description = "Rewritten description."
+	out, err := imp.Export(context.Background(), skill, attachments)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	// The derived trigger still reads "Summarizes notes."; the stale
+	// frontmatter description is gone and the new text appears once.
+	if strings.Contains(string(out), "description:") || strings.Count(string(out), "Rewritten description.") != 1 {
+		t.Fatalf("stale export:\n%s", out)
+	}
+	again, _, err := imp.Import(context.Background(), importer.ImportSource{Bytes: out, Scope: goldenScope("stale2")})
+	if err != nil || again.Description != "Rewritten description." {
+		t.Fatalf("reimport description=%q err=%v", again.Description, err)
+	}
+}
+
+// TestExport_QuotesListEntries: synthesized list entries are YAML-quoted
+// when needed, so tags with `: ` survive the round trip.
+func TestExport_QuotesListEntries(t *testing.T) {
+	imp, _ := newImporter(t)
+	md := "---\nname: x\ntrigger: t\ntags: [\"kind: report\", \"#hash\"]\n---\n## Steps\n- s\n"
+	ingest := roundTripMarkdown(t, imp, md)
+	if len(ingest.Skill.Tags) != 2 {
+		t.Fatalf("tags = %q", ingest.Skill.Tags)
+	}
+}
+
+// TestImportPackage_AgentSkillsRealWorldZip exercises the shapes real
+// Agent Skills zips carry together: a CRLF SKILL.md, an unquoted `: ` in
+// the description, an empty __init__.py, an .xsd schema, an
+// extension-less LICENSE, and macOS __MACOSX / .DS_Store junk.
+func TestImportPackage_AgentSkillsRealWorldZip(t *testing.T) {
+	imp, _ := newImporter(t)
+	ctx := context.Background()
+	lf := "---\n" +
+		"name: office-docs\n" +
+		"description: Creates and edits office documents. Use for: (1) new reports, (2) edits to existing files.\n" +
+		"license: Proprietary. LICENSE has complete terms\n" +
+		"---\n" +
+		"# Office documents\n\n## Overview\n\nValidate against the bundled schema before saving.\n\n## Workflow\n\n1. Unpack the file.\n2. Edit the XML.\n3. Pack it again.\n"
+	entries := map[string]string{
+		"SKILL.md":                   strings.ReplaceAll(lf, "\n", "\r\n"),
+		"LICENSE":                    "Terms of use.\n",
+		"scripts/__init__.py":        "",
+		"scripts/pack.py":            "print('pack')\n",
+		"ooxml/schemas/main.xsd":     "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"/>\n",
+		"__MACOSX/._SKILL.md":        "\x00\x05\x16\x07binary resource fork",
+		"__MACOSX/scripts/._pack.py": "\x00\x05\x16\x07",
+		".DS_Store":                  "\x00\x00\x00\x01Bud1",
+		"scripts/.DS_Store":          "\x00\x00\x00\x01Bud1",
+	}
+	ingest, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, entries)})
+	if err != nil {
+		t.Fatalf("ImportPackage: %v", err)
+	}
+	if want := "Creates and edits office documents. Use for: (1) new reports, (2) edits to existing files."; ingest.Skill.Trigger != want {
+		t.Fatalf("trigger = %q", ingest.Skill.Trigger)
+	}
+	if strings.Contains(ingest.Skill.Description, "\r") || !strings.Contains(ingest.Skill.Description, "## Workflow\n\n1. Unpack the file.") {
+		t.Fatalf("description = %q", ingest.Skill.Description)
+	}
+	mimes := map[string]string{}
+	for _, f := range ingest.Package.Supports {
+		mimes[f.Path] = f.Mime
+	}
+	want := map[string]string{
+		"LICENSE":                "text/plain; charset=utf-8",
+		"scripts/__init__.py":    "text/plain; charset=utf-8",
+		"scripts/pack.py":        "text/plain; charset=utf-8",
+		"ooxml/schemas/main.xsd": "application/xml",
+	}
+	if len(mimes) != len(want) {
+		t.Fatalf("supports = %v, want %v (junk must be skipped)", mimes, want)
+	}
+	for p, m := range want {
+		if mimes[p] != m {
+			t.Fatalf("support %q MIME = %q, want %q", p, mimes[p], m)
+		}
+	}
+	// The CRLF document hashes like its LF form.
+	lfEntries := map[string]string{"SKILL.md": lf}
+	for p := range want {
+		lfEntries[p] = entries[p]
+	}
+	lfIngest, err := imp.ImportPackage(ctx, importer.PackageSource{Archive: packageZip(t, lfEntries)})
+	if err != nil || lfIngest.Hash != ingest.Hash {
+		t.Fatalf("LF hash %q vs CRLF %q (err=%v)", lfIngest.Hash, ingest.Hash, err)
 	}
 }

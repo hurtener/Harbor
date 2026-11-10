@@ -145,8 +145,8 @@ func (p AgentPackItem) Validate() error {
 // bounded enforces the per-item size bounds. Runed so multi-byte text is
 // counted in what the planner actually renders.
 func (p AgentPackItem) bounded() error {
-	if r := len([]rune(p.Description)); r > skillpkg.MaxPackageDescriptionRunes {
-		return fmt.Errorf("%w: pack item description exceeds %d runes (%d)", ErrInvalidSkill, skillpkg.MaxPackageDescriptionRunes, r)
+	if n := len(p.Description); n > skillpkg.MaxPackageDescriptionBytes {
+		return fmt.Errorf("%w: pack item description exceeds %d bytes (%d)", ErrInvalidSkill, skillpkg.MaxPackageDescriptionBytes, n)
 	}
 	for field, text := range map[string]string{
 		"name": p.Name, "title": p.Title,

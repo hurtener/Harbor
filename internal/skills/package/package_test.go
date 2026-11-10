@@ -207,11 +207,17 @@ func TestSupportFileValidate_MaterializedEmptyBytes(t *testing.T) {
 		Digest: emptyDigest,
 		Data:   []byte{},
 	}
-	// The size and digest of the materialized empty bytes verify, then
-	// the MIME content gate rejects empty text (ambiguous data) — the
-	// verification chain RUNS, it is not skipped.
-	if err := materialized.Validate(); !errors.Is(err, skillpkg.ErrMimeContentMismatch) {
-		t.Fatalf("materialized empty text: err=%v, want ErrMimeContentMismatch (verification must run)", err)
+	// The size and digest of the materialized empty bytes verify and
+	// empty text is valid text, so it passes; a structured MIME over the
+	// same empty bytes fails the content gate — the verification chain
+	// RUNS, it is not skipped.
+	if err := materialized.Validate(); err != nil {
+		t.Fatalf("materialized empty text: %v", err)
+	}
+	emptyJSON := materialized
+	emptyJSON.Path, emptyJSON.Mime = "empty.json", "application/json"
+	if err := emptyJSON.Validate(); !errors.Is(err, skillpkg.ErrMimeContentMismatch) {
+		t.Fatalf("materialized empty json: err=%v, want ErrMimeContentMismatch (verification must run)", err)
 	}
 
 	// A false digest on materialized empty bytes is now caught (the

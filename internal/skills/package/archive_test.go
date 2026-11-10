@@ -129,7 +129,7 @@ func TestValidateArchive_Rejects(t *testing.T) {
 		{"nested zip", []zipEntry{{name: "payload.txt", data: string(buildZip(t, []zipEntry{{name: "inner.txt", data: "x"}}))}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveNested},
 		{"nested gzip", []zipEntry{{name: "payload.txt", data: "\x1f\x8b\x08\x00fake"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveNested},
 		{"unsupported mime exe", []zipEntry{{name: "tool.exe", data: "MZfake"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
-		{"unsupported mime extensionless", []zipEntry{{name: "LICENSE", data: "text"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
+		{"unsupported mime extensionless", []zipEntry{{name: "payload", data: "text"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
 		{"unsupported mime archive ext", []zipEntry{{name: "bundle.tar", data: "x"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
 		{"unsupported mime binary executable", []zipEntry{{name: "bin/tool.so", data: "\x7fELF"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeUnsupported},
 		{"text class binary content", []zipEntry{{name: "scripts/helper.py", data: "\x7fELF\x02\x01\x01\x00"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
@@ -138,7 +138,7 @@ func TestValidateArchive_Rejects(t *testing.T) {
 		{"mime content mismatch json", []zipEntry{{name: "examples/demo.json", data: "\xff\xfe\x00binary"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
 		{"mime content mismatch md", []zipEntry{{name: "docs/guide.md", data: "\x00\x01\x02"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
 		{"mime content mismatch xml", []zipEntry{{name: "data.xml", data: "<open>never closed"}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
-		{"mime content mismatch empty txt", []zipEntry{{name: "empty.txt", data: ""}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
+		{"mime content mismatch empty json", []zipEntry{{name: "empty.json", data: ""}}, skillpkg.ArchiveLimits{}, skillpkg.ErrArchiveMimeContentMismatch},
 		{"too many entries", []zipEntry{
 			{name: "a.txt", data: "1"}, {name: "b.txt", data: "2"}, {name: "c.txt", data: "3"},
 		}, skillpkg.ArchiveLimits{MaxEntries: 2}, skillpkg.ErrArchiveTooManyEntries},

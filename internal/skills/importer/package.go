@@ -288,7 +288,7 @@ type packageFrontmatterFields struct {
 // (goccy rejects them by default).
 func parsePackageFrontmatter(raw []byte) (frontmatterFields, error) {
 	var f packageFrontmatterFields
-	if err := yaml.UnmarshalWithOptions(raw, &f, yaml.DisallowUnknownField()); err != nil {
+	if err := skillpkg.UnmarshalFrontmatter(raw, &f, yaml.DisallowUnknownField()); err != nil {
 		return frontmatterFields{}, fmt.Errorf("%w: %w", ErrPackageFrontmatterDisallowed, err)
 	}
 	return frontmatterFields{
@@ -323,6 +323,7 @@ func parsePackageFrontmatter(raw []byte) (frontmatterFields, error) {
 // so the returned stored Skill is a deterministic function of the
 // canonical Package.
 func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, supports []skillpkg.ArchiveEntry, manifest map[string]struct{}) (skills.Skill, skillpkg.Package, error) {
+	skillMD = skillpkg.NormalizeNewlines(skillMD)
 	if err := skillpkg.ValidateSkillMarkdown(skillMD, skillpkg.MarkdownLimits{}); err != nil {
 		return skills.Skill{}, skillpkg.Package{}, fmt.Errorf("importer: package SKILL.md: %w", err)
 	}
