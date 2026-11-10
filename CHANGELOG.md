@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.45.0] — 2026-11-10
+
 ### Added
 
 - **Portable personal-skill export.** `agent_config.user.skills.export` exports
