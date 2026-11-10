@@ -104,6 +104,7 @@ import type {
 	AgentConfigUserSkillsListResponse,
 	AgentConfigUserSkillsUpsertResponse,
 	AgentConfigUserSkillsDeleteResponse,
+	AgentConfigUserSkillsExportResponse,
 	AgentConfigUserSkillsImportValidateResponse,
 	AgentConfigUserSkillsImportCommitResponse,
 	AgentConfigCompositionPreviewResponse,
@@ -1843,6 +1844,13 @@ export class AgentConfigNamespace {
 		return this.#t.request<AgentConfigUserSkillsListResponse>(
 			'/v1/agent_config/user/skills/list',
 			{ agent_id: agentId },
+		);
+	}
+	/** Export a personal skill as a caller-owned portable ZIP artifact. */
+	userSkillsExport(agentId: string, name: string): Promise<AgentConfigUserSkillsExportResponse> {
+		return this.#t.request<AgentConfigUserSkillsExportResponse>(
+			'/v1/agent_config/user/skills/export',
+			{ agent_id: agentId, name },
 		);
 	}
 	/** `agent_config.user.skills.upsert` — upsert a DURABLE personal skill

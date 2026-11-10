@@ -19,6 +19,7 @@
  */
 
 import type { IdentityScope } from './memory-types';
+import type { ArtifactRef } from './artifacts';
 
 /** An agent's skills membership in a config revision — the set of skill
  * names active for the agent. Mirrors `types.AgentConfigSkillsSelection`. */
@@ -1391,6 +1392,22 @@ export interface AgentConfigUserSkillsListRequest {
 /** `agent_config.user.skills.list` response. */
 export interface AgentConfigUserSkillsListResponse {
 	skills: AgentConfigSkillSummary[];
+	protocol_version: string;
+}
+
+/** Export exactly one caller-owned durable personal skill. */
+export interface AgentConfigUserSkillsExportRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+}
+
+/** Portable ZIP artifact; package hash and archive-byte hash are distinct. */
+export interface AgentConfigUserSkillsExportResponse {
+	artifact: ArtifactRef;
+	package_hash: string;
+	name: string;
+	size_bytes: number;
 	protocol_version: string;
 }
 

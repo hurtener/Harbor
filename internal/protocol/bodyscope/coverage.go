@@ -65,6 +65,7 @@ var requestSurfaces = map[string]Surface{
 	"AgentConfigUserSetRevisionRequest":                SurfaceAgentConfig,
 	"AgentConfigUserSkillsDeleteRequest":               SurfaceAgentConfig,
 	"AgentConfigUserSkillsListRequest":                 SurfaceAgentConfig,
+	"AgentConfigUserSkillsExportRequest":               SurfaceAgentConfig,
 	"AgentConfigUserSkillsUpsertRequest":               SurfaceAgentConfig,
 	"AgentConfigUserSkillsImportValidateRequest":       SurfaceAgentConfig,
 	"AgentConfigUserSkillsImportCommitRequest":         SurfaceAgentConfig,

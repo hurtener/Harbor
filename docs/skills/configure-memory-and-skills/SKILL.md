@@ -179,6 +179,8 @@ One skill per file. Two body forms are accepted.
 
 The frontmatter `description:` is the human-visible explanation of what the skill does (shown in listings and import reviews); it comes first in the skill's description, followed by the body prose. The frontmatter `trigger:` is the planner-visible match cue: when it is absent, it is derived from `description` (whitespace collapsed to one line), and a file with neither is refused. The Agent Skills keys `license`, `compatibility`, `allowed-tools` and `metadata` are accepted as advisory and are not stored: `allowed-tools` never grants a tool.
 
+Listings and import reviews show only the first prose paragraph, capped at 500 runes; the joined instruction body stays available through `skill_get`. Without a frontmatter description, the first body prose paragraph supplies the summary (leading Markdown headings are skipped). A multi-paragraph frontmatter description is also summarized by its first paragraph: canonical packages retain the joined text, not the original frontmatter boundary.
+
 ```markdown
 ---
 name: triage-incident
@@ -245,6 +247,25 @@ For a caller (a Protocol client, not an operator with a shell), installing a per
 - **`agent_config.user.skills.import_commit`** — the caller echoes the token plus the reviewed `PackageHash`, expected config hash, canonical name, and explicit replace consent. The runtime authenticates and strictly decodes the sealed claims, re-derives identity and signed effective-agent reach, rechecks lifecycle / policy / ceilings / expected config hash, forces `ScopeUser` + caller ownership server-side, and atomically materializes the approved package plus membership in ONE conditional write. Response-loss retry is idempotent; competing commits have one winner.
 
 Authority model to rely on: identity comes from the VERIFIED context (no selectable tenant/user/session/scope — the request carries no authority fields), signed session-reach and agent-reach gates run before any artifact lookup or persistence, and the package frontmatter is CLOSED (authority-bearing fields are rejected by the importer). `required_tools` / `required_namespaces` / `required_tags` are **applicability metadata, never grants**: a requirement outside the run-visible capability snapshot is a WARNING (the injection-time filter scrubs it), and the policy snapshot is sealed into the token so a policy change between validate and commit is a typed revocation refusal. A boot-owned canonical name is read-only to this flow too, even at equal hash (see HA-66 below).
+
+### Personal skill export
+
+`agent_config.user.skills.export` (`POST /v1/agent_config/user/skills/export`)
+accepts `identity`, `agent_id`, and the canonical personal skill `name`. Like
+`user.skills.list`, it requires the verified caller and signed reach to an
+active Agent, without an admin or `agent_config:user` scope. It exports only
+that caller's durable user-scope package installed through reviewed import;
+a same-name shared, foreign, or legacy upsert-only skill is never a fallback.
+
+The response carries `artifact` (the normal `ArtifactRef`), `package_hash`,
+`name`, `size_bytes`, and `protocol_version`. Retrieve its bytes through
+`artifacts.get` or `artifacts.get_ref`. The ZIP has root `SKILL.md` and all
+package support files and can enter the normal reviewed import flow. A
+package installed from a single Markdown document exports in the same form. The
+package hash identifies package content; the artifact SHA256 identifies the
+ZIP bytes. Export writes only the caller-owned artifact, with no skill,
+membership, or revision change. Missing installed packages, including legacy upsert-only rows, return
+`not_found`.
 
 ### Draft-only authoring (HA-62) — `skill_create_draft`
 

@@ -184,11 +184,12 @@ func TestAgentConfigHandler_AgentReachClosedCensus(t *testing.T) {
 		{"user/diff", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","from_revision":"a","to_revision":"b"}`, []auth.Scope{auth.ScopeAgentConfigUser}},
 		{"user/rollback", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","revision_id":"a"}`, []auth.Scope{auth.ScopeAgentConfigUser}},
 		{"user/skills/list", identityJSON, nil},
+		{"user/skills/export", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","name":"s"}`, nil},
 		{"user/skills/upsert", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","skill":` + skill + `}`, nil},
 		{"user/skills/delete", `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"agent-x","name":"s"}`, nil},
 	}
-	if len(cases) != 13 {
-		t.Fatalf("agent-config reach census has %d routes, want 13", len(cases))
+	if len(cases) != 14 {
+		t.Fatalf("agent-config reach census has %d routes, want 14", len(cases))
 	}
 	for _, tc := range cases {
 		t.Run(tc.route, func(t *testing.T) {

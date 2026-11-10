@@ -15,6 +15,12 @@ type (
 	// RuntimeClient is the additive Runtime inspection/control client,
 	// including HA-68 skill-publication methods.
 	RuntimeClient = internal.RuntimeClient
+	// UserSkillExportClient exports caller-owned personal skill ZIP artifacts.
+	UserSkillExportClient = internal.UserSkillExportClient
+	// AgentConfigUserSkillsExportRequest names one personal skill.
+	AgentConfigUserSkillsExportRequest = types.AgentConfigUserSkillsExportRequest
+	// AgentConfigUserSkillsExportResponse carries its portable artifact.
+	AgentConfigUserSkillsExportResponse = types.AgentConfigUserSkillsExportResponse
 	// RetentionClient is the optional admin-only runtime.retention read; the
 	// client returned by New implements it (type-assert to use it).
 	RetentionClient = internal.RetentionClient

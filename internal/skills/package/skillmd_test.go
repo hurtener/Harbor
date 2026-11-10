@@ -155,6 +155,26 @@ func TestDescriptionSummary_Bounded(t *testing.T) {
 	}
 }
 
+func TestDescriptionSummary_FirstProseParagraph(t *testing.T) {
+	for _, tc := range []struct{ name, description, want string }{
+		{"joined body", "Plans events.\n\n# Event planning\nRead the identity.", "Plans events."},
+		{"multiline paragraph", "Plans events.\nUse for research.\n\nRead the identity.", "Plans events.\nUse for research."},
+		{"canonical prose", "Explains the thing.", "Explains the thing."},
+		{"hashtag prose", "#events research.\n\nRead the identity.", "#events research."},
+		{"body paragraphs", "Explains the thing.\n\nFollow these instructions.", "Explains the thing."},
+		{"free-form without description", "# Event planning\n\n## Overview\n\nPlans events.\n\n## Instructions\nRead the identity.", "Plans events."},
+		{"heading without blank line", "Plans events.\n# Instructions\nRead the identity.", "Plans events."},
+		{"whitespace separator", "Plans events.\r\n \t\r\nRead the identity.", "Plans events."},
+		{"empty", " \n\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := skillpkg.DescriptionSummary(tc.description); got != tc.want {
+				t.Fatalf("summary = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidateSkillMarkdown_FreeFormBody: a non-blank body passes the
 // gate without a `## Steps` section (free-form instructions).
 func TestValidateSkillMarkdown_FreeFormBody(t *testing.T) {

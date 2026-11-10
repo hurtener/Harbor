@@ -653,6 +653,10 @@ const (
 	// set), so authoring one is as safe as the session-scoped rung. The
 	// wire-transport route is `POST /v1/agent_config/user/skills/list`.
 	MethodAgentConfigUserSkillsList Method = "agent_config.user.skills.list"
+	// MethodAgentConfigUserSkillsExport exports one caller-owned personal skill
+	// as a portable ZIP artifact. CLAIM-FREE, with the same signed agent reach
+	// and lifecycle requirements as list.
+	MethodAgentConfigUserSkillsExport Method = "agent_config.user.skills.export"
 	// MethodAgentConfigUserSkillsUpsert — durable-per-user skills verb:
 	// upserts a DURABLE personal skill at user scope (persists across ALL of
 	// the caller's conversations, keyed (tenant, user)). CLAIM-FREE, forced to
@@ -1341,6 +1345,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigUserRemoveOAuthMCPCapability:   {},
 	MethodAgentConfigUserReconcileLiveProfile:       {},
 	MethodAgentConfigUserSkillsList:                 {},
+	MethodAgentConfigUserSkillsExport:               {},
 	MethodAgentConfigUserSkillsUpsert:               {},
 	MethodAgentConfigUserSkillsDelete:               {},
 	MethodAgentConfigUserSkillsImportValidate:       {},
@@ -1658,6 +1663,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	// Durable-per-user skills (CLAIM-FREE, session-safe tier — a personal
 	// skill cannot widen capability, so it needs only a valid identity).
 	MethodAgentConfigUserSkillsList:   {},
+	MethodAgentConfigUserSkillsExport: {},
 	MethodAgentConfigUserSkillsUpsert: {},
 	MethodAgentConfigUserSkillsDelete: {},
 	// Two-phase verified-caller skill-package import (CLAIM-FREE, same
@@ -1728,6 +1734,7 @@ var canonicalAgentConfigSessionMethods = map[Method]struct{}{
 	// these need a valid identity but neither admin nor the
 	// `auth.ScopeAgentConfigUser` claim.
 	MethodAgentConfigUserSkillsList:   {},
+	MethodAgentConfigUserSkillsExport: {},
 	MethodAgentConfigUserSkillsUpsert: {},
 	MethodAgentConfigUserSkillsDelete: {},
 	// The two-phase skill-package import verbs are CLAIM-FREE on the same

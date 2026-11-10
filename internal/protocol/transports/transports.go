@@ -248,7 +248,7 @@ type muxConfig struct {
 	// so an admin can version an agent's config (skills now) live.
 	agentConfigService *agentcfgprotocol.Service
 	// userSkillImportService feeds the two-phase verified-caller
-	// skill-package import routes (`agent_config.user.skills.import_*`).
+	// skill-package import and portable personal export routes.
 	// OPTIONAL: when unsupplied the routes answer 501 (the partial-build
 	// convention) — the `/v1/agent_config/*` route must be mounted first.
 	userSkillImportService *agentcfgprotocol.UserSkillImportService
@@ -781,8 +781,9 @@ func WithAgentConfigService(s *agentcfgprotocol.Service) Option {
 
 // WithUserSkillImportService wires the two-phase verified-caller
 // skill-package import service (HA-61) so the
-// `agent_config.user.skills.import_validate` /
-// `agent_config.user.skills.import_commit` routes are live. OPTIONAL:
+// `agent_config.user.skills.import_validate`,
+// `agent_config.user.skills.import_commit`, and
+// `agent_config.user.skills.export` routes are live. OPTIONAL:
 // when unsupplied the routes answer 501 (the partial-build convention).
 // The routes require WithAgentConfigService to be mounted first.
 func WithUserSkillImportService(s *agentcfgprotocol.UserSkillImportService) Option {

@@ -89,8 +89,8 @@ type AgentConfigHandler struct {
 	agentPacksSurface AgentPacksSurface
 	// importService is the OPTIONAL two-phase verified-caller
 	// skill-package import service (HA-61). When nil, the
-	// `user/skills/import_*` routes answer CodeUnknownMethod (501) — the
-	// partial-build convention.
+	// `user/skills/import_*` and `user/skills/export` routes answer
+	// CodeUnknownMethod (501), the partial-build convention.
 	importService *agentcfgprotocol.UserSkillImportService
 	// previewService is the OPTIONAL read-only composition-preview
 	// service (HA-66). When nil, the `composition/preview` route answers
@@ -131,7 +131,8 @@ func WithAgentConfigReachAuthorizer(a auth.AgentReachAuthorizer) AgentConfigOpti
 
 // WithUserSkillImportService wires the two-phase verified-caller
 // skill-package import service (HA-61) so the
-// `user/skills/import_validate` / `user/skills/import_commit` routes are
+// `user/skills/import_validate`, `user/skills/import_commit`, and
+// `user/skills/export` routes are
 // live. OPTIONAL — when unsupplied the routes answer CodeUnknownMethod
 // (501), the partial-build convention.
 func WithUserSkillImportService(s *agentcfgprotocol.UserSkillImportService) AgentConfigOption {
@@ -324,6 +325,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveUserRemoveOAuthMCPCapability(w, r, body, wireID)
 	case "user/reconcile_live_profile":
 		h.serveUserReconcileLiveProfile(w, r, body, wireID)
+	case "user/skills/export":
+		h.serveUserSkillsExport(w, r, body, wireID)
 	case "user/skills/list":
 		h.serveUserSkillsList(w, r, body, wireID)
 	case "user/skills/upsert":
@@ -361,6 +364,7 @@ var agentConfigSessionSafeRoutes = map[string]bool{
 	// identity (NOT admin, NOT auth.ScopeAgentConfigUser). They intentionally
 	// live in this safe-subset set, NOT agentConfigUserRoutes.
 	"user/skills/list":   true,
+	"user/skills/export": true,
 	"user/skills/upsert": true,
 	"user/skills/delete": true,
 	// The two-phase skill-package import verbs are CLAIM-FREE on the same
@@ -1240,6 +1244,30 @@ func (h *AgentConfigHandler) serveUserSkillsList(w http.ResponseWriter, r *http.
 	writeAgentConfigJSON(w, r, resp, h.logger)
 }
 
+func (h *AgentConfigHandler) serveUserSkillsExport(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsExportRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsExport) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserSkillsExport) {
+		return
+	}
+	if h.importService == nil {
+		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotImplemented, "agent_config.user.skills.export: user skill import/export is not wired on this runtime")
+		return
+	}
+	resp, err := h.importService.Export(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsExport, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
 func (h *AgentConfigHandler) serveUserSkillsUpsert(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
 	var req prototypes.AgentConfigUserSkillsUpsertRequest
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsUpsert) {
@@ -1773,7 +1801,8 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		// oversized personal tier as a server fault.
 		return protoerrors.CodeRequestTooLarge, http.StatusRequestEntityTooLarge,
 			m + ": session-personal skill result exceeds the response limit"
-	case errors.Is(err, agentcfg.ErrRevisionNotFound), errors.Is(err, skills.ErrSkillNotFound):
+	case errors.Is(err, agentcfg.ErrRevisionNotFound), errors.Is(err, skills.ErrSkillNotFound),
+		errors.Is(err, skills.ErrInstalledPackageNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound,
 			m + ": " + err.Error()
 	case errors.Is(err, skills.ErrPackOverwriteRefused):
