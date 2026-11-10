@@ -41,7 +41,7 @@ func skillReader(rc RegistryContext) skills.SkillReader {
 // rejection event) before the envelope is consulted. With identity but no
 // seated run view the call fails closed with ErrRunToolViewRequired.
 func runCapability(ctx context.Context, rc RegistryContext) (skilltools.CapabilityContext, error) {
-	if _, err := requireIdentity(ctx); err != nil {
+	if !hasCompleteIdentity(ctx) {
 		return skilltools.CapabilityContext{}, nil
 	}
 	names, err := runAllowedTools(ctx, rc.GrantedScopes)

@@ -551,6 +551,13 @@ func reconcileCopiedPack(source, target AgentPackInspection, selected []string, 
 		if !ok {
 			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: source pack %q", ErrAgentPackNotFound, name)
 		}
+		if item.Item.PackageHash != "" {
+			// A package-backed item's support files are runtime-owned state
+			// of the SOURCE agent; copying only the body would leave a
+			// dangling package reference on the target. Import the package
+			// into the target agent instead.
+			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: source pack %q is package-backed; import the package into the target agent", ErrAgentPackCopyInvalid, name)
+		}
 		targetItem, targetEffective := effectiveItemByName(target.Items, name)
 		if targetEffective && !targetItem.Editable && targetItem.SemanticHash != item.SemanticHash {
 			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: target boot-owned pack %q", ErrBootPackOwned, name)

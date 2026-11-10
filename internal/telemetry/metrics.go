@@ -119,7 +119,7 @@ const (
 	metricGovernanceCacheLen     = "harbor_runtime_governance_cache_entries"
 	metricEventsDroppedTotal     = "harbor_runtime_events_dropped"
 	metricAsyncAdmissionFailures = "harbor_runtime_async_admission_failures"
-	// Durable event-index gauges (D-492/D-493).
+	// Durable event-index gauges.
 	metricEventsIndexIntegrityFailures = "harbor_events_index_integrity_failures_total"
 	metricEventsRetentionHeads         = "harbor_events_retention_heads"
 

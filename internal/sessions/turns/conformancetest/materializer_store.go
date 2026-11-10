@@ -73,31 +73,34 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		if r, ok, err := ms.LoadTaskRoute(c, id, "child"); err != nil || !ok || r.ParentTaskID != "root" || r.RunID != "run-child" || r.RootTaskID != "root" {
 			t.Fatalf("child route = %+v %v %v", r, ok, err)
 		}
-		if r, ok, _ := ms.LoadRunRoute(c, id, "run-explicit"); !ok || r.TaskID != "root" {
+		if r, ok, err := ms.LoadRunRoute(c, id, "run-explicit"); err != nil || !ok || r.TaskID != "root" {
 			t.Fatalf("run route = %+v %v", r, ok)
 		}
-		if r, ok, _ := ms.LoadRunRoute(c, id, "run-reused"); !ok || r.TaskID != "later" {
+		if r, ok, err := ms.LoadRunRoute(c, id, "run-reused"); err != nil || !ok || r.TaskID != "later" {
 			t.Fatalf("reused run resolves to %+v; want the most recent binding", r)
 		}
-		if _, ok, _ := ms.LoadTaskRoute(c, other, "child"); ok {
+		if _, ok, err := ms.LoadTaskRoute(c, other, "child"); err != nil || ok {
 			t.Fatalf("a route leaked across sessions")
 		}
-		cur, _ := s.GetTurn(c, id, "root")
+		cur, err := s.GetTurn(c, id, "root")
+		if err != nil {
+			t.Fatalf("get turn: %v", err)
+		}
 		sealed := cur
 		sealed.Status = turns.StatusCancelled
 		if _, err := s.SealTurnIf(c, id, "root", cur.Version, sealed); err != nil {
 			t.Fatalf("seal: %v", err)
 		}
-		if _, ok, _ := ms.LoadTaskRoute(c, id, "child"); ok {
+		if _, ok, err := ms.LoadTaskRoute(c, id, "child"); err != nil || ok {
 			t.Fatalf("routes of a sealed root survived the seal")
 		}
-		if _, ok, _ := ms.LoadTaskRoute(c, id, "later"); !ok {
+		if _, ok, err := ms.LoadTaskRoute(c, id, "later"); err != nil || !ok {
 			t.Fatalf("an unrelated root's route was pruned")
 		}
 		if _, err := s.DeleteScope(c, id); err != nil {
 			t.Fatalf("erase: %v", err)
 		}
-		if _, ok, _ := ms.LoadTaskRoute(c, id, "later"); ok {
+		if _, ok, err := ms.LoadTaskRoute(c, id, "later"); err != nil || ok {
 			t.Fatalf("routes survived the session erasure")
 		}
 		if err := s.FenceSession(c, id); err != nil {
@@ -124,10 +127,13 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		if err != nil || len(keys) != 2 {
 			t.Fatalf("pending = %+v, %v; want both rows", keys, err)
 		}
-		if page, _ := ms.ListPendingCompletions(c, keys[0], 10); len(page) != 1 || page[0] != keys[1] {
+		if page, err := ms.ListPendingCompletions(c, keys[0], 10); err != nil || len(page) != 1 || page[0] != keys[1] {
 			t.Fatalf("keyset page after %+v = %+v", keys[0], page)
 		}
-		cur, _ := s.GetTurn(c, id, "p1")
+		cur, err := s.GetTurn(c, id, "p1")
+		if err != nil {
+			t.Fatalf("get turn: %v", err)
+		}
 		sealed := cur
 		sealed.Status = turns.StatusComplete
 		sealed.Answer = turns.Answer{State: turns.AnswerStateEmpty, Complete: turns.CompletenessComplete}
@@ -137,7 +143,7 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		if err := ms.MarkPendingCompletion(c, id, "p1"); err != nil {
 			t.Fatalf("mark sealed (no-op): %v", err)
 		}
-		if keys, _ := ms.ListPendingCompletions(c, turns.IdentityRepairKey{}, 10); len(keys) != 1 || keys[0].TurnID != "p2" {
+		if keys, err := ms.ListPendingCompletions(c, turns.IdentityRepairKey{}, 10); err != nil || len(keys) != 1 || keys[0].TurnID != "p2" {
 			t.Fatalf("pending after seal = %+v; want only p2", keys)
 		}
 		if err := ms.MarkPendingCompletion(c, id, "missing"); !errors.Is(err, turns.ErrTurnNotFound) {
@@ -169,7 +175,7 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		if err := ms.ReleaseMaterializerLease(c, "holder-b"); err != nil {
 			t.Fatalf("B release: %v", err)
 		}
-		if b, _ := ms.AcquireMaterializerLease(c, "holder-b", time.Minute); b.Held {
+		if b, err := ms.AcquireMaterializerLease(c, "holder-b", time.Minute); err != nil || b.Held {
 			t.Fatalf("B took the lease after releasing a lease it never held")
 		}
 		if err := ms.ReleaseMaterializerLease(c, "holder-a"); err != nil {
@@ -209,7 +215,7 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		if err := ms.SaveMaterializerCursor(c, "holder-a", 7); !errors.Is(err, turns.ErrLeaseNotHeld) {
 			t.Fatalf("old holder cursor save: %v; want ErrLeaseNotHeld", err)
 		}
-		if a, _ := ms.AcquireMaterializerLease(c, "holder-a", time.Minute); a.Held {
+		if a, err := ms.AcquireMaterializerLease(c, "holder-a", time.Minute); err != nil || a.Held {
 			t.Fatalf("old holder re-took a live lease")
 		}
 	})
@@ -267,7 +273,10 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		if _, err := s.SealTurnIf(c, id, "broken", cur.Version, sealed); err != nil {
 			t.Fatalf("seal: %v", err)
 		}
-		cur, _ = s.GetTurn(c, id, "broken")
+		cur, err = s.GetTurn(c, id, "broken")
+		if err != nil {
+			t.Fatalf("get turn: %v", err)
+		}
 
 		// Query only: the agent stays unavailable, so the flag stays.
 		row, changed, err := ms.RepairTurnIdentity(c, id, "broken", turns.IdentityFill{QueryPresent: true, Query: "what is up"})
@@ -277,10 +286,10 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		if row.Query.Text != "what is up" || row.Query.Complete != turns.CompletenessComplete || !row.Sealed || row.Version != cur.Version+1 {
 			t.Fatalf("repaired row = %+v; want filled query, still sealed, version+1", row)
 		}
-		if got, _ := s.GetTurn(c, id, "broken"); got.Query.Text != "what is up" || got.Answer.Inline != "a" || got.Status != turns.StatusComplete {
+		if got, err := s.GetTurn(c, id, "broken"); err != nil || got.Query.Text != "what is up" || got.Answer.Inline != "a" || got.Status != turns.StatusComplete {
 			t.Fatalf("stored row after repair = %+v; want query filled, seal content intact", got)
 		}
-		if keys, _ := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10); len(keys) != 1 {
+		if keys, err := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10); err != nil || len(keys) != 1 {
 			t.Fatalf("candidates after partial repair = %+v; want still flagged (agent unavailable)", keys)
 		}
 		// A complete component is never overwritten.
@@ -293,7 +302,7 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		if err != nil || !changed || row.Agent.ID != "agent-x" || row.Agent.BindingSource != turns.AgentBindingExplicit {
 			t.Fatalf("agent repair = %+v changed=%v err=%v", row.Agent, changed, err)
 		}
-		if keys, _ := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10); len(keys) != 0 {
+		if keys, err := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10); err != nil || len(keys) != 0 {
 			t.Fatalf("candidates after full repair = %+v; want none", keys)
 		}
 
@@ -302,12 +311,15 @@ func RunMaterializerStore(t *testing.T, factory Factory) {
 		if _, err := s.AppendTurnIf(c, id, empty); err != nil {
 			t.Fatalf("append empty: %v", err)
 		}
-		before, _ := s.GetTurn(c, id, "empty")
+		before, err := s.GetTurn(c, id, "empty")
+		if err != nil {
+			t.Fatalf("get turn: %v", err)
+		}
 		row, changed, err = ms.RepairTurnIdentity(c, id, "empty", turns.IdentityFill{Settle: true})
 		if err != nil || changed || row.Version != before.Version {
 			t.Fatalf("settle = %+v changed=%v err=%v; want no write", row, changed, err)
 		}
-		if keys, _ := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10); len(keys) != 0 {
+		if keys, err := ms.ListIdentityRepairCandidates(c, turns.IdentityRepairKey{}, 10); err != nil || len(keys) != 0 {
 			t.Fatalf("candidates after settle = %+v; want none", keys)
 		}
 		if _, _, err := ms.RepairTurnIdentity(c, id, "complete", turns.IdentityFill{QueryPresent: true, Query: strings.Repeat("x", turns.MaxQueryRunes+1)}); err != nil {
@@ -388,7 +400,7 @@ func runFenceSuite(t *testing.T, open func(t *testing.T) (turns.Store, turns.Mat
 		if err != nil || !a.Held {
 			t.Fatalf("A acquire: %+v %v", a, err)
 		}
-		if r, _ := ms.AcquireMaterializerLease(c, "holder-a", time.Minute); r.Generation != a.Generation {
+		if r, err := ms.AcquireMaterializerLease(c, "holder-a", time.Minute); err != nil || r.Generation != a.Generation {
 			t.Fatalf("renewal moved the generation %d -> %d", a.Generation, r.Generation)
 		}
 		ctxA := turns.WithWriteFence(c, turns.WriteFence{Holder: "holder-a", Generation: a.Generation})
@@ -429,10 +441,10 @@ func runFenceSuite(t *testing.T, open func(t *testing.T) (turns.Store, turns.Mat
 				t.Fatalf("%s under a superseded fence: %v; want ErrLeaseNotHeld", name, err)
 			}
 		}
-		if got, _ := s.GetTurn(c, id, "r1"); got.Version != cur.Version || got.Query.Complete != turns.CompletenessUnavailable {
+		if got, err := s.GetTurn(c, id, "r1"); err != nil || got.Version != cur.Version || got.Query.Complete != turns.CompletenessUnavailable {
 			t.Fatalf("a fenced-out write changed the row: %+v", got)
 		}
-		if cp, _ := s.LoadCheckpoint(c, id); cp == 99 {
+		if cp, err := s.LoadCheckpoint(c, id); err != nil || cp == 99 {
 			t.Fatalf("a fenced-out checkpoint landed")
 		}
 		ctxB := turns.WithWriteFence(c, turns.WriteFence{Holder: "holder-b", Generation: b.Generation})
@@ -463,7 +475,10 @@ func RunRouteRetention(t *testing.T, factory Factory) {
 	t.Run("Routes_EvictedWithTheirTurn", func(t *testing.T) {
 		s, cleanup := factory()
 		defer cleanup()
-		ms := s.(turns.MaterializerStore)
+		ms, isMS := s.(turns.MaterializerStore)
+		if !isMS {
+			t.Fatalf("store does not implement turns.MaterializerStore")
+		}
 		c := context.Background()
 		id := triple("t-ret", "u", "s")
 		for _, tid := range []string{"r-0", "r-1"} {
@@ -481,11 +496,11 @@ func RunRouteRetention(t *testing.T, factory Factory) {
 			t.Fatalf("expected r-0 evicted: %v", err)
 		}
 		for _, tid := range []string{"r-0", "r-0-child"} {
-			if r, ok, _ := ms.LoadTaskRoute(c, id, tid); ok {
+			if r, ok, err := ms.LoadTaskRoute(c, id, tid); err != nil || ok {
 				t.Fatalf("route %s outlived its evicted turn: %+v", tid, r)
 			}
 		}
-		if _, ok, _ := ms.LoadTaskRoute(c, id, "r-1-child"); !ok {
+		if _, ok, err := ms.LoadTaskRoute(c, id, "r-1-child"); err != nil || !ok {
 			t.Fatalf("a retained turn's route was dropped")
 		}
 	})
@@ -504,7 +519,7 @@ func runBootstrapSuite(t *testing.T, open func(t *testing.T) (turns.Store, turns
 		if err := ms.SaveMaterializerBootstrap(fa, "holder-a", `{"phase":"replay"}`); err != nil {
 			t.Fatalf("save progress: %v", err)
 		}
-		if got, _ := ms.LoadMaterializerBootstrap(c); got != `{"phase":"replay"}` {
+		if got, err := ms.LoadMaterializerBootstrap(c); err != nil || got != `{"phase":"replay"}` {
 			t.Fatalf("progress = %q", got)
 		}
 		if err := ms.SaveMaterializerBootstrap(c, "holder-b", "x"); !errors.Is(err, turns.ErrLeaseNotHeld) {
@@ -516,7 +531,10 @@ func runBootstrapSuite(t *testing.T, open func(t *testing.T) (turns.Store, turns
 				t.Fatalf("append: %v", err)
 			}
 		}
-		cur, _ := s.GetTurn(c, closed, "x")
+		cur, err := s.GetTurn(c, closed, "x")
+		if err != nil {
+			t.Fatalf("get turn: %v", err)
+		}
 		sealed := cur
 		sealed.Status = turns.StatusCancelled
 		if _, err := s.SealTurnIf(c, closed, "x", cur.Version, sealed); err != nil {
@@ -526,7 +544,7 @@ func runBootstrapSuite(t *testing.T, open func(t *testing.T) (turns.Store, turns
 		if err != nil || len(got) != 2 || got[0] != open1 || got[1] != open2 {
 			t.Fatalf("unsealed sessions = %+v, %v; want s1, s2", got, err)
 		}
-		if page, _ := ms.ListUnsealedSessions(c, open1, 10); len(page) != 1 || page[0] != open2 {
+		if page, err := ms.ListUnsealedSessions(c, open1, 10); err != nil || len(page) != 1 || page[0] != open2 {
 			t.Fatalf("keyset page after s1 = %+v", page)
 		}
 		if err := ms.PruneTaskRoutes(turns.WithWriteFence(c, turns.WriteFence{Holder: "holder-a", Generation: a.Generation + 7}), open1, "x"); !errors.Is(err, turns.ErrLeaseNotHeld) {
@@ -538,7 +556,7 @@ func runBootstrapSuite(t *testing.T, open func(t *testing.T) (turns.Store, turns
 		if err := ms.PruneTaskRoutes(fa, open1, "bg"); err != nil {
 			t.Fatalf("prune: %v", err)
 		}
-		if _, ok, _ := ms.LoadTaskRoute(c, open1, "bg"); ok {
+		if _, ok, err := ms.LoadTaskRoute(c, open1, "bg"); err != nil || ok {
 			t.Fatalf("pruned route survived")
 		}
 		if err := ms.EnsureMaterializerIndexes(c); err != nil {

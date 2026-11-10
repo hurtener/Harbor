@@ -172,6 +172,22 @@ opaque single-use `proposal_id`, exact `reviewed_hash`, and unchanged body. The
 server-bound proposal receipt is not forgeable from the returned hash or
 provenance string.
 
+To install a complete `SKILL.md` package (with support files) into ONE Agent's
+shared pack, upload it with `artifacts.put`, then call the admin-scoped
+`agent_config.agent_packs.import_validate` (`agent_id`, `artifact_id`). It
+writes nothing and returns the same review as the personal
+`agent_config.user.skills.import_validate`, an opaque `proposal_token` bound to
+your identity, the Agent, the artifact and the package hash, and the
+composition witness `expected_content_hash`. `import_commit` echoes the token,
+`name`, `reviewed_package_hash` and witness; a moved witness is
+`revision_conflict`, an existing item of the same name needs `replace: true`,
+and a retry of the same token returns `replayed: true` without a second write.
+The item then carries a read-only `package_hash`; its support files are
+runtime-owned Agent state for every caller with reach to the Agent. If a
+commit fails after publishing, retry the same token to finish it. Packages no
+active item references are released; `agent_packs.copy` refuses a
+package-backed item. A package never grants tools.
+
 The Harbor Protocol is the canonical event/state contract between Runtime and any client. The bundled Console is one consumer; this skill walks the path for building your own. A working chatbot UI is achievable in a day on top of the Protocol — the wire is small, typed, and stable.
 
 Three properties make this practical:

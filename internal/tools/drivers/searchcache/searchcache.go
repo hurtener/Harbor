@@ -150,8 +150,7 @@ func (d *driver) Sync(ctx context.Context, toolList []tools.Tool) error {
 	}
 	for _, t := range toolList {
 		if err := upsertTool(ctx, tx, t); err != nil {
-			_ = tx.Rollback()
-			return err
+			return errors.Join(err, tx.Rollback())
 		}
 	}
 	return tx.Commit()
@@ -172,8 +171,7 @@ func (d *driver) Remove(ctx context.Context, names []string) error {
 	}
 	for _, name := range names {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM tool_cache WHERE name = ?`, name); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("searchcache: remove: %w", err)
+			return errors.Join(fmt.Errorf("searchcache: remove: %w", err), tx.Rollback())
 		}
 	}
 	return tx.Commit()

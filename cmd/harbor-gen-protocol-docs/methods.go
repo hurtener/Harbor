@@ -552,6 +552,17 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigAgentPacksCommitRequest", Response: "AgentConfigAgentPacksCommitResponse",
 			Auth: adminNote,
 		},
+		methods.MethodAgentConfigAgentPacksImportValidate: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksImportValidate),
+			Request: "AgentConfigAgentPacksImportValidateRequest", Response: "AgentConfigAgentPacksImportValidateResponse",
+			Auth: adminNote,
+		},
+		methods.MethodAgentConfigAgentPacksImportCommit: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigAgentPacksImportCommit),
+			Mutates: true,
+			Request: "AgentConfigAgentPacksImportCommitRequest", Response: "AgentConfigAgentPacksImportCommitResponse",
+			Auth: adminNote,
+		},
 		methods.MethodAgentConfigSetToolExposure: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigSetToolExposure),
 			Mutates: true,

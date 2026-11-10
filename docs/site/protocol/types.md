@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 468 canonical Harbor Protocol wire types, generated from the single-source
+The 472 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -127,6 +127,7 @@ Declared in `internal/protocol/types`.
 | `scope` | `string` | optional (`omitempty`) |
 | `origin_ref` | `string` | optional (`omitempty`) |
 | `extra` | `map[string]string` | optional (`omitempty`) |
+| `package_hash` | `string` | optional (`omitempty`) |
 
 ## AgentConfigAgentPacksCommitRequest
 
@@ -179,6 +180,56 @@ Declared in `internal/protocol/types`.
 | `outcomes` | `[]types.AgentConfigAgentPackCopyOutcome` — see [`AgentConfigAgentPackCopyOutcome`](./types.md#agentconfigagentpackcopyoutcome) |  |
 | `composition_hash` | `string` |  |
 | `boot_pack_set_hash` | `string` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigAgentPacksImportCommitRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `proposal_token` | `string` |  |
+| `agent_id` | `string` |  |
+| `name` | `string` |  |
+| `reviewed_package_hash` | `string` |  |
+| `expected_content_hash` | `string` |  |
+| `replace` | `bool` | optional (`omitempty`) |
+
+## AgentConfigAgentPacksImportCommitResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
+| `package_hash` | `string` |  |
+| `replayed` | `bool` |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigAgentPacksImportValidateRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `artifact_id` | `string` |  |
+
+## AgentConfigAgentPacksImportValidateResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `proposal_token` | `string` |  |
+| `review` | `types.AgentConfigUserSkillImportReview` — see [`AgentConfigUserSkillImportReview`](./types.md#agentconfiguserskillimportreview) |  |
+| `warnings` | `[]string` | optional (`omitempty`) |
+| `package_hash` | `string` |  |
+| `expected_content_hash` | `string` |  |
+| `expires_at` | `time.Time` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigAgentPacksInspectRequest

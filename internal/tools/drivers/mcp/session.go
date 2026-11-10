@@ -51,12 +51,17 @@ const sessionConnectTimeout = 15 * time.Second
 // preparationBase keeps only durable attach authority needed to authenticate
 // another initialize. It deliberately drops request-local credentials, App
 // operation selectors, deadlines, and cancellation from the initiating call.
+// The provider computes it once, at the first connect; every reconnect reuses
+// that binding and never seats the identity of the request that observed the
+// failure. A verified identity is carried, never minted.
 func preparationBase(ctx context.Context) context.Context {
 	base := context.Background()
-	if id, ok := identity.FromVerified(ctx); ok {
-		base, _ = identity.WithVerified(base, id)
+	if _, ok := identity.FromVerified(ctx); ok {
+		base = identity.CarryVerified(base, ctx)
 	} else if id, ok := identity.From(ctx); ok {
-		base, _ = identity.With(base, id)
+		if withID, err := identity.With(base, id); err == nil {
+			base = withID
+		}
 	}
 	if agent, ok := tools.InvokingAgentFrom(ctx); ok {
 		base = tools.WithInvokingAgent(base, agent)

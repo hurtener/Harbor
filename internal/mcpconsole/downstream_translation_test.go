@@ -28,16 +28,16 @@ func TestMarkNotFound_DownstreamTypedClassification(t *testing.T) {
 			if errors.Is(got, protocol.ErrAccessorNotFound) {
 				t.Fatalf("downstream wording forged not-found: %v", got)
 			}
-			if tc.want == protocol.ErrAccessorDownstreamUnauthorized && errors.Is(got, protocol.ErrAccessorDownstreamTransportFailed) {
+			if errors.Is(tc.want, protocol.ErrAccessorDownstreamUnauthorized) && errors.Is(got, protocol.ErrAccessorDownstreamTransportFailed) {
 				t.Fatalf("unauthorized lost precedence: %v", got)
 			}
-			if tc.want == protocol.ErrAccessorIdentityRequired && errors.Is(got, protocol.ErrAccessorDownstreamTransportFailed) {
+			if errors.Is(tc.want, protocol.ErrAccessorIdentityRequired) && errors.Is(got, protocol.ErrAccessorDownstreamTransportFailed) {
 				t.Fatalf("identity lost precedence: %v", got)
 			}
 		})
 	}
 	plain := errors.New("downstream_mcp_unauthorized transport failed")
-	if got := markNotFound(plain); got != plain {
+	if got := markNotFound(plain); !errors.Is(got, plain) || got.Error() != plain.Error() {
 		t.Fatalf("text forged typed classification: %v", got)
 	}
 }

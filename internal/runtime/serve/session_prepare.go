@@ -287,7 +287,7 @@ func (p *sessionPreparer) work(ctx context.Context, entry *sessionPrepareEntry, 
 			routeOutcome = "selected"
 		}
 	}
-	routeMS := p.now().Sub(started)
+	routeElapsed := p.now().Sub(started)
 
 	outcome, passes := "skipped", 0
 	if entry != nil {
@@ -301,7 +301,7 @@ func (p *sessionPreparer) work(ctx context.Context, entry *sessionPrepareEntry, 
 		slog.String("tenant_id", q.TenantID), slog.String("user_id", q.UserID), slog.String("session_id", q.SessionID),
 		slog.String("agent_id", agentID), slog.String("outcome", outcome), slog.Int("reconcile_passes", passes),
 		slog.String("route", routeOutcome),
-		slog.Float64("route_ms", float64(routeMS)/float64(time.Millisecond)),
+		slog.Float64("route_ms", float64(routeElapsed)/float64(time.Millisecond)),
 		slog.Float64("duration_ms", float64(p.now().Sub(started))/float64(time.Millisecond)))
 }
 

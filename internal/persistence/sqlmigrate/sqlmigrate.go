@@ -907,12 +907,8 @@ func sortedVersions(values map[int]struct{}) []int {
 	return out
 }
 
-func recordNamedMigration(ctx context.Context, conn *sql.Conn, subsystem string, m migration, checksum, prefix string) error {
-	return recordNamedMigrationContract(ctx, conn, subsystem, m, checksum, "", prefix)
-}
-
-// recordNamedMigrationContract is recordNamedMigration that also moves the
-// store identity to contract (when nonempty) in the same transaction.
+// recordNamedMigrationContract records a legacy-adopted migration and moves
+// the store identity to contract (when nonempty) in the same transaction.
 func recordNamedMigrationContract(ctx context.Context, conn *sql.Conn, subsystem string, m migration, checksum, contract, prefix string) error {
 	// Legacy adoption is bookkeeping-only, but it still changes three pieces
 	// of migration authority. Keep the transaction on the conn that already
@@ -1167,7 +1163,7 @@ const (
 func applyWithLockRetry(ctx context.Context, apply func() error) error {
 	backoff := 250 * time.Millisecond
 	var err error
-	for attempt := 0; attempt < lockRetryAttempts; attempt++ {
+	for range lockRetryAttempts {
 		if err = apply(); err == nil || !isLockTimeout(err) {
 			return err
 		}

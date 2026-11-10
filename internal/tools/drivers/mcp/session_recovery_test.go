@@ -545,6 +545,9 @@ func TestReceiverSession_RefusalDrainsClosesOnlySignedPreparation(t *testing.T) 
 					t.Fatal(err)
 				}
 				resp, err := transport.RoundTrip(req)
+				if resp != nil {
+					defer func() { _ = resp.Body.Close() }()
+				}
 				if signed {
 					assertDownstreamRefusal(t, err, status)
 					if resp != nil || !body.closed || body.Len() != 0 {

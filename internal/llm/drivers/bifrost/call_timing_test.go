@@ -11,8 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/hurtener/Harbor/internal/llm"
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/hurtener/Harbor/internal/llm"
 )
 
 func TestStreamTiming_ActualDeltasOnly(t *testing.T) {

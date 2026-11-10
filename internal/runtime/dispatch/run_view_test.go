@@ -20,7 +20,7 @@ import (
 // single-call and parallel shapes.
 func TestExecutor_SeatsRunViewForDiscoveryMetaTools(t *testing.T) {
 	cat := tools.NewCatalog()
-	if err := builtin.Register(cat, []string{"tool_search"}); err != nil {
+	if err := builtin.RegisterWith(builtin.RegistryContext{Catalog: cat}, []string{"tool_search"}); err != nil {
 		t.Fatalf("register tool_search: %v", err)
 	}
 	for _, src := range []tools.ToolSourceID{"mail~a-own", "mail~a-foreign"} {
@@ -73,7 +73,7 @@ func TestExecutor_SeatsRunViewForDiscoveryMetaTools(t *testing.T) {
 // ctx carried; the discovery meta-tool fails closed instead.
 func TestExecutor_NilRunViewMasksInheritedView(t *testing.T) {
 	cat := tools.NewCatalog()
-	if err := builtin.Register(cat, []string{"tool_search"}); err != nil {
+	if err := builtin.RegisterWith(builtin.RegistryContext{Catalog: cat}, []string{"tool_search"}); err != nil {
 		t.Fatalf("register tool_search: %v", err)
 	}
 	q := dispatchTestQuad("run-view-nil")

@@ -61,7 +61,7 @@ func ObserveProviderRequest(ctx context.Context) {
 		timing.started = time.Now()
 		timing.dispatched = true
 	}
-	if role, _ := ctx.Value(callRoleKey{}).(CallRole); role == CallRolePlanner {
+	if role, ok := ctx.Value(callRoleKey{}).(CallRole); ok && role == CallRolePlanner {
 		telemetry.ObserveFirstModelRequest(ctx)
 	}
 }
@@ -138,8 +138,14 @@ func (c *safetyClient) logCallTiming(ctx context.Context, req CompleteRequest, r
 	if selected, ok := SelectedProviderRouteFrom(ctx); ok {
 		provider = selected.Provider
 	}
-	effort, _ := EffectiveReasoningEffort(req) // Invalid values are never logged.
-	role, _ := ctx.Value(callRoleKey{}).(CallRole)
+	effort, err := EffectiveReasoningEffort(req)
+	if err != nil {
+		effort = "" // Invalid values are never logged.
+	}
+	role, ok := ctx.Value(callRoleKey{}).(CallRole)
+	if !ok {
+		role = ""
+	}
 	call := telemetry.ModelCallTiming{
 		Provider: provider, Model: req.Model, ReasoningEffort: string(effort), Role: string(boundedCallRole(role)),
 		Total: time.Since(timing.started), Failed: callErr != nil,

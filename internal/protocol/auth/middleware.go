@@ -170,6 +170,11 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 				return
 			}
 
+			if identity.IsReservedUser(effectiveID) {
+				writeProtocolError(w, http.StatusForbidden,
+					protoerrors.Newf(protoerrors.CodeScopeMismatch, "the token's user id is reserved"))
+				return
+			}
 			ctx := r.Context()
 			ctx, idErr := identity.WithVerified(ctx, effectiveID)
 			if idErr != nil {
@@ -279,6 +284,11 @@ func CarrierIdentityMiddleware(logger *slog.Logger) func(http.Handler) http.Hand
 				TenantID:  strings.TrimSpace(r.Header.Get(HeaderTenant)),
 				UserID:    strings.TrimSpace(r.Header.Get(HeaderUser)),
 				SessionID: strings.TrimSpace(r.Header.Get(HeaderSession)),
+			}
+			if identity.IsReservedUser(id) {
+				writeProtocolError(w, http.StatusForbidden,
+					protoerrors.Newf(protoerrors.CodeScopeMismatch, "the carrier user id is reserved"))
+				return
 			}
 			ctx, err := identity.WithVerified(r.Context(), id)
 			if err != nil {

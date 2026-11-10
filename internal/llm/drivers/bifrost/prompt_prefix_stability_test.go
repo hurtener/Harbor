@@ -42,7 +42,7 @@ func providerOrder(t *testing.T, body []byte) []byte {
 
 func commonPrefix(a, b []byte) int {
 	n := min(len(a), len(b))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if a[i] != b[i] {
 			return i
 		}
@@ -110,7 +110,7 @@ func TestPromptPrefixStability_RunAndTurns(t *testing.T) {
 		// Representative catalog size: 40 more agent tools with
 		// production-length descriptions and generator-annotated schemas.
 		desc := "Retrieve records from the connected business system. Supports filtering by owner, status and date range, returns at most fifty rows per page with a continuation cursor, and never modifies data. Use it before any update to confirm the current values."
-		for i := 0; i < 40; i++ {
+		for i := range 40 {
 			registerFixtureTool(t, cat, tools.Tool{Name: fmt.Sprintf("%s_op%02d", agentSrc, i), Description: desc,
 				ArgsSchema: json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"filter":{"type":"object","$comment":"generated from the upstream OpenAPI document","properties":{"owner":{"type":"string","description":"Owner id."},"status":{"type":"string","enum":["open","closed"]}}},"cursor":{"type":"string","$comment":"opaque"}},"additionalProperties":false}`),
 				Transport:  tools.TransportMCP, Source: agentSrc, Loading: tools.LoadingAlways})

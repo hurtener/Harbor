@@ -91,9 +91,9 @@ func (s *discoverySnapshot) get() ([]tools.Tool, bool, bool) {
 }
 
 // renderDeferredToolIndex renders the index from a fresh snapshot with no
-// granted scopes.
-func renderDeferredToolIndex(rc planner.RunContext, perSourceTokens, maxTokens int) string {
-	return renderDeferredToolIndexFrom(rc, newDiscoverySnapshot(rc.Catalog), nil, perSourceTokens, maxTokens)
+// granted scopes and the default budgets.
+func renderDeferredToolIndex(rc planner.RunContext) string {
+	return renderDeferredToolIndexFrom(rc, newDiscoverySnapshot(rc.Catalog), nil, 0, 0)
 }
 
 // renderDeferredToolIndexFrom renders the `<deferred_tools>` section: every
@@ -375,7 +375,7 @@ func isASCIIAlnum(c byte) bool {
 
 func alnumRunTokens(run string) int {
 	hex, digits, letters := true, 0, 0
-	for i := 0; i < len(run); i++ {
+	for i := range len(run) {
 		c := run[i]
 		switch {
 		case c >= '0' && c <= '9':

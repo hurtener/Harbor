@@ -96,7 +96,7 @@ func (p *identityRecordingPreparer) setFail(name string, err error) {
 func (p *identityRecordingPreparer) activationCount() int {
 	p.capabilityPreparer.mu.Lock()
 	defer p.capabilityPreparer.mu.Unlock()
-	return p.capabilityPreparer.activations
+	return p.activations
 }
 
 func endUserRunContext(t *testing.T, id identity.Identity, runID string) (context.Context, identity.Quadruple) {
@@ -387,9 +387,9 @@ func TestSignedOAuthMCPReconcile_SiblingSuccessHealsOnlySharedOutage(t *testing.
 			// Lose the sibling's local handle so the next pass re-prepares it
 			// AFTER the failing pair's window is open.
 			preparer.capabilityPreparer.mu.Lock()
-			for key := range preparer.capabilityPreparer.live {
+			for key := range preparer.live {
 				if strings.HasSuffix(key, "/second") {
-					delete(preparer.capabilityPreparer.live, key)
+					delete(preparer.live, key)
 				}
 			}
 			preparer.capabilityPreparer.mu.Unlock()

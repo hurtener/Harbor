@@ -72,11 +72,10 @@ func (f *fakeTaskReader) markMissing(taskID string) *fakeTaskReader {
 // unmarkMissing lifts a legacy-absence marker so the per-task map (or a
 // later set) serves the record again — the test-side analog of a task
 // record that APPEARS after it was initially missing.
-func (f *fakeTaskReader) unmarkMissing(taskID string) *fakeTaskReader {
+func (f *fakeTaskReader) unmarkMissing(taskID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.missing, taskID)
-	return f
 }
 
 func (f *fakeTaskReader) fail(err error) *fakeTaskReader {

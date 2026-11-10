@@ -1676,6 +1676,13 @@ type AgentConfigAgentPackItem struct {
 	OriginRef string `json:"origin_ref,omitempty"`
 	// Extra is bounded string-typed metadata. Never secret material.
 	Extra map[string]string `json:"extra,omitempty"`
+	// PackageHash is the read-only versioned package hash ("v1:<64-hex>")
+	// of the complete skill package backing this item, stamped only by
+	// `agent_config.agent_packs.import_commit`. Its support files are
+	// runtime-owned state resolvable for every caller with reach to the
+	// agent. A caller-supplied value is rejected on upsert/commit. Empty
+	// for body-only items.
+	PackageHash string `json:"package_hash,omitempty"`
 }
 
 // AgentConfigAgentPacksInspectRequest is the admin-scoped
@@ -2495,6 +2502,93 @@ type AgentConfigUserSkillsImportCommitResponse struct {
 	// Replayed is true when the terminal result was recognized from an
 	// already-landed commit (response-loss replay) and no second package
 	// write happened.
+	Replayed bool `json:"replayed"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// --- Shared Agent-pack skill-package import ---
+
+// AgentConfigAgentPacksImportValidateRequest is the admin-scoped
+// `agent_config.agent_packs.import_validate` request — the ZERO-WRITE first
+// phase of importing ONE complete skill package into ONE Agent's shared
+// pack. The caller names a caller-owned immutable artifact ref (the
+// `artifacts.put` output under their exact triple) + the target Agent;
+// signed reach to that Agent is required. It reuses the personal import's
+// parser, limits and review.
+type AgentConfigAgentPacksImportValidateRequest struct {
+	Identity IdentityScope `json:"identity"`
+	// AgentID is the Agent whose shared pack would receive the package.
+	AgentID string `json:"agent_id"`
+	// ArtifactID is the content-addressed ref of the caller-owned package
+	// artifact (zip archive with one root SKILL.md).
+	ArtifactID string `json:"artifact_id"`
+}
+
+// AgentConfigAgentPacksImportValidateResponse is the
+// `agent_config.agent_packs.import_validate` response: the opaque sealed
+// proposal token, the closed review (the same shape the personal import
+// returns), the warnings, the reviewed package hash, the Agent's current
+// shared-pack composition witness, and the expiry. Nothing was written.
+type AgentConfigAgentPacksImportValidateResponse struct {
+	// ProposalToken is the opaque sealed token the commit echoes. It is
+	// bound to the caller identity, the Agent, the artifact and the
+	// package hash, and cannot be committed to any other destination.
+	ProposalToken string `json:"proposal_token"`
+	// Review is the closed normalized review. Review.ContentHash is the
+	// pack item's canonical content hash.
+	Review AgentConfigUserSkillImportReview `json:"review"`
+	// Warnings are non-fatal review notes. A required tool that is not
+	// run-visible is reported here; a package never grants tools.
+	Warnings []string `json:"warnings,omitempty"`
+	// PackageHash is the reviewed versioned package hash
+	// (== Review.PackageHash).
+	PackageHash string `json:"package_hash"`
+	// ExpectedContentHash is the composition witness: the Agent's active
+	// agent-scope config content hash ("-" when the Agent has no active
+	// revision). Commit refuses with `revision_conflict` if it moved.
+	ExpectedContentHash string `json:"expected_content_hash"`
+	// ExpiresAt bounds the review window.
+	ExpiresAt time.Time `json:"expires_at"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// AgentConfigAgentPacksImportCommitRequest is the admin-scoped
+// `agent_config.agent_packs.import_commit` request — the explicit second
+// phase. The caller echoes the token, the reviewed name and package hash,
+// the composition witness, and the explicit replacement consent for an
+// existing pack item of the same name.
+type AgentConfigAgentPacksImportCommitRequest struct {
+	Identity IdentityScope `json:"identity"`
+	// ProposalToken echoes the opaque proposal token from validate.
+	ProposalToken string `json:"proposal_token"`
+	// AgentID is the target Agent (must equal the token's).
+	AgentID string `json:"agent_id"`
+	// Name is the reviewed canonical package/skill name.
+	Name string `json:"name"`
+	// ReviewedPackageHash is the package hash the caller reviewed.
+	ReviewedPackageHash string `json:"reviewed_package_hash"`
+	// ExpectedContentHash echoes the composition witness from validate.
+	ExpectedContentHash string `json:"expected_content_hash"`
+	// Replace is the explicit consent to replace an existing pack item of
+	// the same name (`skill_import_replace_required` without it).
+	Replace bool `json:"replace,omitempty"`
+}
+
+// AgentConfigAgentPacksImportCommitResponse is the
+// `agent_config.agent_packs.import_commit` response: the published
+// revision carrying the package-backed pack item, the item summary, the
+// installed package hash, and the Replayed flag (true when a retry of the
+// same token recognized an already-landed commit; no second write).
+type AgentConfigAgentPacksImportCommitResponse struct {
+	Revision AgentConfigRevisionView `json:"revision"`
+	Skill    AgentConfigSkillSummary `json:"skill"`
+	// PackageHash is the installed versioned package hash.
+	PackageHash string `json:"package_hash"`
+	// Replayed reports a response-loss replay of the same token.
 	Replayed bool `json:"replayed"`
 	// ProtocolVersion echoes the Protocol version the Runtime answered
 	// under.

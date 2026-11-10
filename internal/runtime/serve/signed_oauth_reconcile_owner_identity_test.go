@@ -589,13 +589,22 @@ func TestMCPConnectionAttacher_CloseJoinsInFlightPreparation(t *testing.T) {
 		if err := rt.attacher.Close(closeCtx); err != nil {
 			t.Fatalf("close: %v", err)
 		}
+		// Close joins the attacher's in-flight unit; the goroutine's send
+		// after PrepareConnection returns is not part of that unit, so read
+		// the join from the lifecycle and only then await the result.
+		rt.attacher.lifecycle.mu.Lock()
+		inflight := rt.attacher.lifecycle.inflight
+		rt.attacher.lifecycle.mu.Unlock()
+		if inflight != 0 {
+			t.Fatalf("Close returned with %d in-flight preparation(s)", inflight)
+		}
 		select {
 		case err := <-prepDone:
 			if err == nil {
 				t.Fatal("preparation raced Close and published")
 			}
-		default:
-			t.Fatal("Close returned before the in-flight preparation completed")
+		case <-time.After(5 * time.Second):
+			t.Fatal("the joined preparation never returned")
 		}
 		rt.attacher.mu.Lock()
 		undrained := len(rt.attacher.closers)

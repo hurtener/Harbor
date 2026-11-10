@@ -3,8 +3,9 @@ package llm_test
 import (
 	"bytes"
 	"context"
-	"github.com/hurtener/Harbor/internal/llm"
 	"testing"
+
+	"github.com/hurtener/Harbor/internal/llm"
 )
 
 func TestCallTiming_AudioOnlyDetailsAreNotCacheMeasurements(t *testing.T) {

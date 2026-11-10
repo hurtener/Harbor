@@ -79,8 +79,10 @@ assert_grep_present 'Form:.*tools.ToolFormPrompt' \
 # --- Static: tools.describe's optional agent_id read surface. ---
 assert_grep_present 'AgentID string `json:"agent_id,omitempty"`' \
     internal/protocol/types/tools.go 'phase 151: ToolDescribeRequest.agent_id field present'
-assert_grep_present 'LoadingResolver' \
-    internal/tools/protocol/catalog_projector.go 'phase 151: CatalogProjector LoadingResolver seam present'
+# Since v1.39.0 the per-request agent catalog view carries the agent's
+# effective loading mode; the projector no longer holds a separate resolver.
+assert_grep_present 'p\.view\.CatalogView\(ctx, id, agentID\)' \
+    internal/tools/protocol/catalog_projector.go 'phase 151: CatalogProjector resolves tools.describe through the agent catalog view'
 
 # --- Static: the D-223 TS mirror + manifest coverage. ---
 assert_grep_present 'server_loading_modes' \

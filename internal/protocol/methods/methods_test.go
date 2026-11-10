@@ -126,6 +126,8 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigAgentPacksRemove,
 	methods.MethodAgentConfigAgentPacksPropose,
 	methods.MethodAgentConfigAgentPacksCommit,
+	methods.MethodAgentConfigAgentPacksImportValidate,
+	methods.MethodAgentConfigAgentPacksImportCommit,
 	methods.MethodAgentConfigSetToolExposure,
 	methods.MethodAgentConfigSetPromptLayers,
 	methods.MethodAgentConfigSetExtraSystemBlocks,
@@ -229,9 +231,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// HA-68 same-runtime skill publications ten = 151, plus the user live
 	// profile reconciliation verb = 152, explicit session-context
 	// reconciliation = 153, admin-only runtime retention = 154, and the
-	// run-start preparation hint (prepare) = 155.
-	if len(got) != 155 {
-		t.Fatalf("Methods() returned %d methods, want 155", len(got))
+	// run-start preparation hint (prepare) = 155, and the shared Agent-pack
+	// package import pair (agent_config.agent_packs.import_validate +
+	// import_commit) = 157.
+	if len(got) != 157 {
+		t.Fatalf("Methods() returned %d methods, want 157", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))

@@ -81,6 +81,16 @@ func InternalCoordinationQuadruple() Quadruple {
 	}}
 }
 
+// ReservedControlPlaneUser is the synthetic user slot that holds agent-level
+// control-plane records (agent configuration, lifecycle, and shared Agent-pack
+// packages). No request-edge identity may occupy it: a caller whose user id
+// equals it would otherwise address those records through the user rung.
+const ReservedControlPlaneUser = "__agentcfg__"
+
+// IsReservedUser reports whether id occupies a reserved control-plane user
+// slot. Request edges refuse such identities.
+func IsReservedUser(id Identity) bool { return id.UserID == ReservedControlPlaneUser }
+
 var (
 	// ErrIdentityMissing — the context carries no Identity AND no
 	// Quadruple. Both MustFrom and MustQuadrupleFrom panic with
@@ -169,6 +179,21 @@ func WithVerified(ctx context.Context, id Identity) (context.Context, error) {
 	}
 	ctx = context.WithValue(ctx, verifiedKey, id)
 	return context.WithValue(ctx, identityKey, id), nil
+}
+
+// CarryVerified copies an ALREADY-verified Identity from src onto dst,
+// seating it as dst's verified anchor and working identity. It cannot mint:
+// the value is only ever one the request edge already verified on src, and
+// when src carries none dst is returned unchanged. It exists for code that
+// must detach a context from a request's lifetime (a background connection
+// base) while keeping exactly that request's verified binding.
+func CarryVerified(dst, src context.Context) context.Context {
+	id, ok := FromVerified(src)
+	if !ok {
+		return dst
+	}
+	dst = context.WithValue(dst, verifiedKey, id)
+	return context.WithValue(dst, identityKey, id)
 }
 
 // FromVerified returns the request-edge verified Identity and a presence

@@ -194,7 +194,7 @@ func TestRecordNamedMigration_AtomicFailureRollsBackAndRestartIsIdempotent(t *te
 			_, conn := newAdoptionFakeDB(t, state)
 			migration := migration{name: "0001_init.sql", version: 1}
 
-			err := recordNamedMigration(context.Background(), conn, "memory", migration, strings.Repeat("a", 64), "memory/postgres")
+			err := recordNamedMigrationContract(context.Background(), conn, "memory", migration, strings.Repeat("a", 64), "", "memory/postgres")
 			if err == nil || !strings.Contains(err.Error(), "interruption") {
 				t.Fatalf("failure injection error = %v, want injected interruption", err)
 			}
@@ -205,10 +205,10 @@ func TestRecordNamedMigration_AtomicFailureRollsBackAndRestartIsIdempotent(t *te
 			state.mu.Lock()
 			state.failOn = ""
 			state.mu.Unlock()
-			if err := recordNamedMigration(context.Background(), conn, "memory", migration, strings.Repeat("a", 64), "memory/postgres"); err != nil {
+			if err := recordNamedMigrationContract(context.Background(), conn, "memory", migration, strings.Repeat("a", 64), "", "memory/postgres"); err != nil {
 				t.Fatalf("restart adoption: %v", err)
 			}
-			if err := recordNamedMigration(context.Background(), conn, "memory", migration, strings.Repeat("a", 64), "memory/postgres"); err != nil {
+			if err := recordNamedMigrationContract(context.Background(), conn, "memory", migration, strings.Repeat("a", 64), "", "memory/postgres"); err != nil {
 				t.Fatalf("idempotent restart adoption: %v", err)
 			}
 			if ledger, identity, mirror := adoptionStateSnapshot(state); !ledger || !identity || !mirror {
@@ -232,7 +232,7 @@ func TestRecordNamedMigration_CancellationRollsBackAndCanRestart(t *testing.T) {
 	state.mu.Unlock()
 	migration := migration{name: "0001_init.sql", version: 1}
 
-	err := recordNamedMigration(ctx, conn, "memory", migration, strings.Repeat("b", 64), "memory/postgres")
+	err := recordNamedMigrationContract(ctx, conn, "memory", migration, strings.Repeat("b", 64), "", "memory/postgres")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled adoption error = %v, want context.Canceled", err)
 	}
@@ -246,7 +246,7 @@ func TestRecordNamedMigration_CancellationRollsBackAndCanRestart(t *testing.T) {
 		t.Fatalf("acquire restart adoption connection: %v", err)
 	}
 	defer func() { _ = restartConn.Close() }()
-	if err := recordNamedMigration(context.Background(), restartConn, "memory", migration, strings.Repeat("b", 64), "memory/postgres"); err != nil {
+	if err := recordNamedMigrationContract(context.Background(), restartConn, "memory", migration, strings.Repeat("b", 64), "", "memory/postgres"); err != nil {
 		t.Fatalf("restart after canceled adoption: %v", err)
 	}
 }

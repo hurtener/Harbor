@@ -3,13 +3,14 @@ package react_test
 import (
 	"context"
 	"encoding/json"
+	"testing"
+
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/builtin"
-	"testing"
 )
 
 type collisionAgreementClient struct{}
@@ -30,7 +31,6 @@ func TestToolCollision_NativeAndDiscoveryMustAgree(t *testing.T) {
 		{Name: "clock.now", Description: "shared read-only clock", Transport: tools.TransportHTTP, Source: "clock", Loading: tools.LoadingAlways},
 		{Name: "clock_now", Description: "different builtin action", Transport: tools.TransportInProcess, Loading: tools.LoadingAlways},
 	} {
-		tool := tool
 		if err := cat.Register(tools.ToolDescriptor{Tool: tool, Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
 			return tools.ToolResult{Value: tool.Name}, nil
 		}}); err != nil {

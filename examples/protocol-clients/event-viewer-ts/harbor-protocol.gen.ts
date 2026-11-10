@@ -17,13 +17,15 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:435a681121fd352a8a965b63499876b7203fd3d3cf4b933424e26f8be46b3690";
+export const WIRE_SURFACE_DIGEST = "sha256:cefebcba5ba01b7098a81f4406a2e4855d50d1d6d191e0de3e97031411ddfe03";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
   | "agent_config.add_mcp_connection"
   | "agent_config.agent_packs.commit"
   | "agent_config.agent_packs.copy"
+  | "agent_config.agent_packs.import_commit"
+  | "agent_config.agent_packs.import_validate"
   | "agent_config.agent_packs.inspect"
   | "agent_config.agent_packs.list"
   | "agent_config.agent_packs.propose"
@@ -456,6 +458,7 @@ export interface AgentConfigAgentPackItem {
   scope?: string;
   origin_ref?: string;
   extra?: Record<string, string>;
+  package_hash?: string;
 }
 
 export interface AgentConfigAgentPacksCommitRequest {
@@ -492,6 +495,40 @@ export interface AgentConfigAgentPacksCopyResponse {
   outcomes: AgentConfigAgentPackCopyOutcome[];
   composition_hash: string;
   boot_pack_set_hash: string;
+  protocol_version: string;
+}
+
+export interface AgentConfigAgentPacksImportCommitRequest {
+  identity: IdentityScope;
+  proposal_token: string;
+  agent_id: string;
+  name: string;
+  reviewed_package_hash: string;
+  expected_content_hash: string;
+  replace?: boolean;
+}
+
+export interface AgentConfigAgentPacksImportCommitResponse {
+  revision: AgentConfigRevisionView;
+  skill: AgentConfigSkillSummary;
+  package_hash: string;
+  replayed: boolean;
+  protocol_version: string;
+}
+
+export interface AgentConfigAgentPacksImportValidateRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  artifact_id: string;
+}
+
+export interface AgentConfigAgentPacksImportValidateResponse {
+  proposal_token: string;
+  review: AgentConfigUserSkillImportReview;
+  warnings?: string[];
+  package_hash: string;
+  expected_content_hash: string;
+  expires_at: string;
   protocol_version: string;
 }
 

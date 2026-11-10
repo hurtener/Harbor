@@ -147,7 +147,7 @@ assert_grep "${PROJECTION_GO}" \
     'phase 211: the reconcile detach seam carries the reconciling owner'
 
 assert_grep "${DETACHER_GO}" \
-    'registry\.Deregister\(ctx, source, owner\)' \
+    'registry\.Deregister(WithCatalog|ExactPublisher)\(ctx, source, owner,' \
     'phase 211: the production detacher threads the owner into the registry'
 
 # BOTH control-plane verbs are CLASSIFIED, not merely left alone. Counting is

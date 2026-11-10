@@ -360,6 +360,9 @@ func validateAgentPackWireItem(item prototypes.AgentConfigAgentPackItem) error {
 	if strings.TrimSpace(item.OriginRef) != "" {
 		return fmt.Errorf("%w: origin_ref is server-stamped (a caller-supplied provenance ref is refused)", ErrAgentPacksInvalid)
 	}
+	if strings.TrimSpace(item.PackageHash) != "" {
+		return fmt.Errorf("%w: package_hash is server-stamped by agent_packs.import_commit (a caller-supplied package reference is refused)", ErrAgentPacksInvalid)
+	}
 	return nil
 }
 
@@ -404,6 +407,7 @@ func agentPackItemToWire(in skills.AgentPackItem) prototypes.AgentConfigAgentPac
 		Scope:         "agent",
 		OriginRef:     in.OriginRef,
 		Extra:         cloneStringMapCopy(in.Extra),
+		PackageHash:   in.PackageHash,
 	}
 }
 
@@ -531,6 +535,7 @@ func (s *Service) AgentPacksUpsert(ctx context.Context, req prototypes.AgentConf
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksUpsertResponse{}, err
 	}
+	s.releaseUnreferencedPackages(ctx, q.TenantID, req.AgentID, false)
 	return prototypes.AgentConfigAgentPacksUpsertResponse{
 		Revision:        revisionToWire(rev),
 		Skill:           packSkillSummary(skill),
@@ -599,6 +604,7 @@ func (s *Service) AgentPacksRemove(ctx context.Context, req prototypes.AgentConf
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksRemoveResponse{}, err
 	}
+	s.releaseUnreferencedPackages(ctx, q.TenantID, req.AgentID, false)
 	return prototypes.AgentConfigAgentPacksRemoveResponse{
 		Revision:        revisionToWire(rev),
 		ProtocolVersion: prototypes.ProtocolVersion,
@@ -946,6 +952,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		// compensating the active pointer would create a second mutation.
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("consume pack proposal receipt: %w", ErrAgentPackProposalInvalid)
 	}
+	s.releaseUnreferencedPackages(ctx, q.TenantID, req.AgentID, false)
 	return prototypes.AgentConfigAgentPacksCommitResponse{
 		Revision:        revisionToWire(rev),
 		Skill:           packSkillSummary(skill),

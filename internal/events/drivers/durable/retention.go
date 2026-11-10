@@ -1,6 +1,6 @@
 package durable
 
-// Opt-in audit-trail retention (D-493, plan §H5). A pass traverses every head
+// Opt-in audit-trail retention. A pass traverses every head
 // (the same complete maintenance scan boot recovery performs) in a
 // deterministic order from an in-memory resume point, so a pass that exhausts
 // its delete budget continues where it stopped and no session is starved.

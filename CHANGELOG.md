@@ -17,6 +17,49 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.43.0] — 2026-11-10
+
+### Added
+
+- **Skill-package import into an Agent's shared pack.** Two admin-scoped
+  Protocol methods, `agent_config.agent_packs.import_validate` and
+  `agent_config.agent_packs.import_commit`, install one artifact-backed
+  `SKILL.md` package (with support files) into ONE Agent's shared pack. They
+  reuse the personal import's parser, limits, review, sealed token and fresh
+  revalidation. Validate writes nothing and returns the review plus the
+  shared-pack composition witness; the token is bound to the caller, Agent,
+  artifact, package hash and destination, and expires. Commit installs exactly
+  the reviewed package, requires `replace: true` to replace an item of the same
+  name, refuses a moved witness with `revision_conflict`, and replays the same
+  token without a second write. Support files are runtime-owned Agent state,
+  resolvable in the runtime for every caller with reach to the Agent (no
+  Protocol method serves their bytes yet), and are released when no active
+  item references them. Pack items gain a read-only `package_hash`.
+  `agent_packs.copy` refuses package-backed items. A package grants no tools
+  (D-496).
+
+### Fixed
+
+- **Single-Markdown skill drafts import.** `agent_config.user.skills.import_validate`
+  / `import_commit` and the new `agent_config.agent_packs.import_*` accept the
+  documented single-Markdown `SKILL.md` artifact (what `skill_create_draft`
+  writes) as well as a package zip. Non-zip artifacts are ingested only
+  through the strict resource-free Markdown path, so the reviewed package hash
+  matches the drafter's; the caller-scoped artifact read is unchanged.
+- **The reserved control-plane user id is refused at the request edge.**
+  An identity whose user id is `__agentcfg__` (the slot holding agent-level
+  records) is rejected by the bearer and carrier middleware, the stream
+  header fallback, the agent-config verbs and the skill-package import.
+- **MCP reconnects carry the attach identity instead of minting it.**
+  Reconnects reuse the first connect's verified binding through the new
+  `identity.CarryVerified`, which only copies an already-verified value; the
+  body-scope minting gate passes again.
+- **Preflight structural guards match the shipped surface.** The census
+  checks count the two agent-pack import handlers, routes and CAS carriers and
+  the two downstream-MCP error codes; stale checks follow the v1.39.0 catalog
+  view and the owner-scoped catalog deregistration. The durable fleet-window
+  integrity warning labels its reader `fleet window`.
+
 ## [1.42.2] — 2026-11-10
 
 ### Fixed
@@ -91,7 +134,6 @@ Two versions move independently in Harbor (RFC §5.3):
   (−23%, roughly 3.3k tokens).
 - **The current date moved to a trailing `<current_date>` system section** so
   the static sections ahead of it stay byte-stable across days.
-
 
 ## [1.40.0] — 2026-11-07
 

@@ -34,3 +34,10 @@ func requireIdentity(ctx context.Context) (identity.Quadruple, error) {
 	}
 	return q, nil
 }
+
+// hasCompleteIdentity reports whether ctx carries a complete identity triple
+// (the requireIdentity predicate without its typed refusal).
+func hasCompleteIdentity(ctx context.Context) bool {
+	q, ok := identity.QuadrupleFrom(ctx)
+	return ok && q.TenantID != "" && q.UserID != "" && q.SessionID != ""
+}

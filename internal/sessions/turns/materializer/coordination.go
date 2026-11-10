@@ -118,7 +118,10 @@ func withHolder(h string) Option {
 // newHolderID mints this instance's lease holder id: host, pid, and
 // random entropy (two processes on one host never collide).
 func newHolderID() string {
-	host, _ := os.Hostname()
+	host, err := os.Hostname()
+	if err != nil {
+		host = "" // the pid and entropy still make the id unique
+	}
 	var b [6]byte
 	_, _ = rand.Read(b[:])
 	return host + "-" + strconv.Itoa(os.Getpid()) + "-" + hex.EncodeToString(b[:])
@@ -483,7 +486,7 @@ func (m *Materializer) ensureKnownTask(ctx context.Context, sess *sessionState, 
 			m.noteAdoptMiss(sess, taskID)
 			return nil, nil
 		}
-		if err := sess.validateTaskRoute(taskID, r.ParentTaskID, r.RunID, false); err != nil {
+		if !sess.taskRouteAdmissible(taskID, r.ParentTaskID, r.RunID, false) {
 			m.noteAdoptMiss(sess, taskID)
 			return nil, nil
 		}
@@ -533,7 +536,7 @@ func (m *Materializer) adoptRootRow(ctx context.Context, sess *sessionState, tas
 		return nil, nil
 	}
 	derived := runID == taskID
-	if err := sess.validateTaskRoute(taskID, "", runID, derived); err != nil {
+	if !sess.taskRouteAdmissible(taskID, "", runID, derived) {
 		return nil, nil
 	}
 	sess.commitTaskRoute(taskID, "", runID, derived)
@@ -664,8 +667,9 @@ func (m *Materializer) fillIdentityIfMissing(ctx context.Context, id identity.Id
 	if m.coord == nil || !found || !turns.NeedsIdentityRepair(row) {
 		return nil
 	}
-	if !(snap.QueryPresent && snap.Query != "" && row.Query.Complete == turns.CompletenessUnavailable) &&
-		!(snap.AgentPresent && row.Agent.Complete == turns.CompletenessUnavailable) {
+	queryRepairable := snap.QueryPresent && snap.Query != "" && row.Query.Complete == turns.CompletenessUnavailable
+	agentRepairable := snap.AgentPresent && row.Agent.Complete == turns.CompletenessUnavailable
+	if !queryRepairable && !agentRepairable {
 		return nil
 	}
 	_, changed, err := m.coord.RepairTurnIdentity(ctx, id, turns.TurnID(taskID), turns.IdentityFill{

@@ -77,6 +77,8 @@ declare -a P221_CAS_CARRIERS=(
     'AgentConfigUserRollbackRequest:optional'
     'AgentConfigUserSkillsImportValidateResponse:mandatory'
     'AgentConfigUserSkillsImportCommitRequest:mandatory'
+    'AgentConfigAgentPacksImportValidateResponse:mandatory'
+    'AgentConfigAgentPacksImportCommitRequest:mandatory'
 )
 P221_ACTUAL_CAS_CARRIERS="$(awk '
     /^type [A-Za-z0-9_]+ struct \{/ { name = $2; next }

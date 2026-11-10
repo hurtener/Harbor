@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
 // agent_pack.go — the operator-managed per-agent skill pack surface (HA-55).
@@ -95,6 +97,14 @@ type AgentPackItem struct {
 	// Extra is bounded string-typed metadata. String-typed so the
 	// canonical JSON encoding and the TS wire projection stay closed.
 	Extra map[string]string `json:"extra,omitempty"`
+	// PackageHash, when non-empty, is the versioned PackageHash
+	// ("v1:<64-hex>") of the complete skill package backing this item. It
+	// is stamped only by the shared-pack package import; the package and
+	// its support files are runtime-owned installed-package state keyed at
+	// the agent's control-plane scope (agentcfg.AgentScope), resolvable by
+	// every caller with reach to the agent. Read-only at the wire edge and
+	// never a capability grant. Empty for body-only items.
+	PackageHash string `json:"package_hash,omitempty"`
 }
 
 // CanonicalPackName returns the canonical (lowercase, trimmed) form used for
@@ -123,6 +133,11 @@ func (p AgentPackItem) Validate() error {
 	}
 	if err := p.bounded(); err != nil {
 		return err
+	}
+	if p.PackageHash != "" {
+		if _, ok := skillpkg.HashVersion(p.PackageHash); !ok {
+			return fmt.Errorf("%w: pack item package_hash %q is not a versioned package hash", ErrInvalidSkill, p.PackageHash)
+		}
 	}
 	return nil
 }

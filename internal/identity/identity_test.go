@@ -289,3 +289,28 @@ func itoa(prefix string, i int) string {
 	}
 	return prefix + "-" + string(buf[pos:])
 }
+
+func TestCarryVerified_CopiesOnlyAnExistingVerifiedIdentity(t *testing.T) {
+	id := Identity{TenantID: "t", UserID: "u", SessionID: "s"}
+	working, err := With(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A merely working identity is not verified and is never promoted.
+	if got := CarryVerified(context.Background(), working); got != context.Background() {
+		if _, ok := FromVerified(got); ok {
+			t.Fatal("CarryVerified minted a verified identity from a working one")
+		}
+	}
+	src, err := WithVerified(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := CarryVerified(context.Background(), src)
+	if got, ok := FromVerified(dst); !ok || got != id {
+		t.Fatalf("verified = %+v %v, want %+v", got, ok, id)
+	}
+	if got, ok := From(dst); !ok || got != id {
+		t.Fatalf("working = %+v %v, want %+v", got, ok, id)
+	}
+}

@@ -300,26 +300,6 @@ func (p *CatalogProjector) projectAnnotatedRow(id identity.Identity, t tools.Too
 	return row
 }
 
-// fullTripleFilter builds the catalog filter for the identity-scoped
-// catalog view: both loading modes (the Console catalog shows every
-// registered tool, not just the prompt-time set).
-//
-// V1 scope note: the filter carries no GrantedScopes, so it projects
-// the tools whose AuthScopes are empty — the planner-default-visible
-// set. A future phase elevates this to the admin full-discovery view
-// (page-tools.md §9: `admin` scope grants "visibility into private
-// agent-scoped tools"); that elevation is a deliberate post-V1 carve-
-// out, not silent degradation — the V1 projector returns the honest
-// default-visible set, never a partial one it pretends is complete.
-func fullTripleFilter(id identity.Identity) tools.CatalogFilter {
-	return tools.CatalogFilter{
-		TenantID:     id.TenantID,
-		UserID:       id.UserID,
-		SessionID:    id.SessionID,
-		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
-	}
-}
-
 // ListTools implements Projector.ListTools.
 func (p *CatalogProjector) ListTools(ctx context.Context, id identity.Identity) ([]prototypes.Tool, error) {
 	if err := ctx.Err(); err != nil {
@@ -432,10 +412,10 @@ func (p *CatalogProjector) DescribeTool(ctx context.Context, id identity.Identit
 	if !ok {
 		return prototypes.ToolManifest{}, fmt.Errorf("%w: %q", ErrToolNotFound, toolID)
 	}
-	return p.describeDescriptor(ctx, id, toolID, agentID, t)
+	return p.describeDescriptor(ctx, id, toolID, t)
 }
 
-func (p *CatalogProjector) describeDescriptor(ctx context.Context, id identity.Identity, toolID, agentID string, t tools.Tool) (prototypes.ToolManifest, error) {
+func (p *CatalogProjector) describeDescriptor(ctx context.Context, id identity.Identity, toolID string, t tools.Tool) (prototypes.ToolManifest, error) {
 	examples := make([]string, 0, len(t.Examples))
 	for _, ex := range t.Examples {
 		examples = append(examples, ex.Description)
@@ -601,7 +581,7 @@ func (p *CatalogProjector) DescribeConfigurationTool(ctx context.Context, id ide
 	}
 	for _, t := range descriptors {
 		if t.Name == toolID {
-			manifest, err := p.describeDescriptor(ctx, id, toolID, agentID, t)
+			manifest, err := p.describeDescriptor(ctx, id, toolID, t)
 			if err != nil {
 				return prototypes.ToolManifest{}, err
 			}

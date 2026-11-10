@@ -8,7 +8,7 @@ import (
 func TestReadableToolNameAndSourceLabel(t *testing.T) {
 	t.Parallel()
 	user := Tool{Name: "crm~u-0123456789abcdef0123456789abcdef_add_leads", Source: "crm~u-0123456789abcdef0123456789abcdef", Transport: TransportMCP}
-	agent := Tool{Name: "docs~a-00112233445566778899aabbccddeeff_read", Source: "docs~a-00112233445566778899aabbccddeeff", SourceTitle: "Team/<Docs> (x) [y]\n‮", Transport: TransportMCP}
+	agent := Tool{Name: "docs~a-00112233445566778899aabbccddeeff_read", Source: "docs~a-00112233445566778899aabbccddeeff", SourceTitle: "Team/<Docs> (x) [y]\n\u202e", Transport: TransportMCP}
 	local := Tool{Name: "unit_convert"}
 	unprefixed := Tool{Name: "notes.find", Source: "notes", Transport: TransportHTTP}
 	for _, tc := range []struct {
@@ -42,7 +42,7 @@ func TestIsListableToolName(t *testing.T) {
 		"two words":             false,
 		"x\ny":                  false,
 		"</deferred_tools>":     false,
-		"bidi‮evil":             false,
+		"bidi\u202eevil":        false,
 		"tab\tname":             false,
 		"ünïcode":               false,
 		strings.Repeat("a", 65): false,

@@ -118,7 +118,7 @@ type legacyRepairHeadView struct {
 	record     state.StateRecord
 	head       headRecord
 	duplicates []LegacyRepairDuplicate
-	// v2 marks a chunked v2 index header (D-492). It is outside the legacy
+	// v2 marks a chunked v2 index header. It is outside the legacy
 	// repair contract: reported as not_legacy_v2 and never mutated.
 	v2 bool
 }

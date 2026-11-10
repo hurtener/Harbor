@@ -259,7 +259,7 @@ func TestPromptCacheScope_ConcurrentReuse(t *testing.T) {
 		go func() {
 			tenant := []string{"t0", "t1", "t2", "t3"}[i%4]
 			q := quad(tenant, "s", "r")
-			q.SessionID = q.SessionID + string(rune('a'+i%26))
+			q.SessionID += string(rune('a' + i%26))
 			ctx, err := identity.WithRun(context.Background(), q.Identity, q.RunID)
 			if err != nil {
 				errs <- err
