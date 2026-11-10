@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.44.0] — 2026-11-10
+
 ### Added
 
 - **Skill `description` in `SKILL.md` frontmatter.** The file importer and
