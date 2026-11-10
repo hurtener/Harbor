@@ -1304,6 +1304,7 @@ func (s *Service) Rollback(ctx context.Context, req prototypes.AgentConfigRollba
 	if err != nil {
 		return prototypes.AgentConfigRollbackResponse{}, err
 	}
+	s.releaseUnreferencedPackages(ctx, id.TenantID, req.AgentID, false)
 	return prototypes.AgentConfigRollbackResponse{
 		Revision:        revisionToWire(rev),
 		ProtocolVersion: prototypes.ProtocolVersion,
@@ -1347,6 +1348,7 @@ func (s *Service) Retire(ctx context.Context, req prototypes.AgentConfigRetireRe
 	if err != nil {
 		return prototypes.AgentConfigRetireResponse{}, err
 	}
+	s.releaseUnreferencedPackages(ctx, id.TenantID, req.AgentID, true)
 	return prototypes.AgentConfigRetireResponse{Status: retirementStatusToWire(status), ProtocolVersion: prototypes.ProtocolVersion}, nil
 }
 
@@ -1432,6 +1434,9 @@ func identityFromScope(scope prototypes.IdentityScope, agentID string) (identity
 	}
 	if agentID == "" {
 		return identity.Identity{}, fmt.Errorf("%w: agent_id is empty", ErrIdentityRequired)
+	}
+	if identity.IsReservedUser(id) {
+		return identity.Identity{}, fmt.Errorf("%w: user id is reserved for control-plane records", ErrIdentityRequired)
 	}
 	return id, nil
 }

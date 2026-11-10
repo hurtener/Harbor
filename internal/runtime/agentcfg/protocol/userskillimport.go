@@ -1253,6 +1253,9 @@ func (s *UserSkillImportService) resolveIdentityAndReach(ctx context.Context, ag
 	if err := identity.Validate(caller); err != nil {
 		return identity.Identity{}, identity.Quadruple{}, fmt.Errorf("%w: %w", ErrUserSkillImportIdentityRequired, err)
 	}
+	if identity.IsReservedUser(caller) {
+		return identity.Identity{}, identity.Quadruple{}, fmt.Errorf("%w: user id is reserved for control-plane records", ErrUserSkillImportIdentityRequired)
+	}
 	if strings.TrimSpace(agentID) == "" {
 		return identity.Identity{}, identity.Quadruple{}, fmt.Errorf("%w: effective agent id is empty", ErrUserSkillImportIdentityRequired)
 	}

@@ -10,7 +10,10 @@ package protocol_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +26,7 @@ import (
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/importer"
+	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
@@ -34,7 +38,8 @@ func packEntries(guide string) map[string]string {
 
 type packImportFixture struct {
 	*importFixture
-	admin *agentcfgprotocol.Service
+	admin  *agentcfgprotocol.Service
+	ledger state.StateStore
 }
 
 // newPackImportFixture wires the shared import core into the admin Service
@@ -95,7 +100,7 @@ func newPackImportFixtureWrapped(t *testing.T, wrap func(agentcfg.Registry) agen
 		_ = ledger.Close(context.Background())
 		_ = fx.store.Close(context.Background())
 	})
-	return &packImportFixture{importFixture: fx, admin: admin}
+	return &packImportFixture{importFixture: fx, admin: admin, ledger: regState}
 }
 
 func wireScope(id identity.Identity) prototypes.IdentityScope {
@@ -342,51 +347,174 @@ func TestAgentPackImport_TokenBindingRefusals(t *testing.T) {
 	}
 }
 
-// failingSetRevision fails the next agent-scope revision write once armed.
+// failingSetRevision makes the next revision write report failure once armed;
+// with landed set the write is applied first (an error after a durable write).
 type failingSetRevision struct {
 	agentcfg.Registry
-	armed bool
+	armed, landed bool
 }
 
 func (f *failingSetRevision) SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, payload agentcfg.ConfigPayload, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
 	if f.armed {
 		f.armed = false
+		if f.landed {
+			if _, err := f.Registry.SetRevision(ctx, id, agentID, scope, payload, opts); err != nil {
+				return agentcfg.Revision{}, err
+			}
+		}
 		return agentcfg.Revision{}, errors.New("simulated revision write failure")
 	}
 	return f.Registry.SetRevision(ctx, id, agentID, scope, payload, opts)
 }
 
-func TestAgentPackImport_FailedPublicationCompensatesPackage(t *testing.T) {
+func TestAgentPackImport_FailedPublicationTouchesNoPackage(t *testing.T) {
 	failing := &failingSetRevision{}
 	fx := newPackImportFixtureWrapped(t, func(r agentcfg.Registry) agentcfg.Registry { failing.Registry = r; return failing })
 	ctx := importCtx(importUserA, testAgentID)
 
-	// Fresh install whose revision write fails: the package is deleted.
 	v1 := fx.validate(t, importUserA, testAgentID, packEntries("guide v1"))
 	failing.armed = true
 	if _, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, v1, false)); err == nil {
 		t.Fatalf("commit must surface the publication failure")
 	}
 	if _, ok := fx.installed(t, "t", testAgentID, "shared-guide"); ok {
-		t.Fatalf("failed fresh publication left the package installed")
+		t.Fatalf("an unpublished import installed its package")
 	}
-	// The same token commits once the store recovers.
 	if _, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, v1, false)); err != nil {
 		t.Fatalf("retry commit: %v", err)
 	}
 
-	// Replacement whose revision write fails: the displaced package is restored.
+	// A failed replacement leaves the previous package untouched.
 	v2 := fx.validate(t, importUserA, testAgentID, packEntries("guide v2"))
 	failing.armed = true
 	if _, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, v2, true)); err == nil {
 		t.Fatalf("replace commit must surface the publication failure")
 	}
-	if pkg, _ := fx.installed(t, "t", testAgentID, "shared-guide"); pkg.PackageHash != v1.PackageHash {
-		t.Fatalf("installed=%s after failed replace, want restored v1", pkg.PackageHash)
-	}
 	f, err := fx.svc.ResolveAgentPackSupport(ctx, testAgentID, "shared-guide", guideURI(t, v1.PackageHash))
 	if err != nil || string(f.Data) != "guide v1" {
 		t.Fatalf("v1 support after failed replace: %q err=%v", f.Data, err)
+	}
+}
+
+func TestAgentPackImport_LandedPublicationReportedAsFailureCompletes(t *testing.T) {
+	failing := &failingSetRevision{landed: true}
+	fx := newPackImportFixtureWrapped(t, func(r agentcfg.Registry) agentcfg.Registry { failing.Registry = r; return failing })
+	ctx := importCtx(importUserA, testAgentID)
+	v := fx.validate(t, importUserA, testAgentID, packEntries("guide v1"))
+	failing.armed = true
+	resp, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, v, false))
+	if err != nil {
+		t.Fatalf("a publication that landed must complete, got %v", err)
+	}
+	if pkg, ok := fx.installed(t, "t", testAgentID, "shared-guide"); !ok || pkg.PackageHash != v.PackageHash || resp.PackageHash != v.PackageHash {
+		t.Fatalf("installed=%v %s", ok, pkg.PackageHash)
+	}
+}
+
+func TestAgentPackImport_DanglingReferenceFailsClosedAndRepairs(t *testing.T) {
+	fx := newPackImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	v := fx.validate(t, importUserA, testAgentID, packEntries("guide v1"))
+	fx.store.setFailPutInstalledAt(1)
+	if _, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, v, false)); err == nil {
+		t.Fatalf("a failed package write must surface")
+	}
+	// Published but not installed: resolution fails closed.
+	if _, err := fx.svc.ResolveAgentPackSupport(ctx, testAgentID, "shared-guide", guideURI(t, v.PackageHash)); err == nil {
+		t.Fatalf("a dangling reference resolved")
+	}
+	// The same token repairs it without publishing again.
+	resp, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, v, false))
+	if err != nil || !resp.Replayed {
+		t.Fatalf("repair: %+v err=%v", resp, err)
+	}
+	f, err := fx.svc.ResolveAgentPackSupport(ctx, testAgentID, "shared-guide", guideURI(t, v.PackageHash))
+	if err != nil || string(f.Data) != "guide v1" {
+		t.Fatalf("after repair: %q err=%v", f.Data, err)
+	}
+	// A finished commit leaves no ledger slot behind.
+	sum := sha256.Sum256([]byte(v.ProposalToken))
+	if _, err := fx.ledger.Load(context.Background(), importQuad(importUserA), "agentcfg.agent_pack.import."+hex.EncodeToString(sum[:])); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("ledger slot survived the commit")
+	}
+}
+
+func TestAgentPackImport_RollbackReleasesUnreferencedPackage(t *testing.T) {
+	fx := newPackImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	base, err := fx.admin.AgentPacksUpsert(context.Background(), prototypes.AgentConfigAgentPacksUpsertRequest{
+		Identity: wireScope(importUserA), AgentID: testAgentID,
+		Skill: prototypes.AgentConfigAgentPackItem{Name: "other", Trigger: "t", Steps: []string{"s"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := fx.validate(t, importUserA, testAgentID, packEntries("guide v1"))
+	if _, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, v, false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.admin.Rollback(context.Background(), prototypes.AgentConfigRollbackRequest{
+		Identity: wireScope(importUserA), AgentID: testAgentID, RevisionID: base.Revision.RevisionID,
+	}); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if _, ok := fx.installed(t, "t", testAgentID, "shared-guide"); ok {
+		t.Fatalf("rollback left an unreferenced package")
+	}
+}
+
+func TestAgentPackImport_ReservedUserRefused(t *testing.T) {
+	fx := newPackImportFixture(t)
+	v := fx.validate(t, importUserA, testAgentID, packEntries("guide v1"))
+	if _, err := fx.admin.AgentPacksImportCommit(importCtx(importUserA, testAgentID), packCommitReq(importUserA, testAgentID, v, false)); err != nil {
+		t.Fatal(err)
+	}
+	// A caller occupying the control-plane user slot cannot reach the
+	// Agent's packages through the user rung.
+	reserved := identity.Identity{TenantID: "t", UserID: agentcfg.ReservedAgentConfigUser, SessionID: testAgentID}
+	if _, err := fx.svc.ResolveAgentPackSupport(importCtx(reserved, testAgentID), testAgentID, "shared-guide", guideURI(t, v.PackageHash)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportIdentityRequired) {
+		t.Fatalf("reserved-user resolve err=%v", err)
+	}
+	if _, err := fx.admin.UserSkillsList(context.Background(), prototypes.AgentConfigUserSkillsListRequest{Identity: wireScope(reserved), AgentID: testAgentID}); !errors.Is(err, agentcfgprotocol.ErrIdentityRequired) {
+		t.Fatalf("reserved-user personal skills list err=%v", err)
+	}
+}
+
+func TestAgentPackImport_ConcurrentSameTokenConverges(t *testing.T) {
+	fx := newPackImportFixture(t)
+	// A second Service over the same stores stands in for another replica:
+	// the process-local agent lock does not serialize them.
+	replica, err := agentcfgprotocol.NewService(fx.reg,
+		agentcfgprotocol.WithSkillStore(fx.store),
+		agentcfgprotocol.WithAgentPackProposalState(fx.ledger),
+		agentcfgprotocol.WithPackageImport(fx.svc),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := fx.validate(t, importUserA, testAgentID, packEntries("guide v1"))
+	req := packCommitReq(importUserA, testAgentID, v, false)
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, svc := range []*agentcfgprotocol.Service{fx.admin, replica} {
+		wg.Add(1)
+		go func(i int, svc *agentcfgprotocol.Service) {
+			defer wg.Done()
+			_, errs[i] = svc.AgentPacksImportCommit(importCtx(importUserA, testAgentID), req)
+		}(i, svc)
+	}
+	wg.Wait()
+	if errs[0] != nil && errs[1] != nil {
+		t.Fatalf("no commit succeeded: %v / %v", errs[0], errs[1])
+	}
+	// Whatever interleaving happened, a retry converges on one installed
+	// package referenced by the active item.
+	if _, err := fx.admin.AgentPacksImportCommit(importCtx(importUserA, testAgentID), req); err != nil {
+		t.Fatalf("converging retry: %v", err)
+	}
+	f, err := fx.svc.ResolveAgentPackSupport(importCtx(importUserA, testAgentID), testAgentID, "shared-guide", guideURI(t, v.PackageHash))
+	if err != nil || string(f.Data) != "guide v1" {
+		t.Fatalf("after concurrent commits: %q err=%v", f.Data, err)
 	}
 }
 

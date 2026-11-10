@@ -81,6 +81,16 @@ func InternalCoordinationQuadruple() Quadruple {
 	}}
 }
 
+// ReservedControlPlaneUser is the synthetic user slot that holds agent-level
+// control-plane records (agent configuration, lifecycle, and shared Agent-pack
+// packages). No request-edge identity may occupy it: a caller whose user id
+// equals it would otherwise address those records through the user rung.
+const ReservedControlPlaneUser = "__agentcfg__"
+
+// IsReservedUser reports whether id occupies a reserved control-plane user
+// slot. Request edges refuse such identities.
+func IsReservedUser(id Identity) bool { return id.UserID == ReservedControlPlaneUser }
+
 var (
 	// ErrIdentityMissing — the context carries no Identity AND no
 	// Quadruple. Both MustFrom and MustQuadrupleFrom panic with

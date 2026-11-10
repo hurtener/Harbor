@@ -587,3 +587,18 @@ func TestMiddleware_RuntimeIdentityConcurrentTokensStayIsolated(t *testing.T) {
 		})
 	}
 }
+
+// The reserved control-plane user slot is never a request-edge identity.
+func TestCarrierIdentityMiddleware_RefusesReservedUser(t *testing.T) {
+	reached := false
+	h := auth.CarrierIdentityMiddleware(nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set(auth.HeaderTenant, "t")
+	req.Header.Set(auth.HeaderUser, identity.ReservedControlPlaneUser)
+	req.Header.Set(auth.HeaderSession, "s")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if reached || rec.Code != http.StatusUnauthorized {
+		t.Fatalf("reserved user reached=%v status=%d, want refused 401", reached, rec.Code)
+	}
+}

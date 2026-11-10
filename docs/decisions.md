@@ -16679,24 +16679,39 @@ D-456) accept no package.
   active item references.
 - **Commit.** The witness is the active agent-scope content hash sealed at
   validate; a moved witness is `revision_conflict`. An existing item of the
-  same name needs `replace: true`. The package is written first, then one
-  revision fenced by a token-derived ledger slot in the registry's state
-  store. If the revision write fails, the exact-receipt Delete/Restore
-  primitives undo only that package write. A retry of the same token returns
-  the landed revision (`replayed: true`) without a second write.
-- **Cleanup.** Removing an item, or replacing it with a body-only item through
-  `upsert`/`commit`, deletes its package after the revision lands. This is best
-  effort; an unreferenced package cannot be resolved. `agent_packs.copy`
-  refuses package-backed items rather than leave a dangling reference.
+  same name needs `replace: true`. One revision is published first, fenced by
+  a token-derived ledger slot in the registry's state store, and only then is
+  the package written. Nothing is destroyed before publication, so a failed
+  publication needs no package compensation. A reported write failure is
+  re-read before the slot is released: a target that landed completes. Until
+  the package write lands the item's reference is dangling and fails closed
+  (resolution needs the stored package to carry exactly the referenced hash);
+  retrying the same token, or re-importing the package, repairs it, and a
+  repair never overwrites a package a newer publication references. The
+  ledger slot exists only while a commit is in flight; a retry after it
+  finished is recognized from the installed state and answers
+  `replayed: true` without writing. Concurrent attempts of one token converge
+  without a lease: every step is idempotent and the fence refuses publication
+  once an attempt released the slot.
+- **Cleanup.** Every pack mutation (remove, upsert/commit, import, rollback)
+  ends by deleting each stored package the CURRENT active revision does not
+  reference by exact hash; retirement deletes all of them. This is best
+  effort; an unreferenced package cannot be resolved. Whole-payload
+  `set_revision` refuses a pack section and otherwise carries the pack,
+  `package_hash` included, forward unchanged. `agent_packs.copy` refuses
+  package-backed items.
+- **Reserved user.** Pack packages live under the control-plane user slot
+  `__agentcfg__`. The request edges (bearer and carrier middleware, the
+  stream header fallback), the agent-config verbs and the import core refuse
+  an identity occupying that slot, so the user rung cannot address them.
 - **No grants.** Required tools stay applicability metadata reported as
-  warnings, as in HA-61.
+  warnings, as in HA-61. The warnings use the importing operator's
+  run-visible view of the Agent; they never gate or grant anything beyond the
+  existing policy-change refusal.
 
-**Residual, stated:** a rollback to a revision that references a package which
-was later replaced resolves that item's support files as not found. A crash
-after the package write and before the revision publish, on a replace, leaves
-the new package under the old membership until the same token is retried
-(resume republishes the recorded target). No Protocol method serves
-support-file bytes yet, matching the personal import; resolution is the
-runtime's `ResolveAgentPackSupport`.
+**Residual, stated:** a rollback to a revision whose package was later
+replaced leaves that item dangling (fails closed; re-import repairs it). No
+run-time tool or Protocol method serves support-file bytes yet, matching the
+personal import; resolution is the runtime's `ResolveAgentPackSupport`.
 
 **Cross-references:** D-411, D-422, D-456.

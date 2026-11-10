@@ -29,11 +29,23 @@ Two versions move independently in Harbor (RFC §5.3):
   artifact, package hash and destination, and expires. Commit installs exactly
   the reviewed package, requires `replace: true` to replace an item of the same
   name, refuses a moved witness with `revision_conflict`, and replays the same
-  token without a second write. Support files are runtime-owned Agent state
-  readable by every caller with reach to the Agent, and are released when the
-  item is removed or replaced. Pack items gain a read-only `package_hash`.
+  token without a second write. Support files are runtime-owned Agent state,
+  resolvable in the runtime for every caller with reach to the Agent (no
+  Protocol method serves their bytes yet), and are released when no active
+  item references them. Pack items gain a read-only `package_hash`.
   `agent_packs.copy` refuses package-backed items. A package grants no tools
   (D-496).
+
+### Fixed
+
+- **The reserved control-plane user id is refused at the request edge.**
+  An identity whose user id is `__agentcfg__` (the slot holding agent-level
+  records) is rejected by the bearer and carrier middleware, the stream
+  header fallback, the agent-config verbs and the skill-package import.
+- **MCP reconnects carry the attach identity instead of minting it.**
+  Reconnects reuse the first connect's verified binding through the new
+  `identity.CarryVerified`, which only copies an already-verified value; the
+  body-scope minting gate passes again.
 
 ## [1.42.2] — 2026-11-10
 

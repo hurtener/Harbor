@@ -9,7 +9,7 @@ import (
 // ReservedAgentConfigUser is the synthetic user slot used by agent-level
 // configuration and lifecycle records. Verified end-user identities must not
 // occupy this reserved control-plane namespace.
-const ReservedAgentConfigUser = "__agentcfg__"
+const ReservedAgentConfigUser = identity.ReservedControlPlaneUser
 
 // ActiveSlotKind is the durable agent lifecycle slot. Its payload is owned by
 // the registry implementation; consumers use the slot only as a generation

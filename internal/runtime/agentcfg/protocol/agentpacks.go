@@ -508,9 +508,7 @@ func (s *Service) AgentPacksUpsert(ctx context.Context, req prototypes.AgentConf
 	// Server-stamp the provenance ref: the caller cannot author it.
 	item.OriginRef = packUpsertedOriginRef(req.AgentID, hash)
 
-	var before []skills.AgentPackItem
 	payload, err := s.packPayloadFromActive(ctx, q, req.AgentID, func(current []skills.AgentPackItem) []skills.AgentPackItem {
-		before = copyAgentPackItems(current)
 		replaced := false
 		canonical := skills.CanonicalPackName(item.Name)
 		out := make([]skills.AgentPackItem, 0, len(current)+1)
@@ -537,7 +535,7 @@ func (s *Service) AgentPacksUpsert(ctx context.Context, req prototypes.AgentConf
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksUpsertResponse{}, err
 	}
-	s.releaseDroppedPackages(ctx, q.TenantID, req.AgentID, before, payload.AgentPacks)
+	s.releaseUnreferencedPackages(ctx, q.TenantID, req.AgentID, false)
 	return prototypes.AgentConfigAgentPacksUpsertResponse{
 		Revision:        revisionToWire(rev),
 		Skill:           packSkillSummary(skill),
@@ -582,9 +580,7 @@ func (s *Service) AgentPacksRemove(ctx context.Context, req prototypes.AgentConf
 		bootOwned = owner.OwnsName(q.TenantID, req.AgentID, canonical)
 	}
 	var removed bool
-	var before []skills.AgentPackItem
 	payload, err := s.packPayloadFromActive(ctx, q, req.AgentID, func(current []skills.AgentPackItem) []skills.AgentPackItem {
-		before = copyAgentPackItems(current)
 		out := make([]skills.AgentPackItem, 0, len(current))
 		for _, existing := range current {
 			if skills.CanonicalPackName(existing.Name) == canonical {
@@ -608,7 +604,7 @@ func (s *Service) AgentPacksRemove(ctx context.Context, req prototypes.AgentConf
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksRemoveResponse{}, err
 	}
-	s.releaseDroppedPackages(ctx, q.TenantID, req.AgentID, before, payload.AgentPacks)
+	s.releaseUnreferencedPackages(ctx, q.TenantID, req.AgentID, false)
 	return prototypes.AgentConfigAgentPacksRemoveResponse{
 		Revision:        revisionToWire(rev),
 		ProtocolVersion: prototypes.ProtocolVersion,
@@ -881,9 +877,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 	}
 	// Server-stamp the committed provenance ref.
 	item.OriginRef = packCommittedOriginRef(req.AgentID, req.ReviewedHash)
-	var before []skills.AgentPackItem
 	payload, err := s.packPayloadFromActive(ctx, q, req.AgentID, func(current []skills.AgentPackItem) []skills.AgentPackItem {
-		before = copyAgentPackItems(current)
 		replaced := false
 		canonical := skills.CanonicalPackName(item.Name)
 		out := make([]skills.AgentPackItem, 0, len(current)+1)
@@ -958,7 +952,7 @@ func (s *Service) AgentPacksCommit(ctx context.Context, req prototypes.AgentConf
 		// compensating the active pointer would create a second mutation.
 		return prototypes.AgentConfigAgentPacksCommitResponse{}, fmt.Errorf("consume pack proposal receipt: %w", ErrAgentPackProposalInvalid)
 	}
-	s.releaseDroppedPackages(ctx, q.TenantID, req.AgentID, before, payload.AgentPacks)
+	s.releaseUnreferencedPackages(ctx, q.TenantID, req.AgentID, false)
 	return prototypes.AgentConfigAgentPacksCommitResponse{
 		Revision:        revisionToWire(rev),
 		Skill:           packSkillSummary(skill),

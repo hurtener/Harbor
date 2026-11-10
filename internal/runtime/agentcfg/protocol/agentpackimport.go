@@ -20,11 +20,17 @@ package protocol
 //     hash sealed at validate) and fenced by a token-derived commit ledger,
 //     so a retry of the same token replays instead of writing twice.
 //
-// Write order: package first, then the fenced revision. A failed revision
-// write compensates the package with the exact-receipt Delete/Restore
-// primitives. Removing or replacing a package-backed item through any pack
-// verb releases its package (releaseDroppedPackages). A package never grants
-// tools: required tools are review warnings only.
+// Write order: the fenced revision first, then the package. Nothing is
+// destroyed before the revision publishes, so a failed publication needs no
+// package compensation. Until the package write lands the active item's
+// reference is dangling and fails closed (support resolution requires the
+// stored package to carry exactly the referenced hash); retrying the same
+// token, or re-importing the package, repairs it. The ledger slot lives only
+// while a commit is in flight: a retry after it finished is recognized from
+// the installed state itself. Every pack mutation ends by releasing the
+// packages the active revision no longer references
+// (releaseUnreferencedPackages). A package never grants tools: required tools
+// are review warnings only.
 
 import (
 	"context"
@@ -231,36 +237,67 @@ func (s *Service) AgentPacksImportCommit(ctx context.Context, req prototypes.Age
 	kind := agentPackImportKind(req.ProposalToken)
 	loaded, err := s.agentPackProposals.Load(ctx, q, kind)
 	if errors.Is(err, state.ErrNotFound) {
+		// A finished commit leaves no ledger slot: a response-loss retry is
+		// recognized from the installed state (the active item already
+		// references exactly this package and the package is stored).
+		if resp, done, err := s.packImportAlreadyInstalled(ctx, core, q, req.AgentID, claims); err != nil || done {
+			return resp, err
+		}
 		return s.publishPackImport(ctx, core, id, q, commitReq, claims, kind, nil, "")
 	}
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("agent pack import: load commit ledger: %w", err)
 	}
 	var record agentPackImportRecord
-	if err := json.Unmarshal(loaded.Bytes, &record); err != nil || record.Name != claims.Name || record.PackageHash != claims.PackageHash || record.TargetRevisionID == "" {
+	if err := json.Unmarshal(loaded.Bytes, &record); err != nil || record.Phase != userSkillImportPhaseCommitting ||
+		record.Name != claims.Name || record.PackageHash != claims.PackageHash || record.TargetRevisionID == "" {
 		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, ErrUserSkillImportProposalInvalid
 	}
-	switch record.Phase {
-	case userSkillImportPhaseCommitted:
-		return s.packImportResult(ctx, core, q, req.AgentID, record, true)
-	case userSkillImportPhaseCommitting:
-		if _, getErr := s.registry.Get(ctx, q, req.AgentID, record.TargetRevisionID, agentcfg.ConfigScopeAgent); getErr == nil {
-			// The revision landed but the terminal marker did not: record it
-			// and return the landed result.
-			s.markPackImportCommitted(ctx, q, kind, loaded.ID, record)
-			return s.packImportResult(ctx, core, q, req.AgentID, record, true)
-		} else if !errors.Is(getErr, agentcfg.ErrRevisionNotFound) {
-			return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("agent pack import: load target revision: %w", getErr)
-		}
-		return s.publishPackImport(ctx, core, id, q, commitReq, claims, kind, &record, loaded.ID)
-	default:
-		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, ErrUserSkillImportProposalInvalid
+	if _, getErr := s.registry.Get(ctx, q, req.AgentID, record.TargetRevisionID, agentcfg.ConfigScopeAgent); getErr == nil {
+		// The revision landed; finish (or repair) the package write.
+		return s.installPackImport(ctx, core, id, q, req.AgentID, claims, kind, loaded.ID, record, nil, true)
+	} else if !errors.Is(getErr, agentcfg.ErrRevisionNotFound) {
+		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("agent pack import: load target revision: %w", getErr)
 	}
+	return s.publishPackImport(ctx, core, id, q, commitReq, claims, kind, &record, loaded.ID)
 }
 
-// publishPackImport installs the package and publishes the fenced revision.
-// resume is nil for a fresh commit (the ledger slot is absent) and names the
-// recorded target when a previous attempt stopped before publication.
+// packImportAlreadyInstalled reports a landed commit of exactly this package:
+// the active item of the reviewed name references the package hash and the
+// stored package carries it.
+func (s *Service) packImportAlreadyInstalled(ctx context.Context, core *UserSkillImportService, q identity.Quadruple, agentID string, claims userSkillImportProposalClaims) (prototypes.AgentConfigAgentPacksImportCommitResponse, bool, error) {
+	active, set, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !set {
+		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, false, err
+	}
+	if !packItemReferences(active.Payload.AgentPacks, claims.Name, claims.PackageHash) {
+		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, false, nil
+	}
+	packQ, err := agentcfg.AgentScope(q.TenantID, agentID)
+	if err != nil {
+		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, false, err
+	}
+	winner, found, err := core.currentWinner(ctx, packQ, agentID, claims.Name)
+	if err != nil || !found || winner.PackageHash != claims.PackageHash {
+		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, false, err
+	}
+	resp, err := packImportResult(active, claims.Name, claims.PackageHash, true)
+	return resp, err == nil, err
+}
+
+func packItemReferences(items []skills.AgentPackItem, name, packageHash string) bool {
+	for _, item := range items {
+		if skills.CanonicalPackName(item.Name) == name && item.PackageHash == packageHash {
+			return true
+		}
+	}
+	return false
+}
+
+// publishPackImport publishes the fenced revision and then installs the
+// package. resume is nil for a fresh commit (the ledger slot is absent) and
+// names the recorded target when a previous attempt stopped before
+// publication.
 func (s *Service) publishPackImport(ctx context.Context, core *UserSkillImportService, id identity.Identity, q identity.Quadruple, req UserSkillImportCommitRequest, claims userSkillImportProposalClaims, kind string, resume *agentPackImportRecord, resumeSlot state.EventID) (prototypes.AgentConfigAgentPacksImportCommitResponse, error) {
 	unit, err := core.recheckPackage(ctx, id, req.AgentID, claims)
 	if err != nil {
@@ -325,83 +362,29 @@ func (s *Service) publishPackImport(ctx context.Context, core *UserSkillImportSe
 		}
 	}
 
-	packQ, err := agentcfg.AgentScope(q.TenantID, req.AgentID)
-	if err != nil {
-		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, err
-	}
-	prior, priorFound, err := core.currentWinner(ctx, packQ, req.AgentID, unit.Package.Name)
-	if err != nil {
-		s.abandonPackImport(ctx, q, kind, slot, resume == nil)
-		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, err
-	}
-	cond := skills.InstalledPackageCondition{ExpectedAbsent: true}
-	storeReplace := false
-	if priorFound {
-		cond = skills.InstalledPackageCondition{ExpectedHash: prior.PackageHash}
-		storeReplace = prior.PackageHash != unit.PackageHash
-	}
-	receipt, err := core.store.PutInstalledPackage(ctx, packQ, req.AgentID, unit, cond, storeReplace)
-	if err != nil {
-		s.abandonPackImport(ctx, q, kind, slot, resume == nil)
-		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("agent pack import: put installed package: %w", err)
-	}
-
 	opts.TargetRevisionID = record.TargetRevisionID
 	opts.PublicationFence = &agentcfg.PublicationFence{Identity: q, Kind: kind, EventID: string(slot)}
 	if _, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload, opts); err != nil {
-		// Exact-receipt compensation: undo ONLY the version this commit
-		// wrote, restoring the displaced package when there was one.
-		var compErr error
-		switch {
-		case !priorFound:
-			_, compErr = core.store.DeleteInstalledPackage(ctx, packQ, req.AgentID, unit.Package.Name, receipt)
-		case storeReplace:
-			_, compErr = core.store.RestoreInstalledPackage(ctx, packQ, req.AgentID, unit.Package.Name, receipt, prior)
+		// The write may have landed even though it reported an error (or a
+		// concurrent attempt of the same token published the same target).
+		// Only a target that provably did not land releases the slot.
+		if _, getErr := s.registry.Get(ctx, q, req.AgentID, record.TargetRevisionID, agentcfg.ConfigScopeAgent); getErr != nil {
+			if resume == nil && errors.Is(getErr, agentcfg.ErrRevisionNotFound) {
+				if _, delErr := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: slot}); delErr != nil {
+					s.logger.ErrorContext(ctx, "agent pack import: release committing marker failed", "error", delErr.Error())
+				}
+			}
+			return prototypes.AgentConfigAgentPacksImportCommitResponse{}, err
 		}
-		if compErr != nil {
-			s.logger.ErrorContext(ctx, "agent pack import: compensate installed package failed",
-				"agent_id", req.AgentID, "name", unit.Package.Name, "error", compErr.Error())
-		}
-		s.abandonPackImport(ctx, q, kind, slot, resume == nil)
-		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, errors.Join(err, compErr)
 	}
-	s.markPackImportCommitted(ctx, q, kind, slot, record)
-	return s.packImportResult(ctx, core, q, req.AgentID, record, false)
+	return s.installPackImport(ctx, core, id, q, req.AgentID, claims, kind, slot, record, &unit, false)
 }
 
-// abandonPackImport restores the absent ledger slot after a failed fresh
-// commit so the caller can retry (e.g. with replacement consent). A resumed
-// marker is kept: its recorded target still binds the retry.
-func (s *Service) abandonPackImport(ctx context.Context, q identity.Quadruple, kind string, slot state.EventID, fresh bool) {
-	if !fresh {
-		return
-	}
-	if _, err := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: slot}); err != nil {
-		s.logger.ErrorContext(ctx, "agent pack import: release committing marker failed", "error", err.Error())
-	}
-}
-
-// markPackImportCommitted records the terminal marker. A failure is logged,
-// not returned: the revision IS published and a retry recognizes it.
-func (s *Service) markPackImportCommitted(ctx context.Context, q identity.Quadruple, kind string, slot state.EventID, record agentPackImportRecord) {
-	record.Phase = userSkillImportPhaseCommitted
-	raw, err := json.Marshal(record)
-	if err == nil {
-		err = s.agentPackProposals.SaveIf(ctx, []state.SlotExpectation{{Identity: q, Kind: kind, ExpectedEventID: slot}},
-			state.StateRecord{ID: state.NewEventID(), Identity: q, Kind: kind, Bytes: raw})
-	}
-	if err != nil && !errors.Is(err, state.ErrConditionFailed) {
-		s.logger.WarnContext(ctx, "agent pack import: record committed marker failed (retry replays)", "error", err.Error())
-	}
-}
-
-// packImportResult builds the terminal response from the published target
-// revision, refusing when another package has since won the item's key.
-func (s *Service) packImportResult(ctx context.Context, core *UserSkillImportService, q identity.Quadruple, agentID string, record agentPackImportRecord, replayed bool) (prototypes.AgentConfigAgentPacksImportCommitResponse, error) {
-	rev, err := s.registry.Get(ctx, q, agentID, record.TargetRevisionID, agentcfg.ConfigScopeAgent)
-	if err != nil {
-		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("agent pack import: load published revision: %w", err)
-	}
+// installPackImport makes the stored package carry exactly the published
+// reference, then clears the ledger slot. It is idempotent: an already
+// installed package is not written again. A failed write keeps the slot, so a
+// retry of the same token repairs the dangling reference.
+func (s *Service) installPackImport(ctx context.Context, core *UserSkillImportService, id identity.Identity, q identity.Quadruple, agentID string, claims userSkillImportProposalClaims, kind string, slot state.EventID, record agentPackImportRecord, unit *skills.InstalledPackage, replayed bool) (prototypes.AgentConfigAgentPacksImportCommitResponse, error) {
 	packQ, err := agentcfg.AgentScope(q.TenantID, agentID)
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, err
@@ -411,10 +394,49 @@ func (s *Service) packImportResult(ctx context.Context, core *UserSkillImportSer
 		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, err
 	}
 	if !found || winner.PackageHash != record.PackageHash {
-		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("%w: the pack item is held by a different package", ErrUserSkillImportConcurrentWinner)
+		// Never overwrite a package a newer publication now references: a
+		// superseded item is not repaired.
+		active, set, err := s.registry.Active(ctx, q, agentID, agentcfg.ConfigScopeAgent)
+		if err != nil {
+			return prototypes.AgentConfigAgentPacksImportCommitResponse{}, err
+		}
+		if !set || !packItemReferences(active.Payload.AgentPacks, record.Name, record.PackageHash) {
+			if _, err := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: slot}); err != nil {
+				s.logger.WarnContext(ctx, "agent pack import: clear ledger slot failed", "error", err.Error())
+			}
+			return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("%w: a newer publication superseded the imported item", ErrUserSkillImportConcurrentWinner)
+		}
+		if unit == nil {
+			fresh, err := core.recheckPackage(ctx, id, agentID, claims)
+			if err != nil {
+				return prototypes.AgentConfigAgentPacksImportCommitResponse{}, err
+			}
+			unit = &fresh
+		}
+		cond := skills.InstalledPackageCondition{ExpectedAbsent: true}
+		if found {
+			cond = skills.InstalledPackageCondition{ExpectedHash: winner.PackageHash}
+		}
+		if _, err := core.store.PutInstalledPackage(ctx, packQ, agentID, *unit, cond, found); err != nil {
+			return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("agent pack import: put installed package (the item is published; retry the same token to repair): %w", err)
+		}
 	}
+	if _, err := s.agentPackProposals.DeleteIf(ctx, state.SlotExpectation{Identity: q, Kind: kind, ExpectedEventID: slot}); err != nil {
+		s.logger.WarnContext(ctx, "agent pack import: clear ledger slot failed (a retry replays)", "error", err.Error())
+	}
+	rev, err := s.registry.Get(ctx, q, agentID, record.TargetRevisionID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("agent pack import: load published revision: %w", err)
+	}
+	s.releaseUnreferencedPackages(ctx, q.TenantID, agentID, false)
+	return packImportResult(rev, record.Name, record.PackageHash, replayed)
+}
+
+// packImportResult builds the terminal response from a revision carrying the
+// imported item.
+func packImportResult(rev agentcfg.Revision, name, packageHash string, replayed bool) (prototypes.AgentConfigAgentPacksImportCommitResponse, error) {
 	for _, item := range rev.Payload.AgentPacks {
-		if skills.CanonicalPackName(item.Name) != record.Name {
+		if skills.CanonicalPackName(item.Name) != name {
 			continue
 		}
 		skill, err := item.Skill()
@@ -424,7 +446,7 @@ func (s *Service) packImportResult(ctx context.Context, core *UserSkillImportSer
 		return prototypes.AgentConfigAgentPacksImportCommitResponse{
 			Revision:        revisionToWire(rev),
 			Skill:           packSkillSummary(skill),
-			PackageHash:     record.PackageHash,
+			PackageHash:     packageHash,
 			Replayed:        replayed,
 			ProtocolVersion: prototypes.ProtocolVersion,
 		}, nil
@@ -432,12 +454,14 @@ func (s *Service) packImportResult(ctx context.Context, core *UserSkillImportSer
 	return prototypes.AgentConfigAgentPacksImportCommitResponse{}, fmt.Errorf("%w: published revision lacks the imported item", ErrUserSkillImportProposalInvalid)
 }
 
-// releaseDroppedPackages deletes the installed package of every pack item the
-// just-published revision no longer references (removed, or replaced by a
-// body-only item). Best effort: an unreferenced package is unreachable
-// (resolution requires the active item's PackageHash), so a failure is
-// logged rather than failing the already-published mutation.
-func (s *Service) releaseDroppedPackages(ctx context.Context, tenantID, agentID string, before, after []skills.AgentPackItem) {
+// releaseUnreferencedPackages deletes every stored Agent-pack package the
+// CURRENT active revision does not reference by exact hash (all of them when
+// retired). It re-reads the active revision itself, so it is correct after
+// any pack mutation — remove, upsert/commit replacing an item with a
+// body-only one, rollback, retirement. Best effort: an unreferenced package is
+// unreachable, so a failure is logged rather than failing the mutation that
+// already landed.
+func (s *Service) releaseUnreferencedPackages(ctx context.Context, tenantID, agentID string, retired bool) {
 	store := s.skills
 	if store == nil && s.packageImport != nil {
 		store = s.packageImport.store
@@ -445,25 +469,46 @@ func (s *Service) releaseDroppedPackages(ctx context.Context, tenantID, agentID 
 	if store == nil {
 		return
 	}
-	kept := make(map[string]string, len(after))
-	for _, item := range after {
-		kept[skills.CanonicalPackName(item.Name)] = item.PackageHash
+	packQ, err := agentcfg.AgentScope(tenantID, agentID)
+	if err != nil {
+		return
 	}
-	for _, item := range before {
-		name := skills.CanonicalPackName(item.Name)
-		if item.PackageHash == "" || kept[name] == item.PackageHash {
-			continue
-		}
-		packQ, err := agentcfg.AgentScope(tenantID, agentID)
+	referenced := map[string]string{}
+	if !retired {
+		active, set, err := s.registry.Active(ctx, packQ, agentID, agentcfg.ConfigScopeAgent)
 		if err != nil {
+			s.logger.WarnContext(ctx, "agent pack: read active revision for package release failed", "agent_id", agentID, "error", err.Error())
 			return
 		}
-		winner, err := store.GetInstalledPackage(ctx, packQ, agentID, name)
-		if err != nil || winner.PackageHash != item.PackageHash {
-			continue // already gone, or re-imported in place
+		if set {
+			for _, item := range active.Payload.AgentPacks {
+				if item.PackageHash != "" {
+					referenced[skills.CanonicalPackName(item.Name)] = item.PackageHash
+				}
+			}
 		}
-		if _, err := store.DeleteInstalledPackage(ctx, packQ, agentID, name, receiptFromWinner(packQ, agentID, name, winner)); err != nil {
-			s.logger.WarnContext(ctx, "agent pack: release dropped package failed", "agent_id", agentID, "name", name, "error", err.Error())
+	}
+	const page = skills.MaxAgentPackItems
+	for offset := 0; ; offset += page {
+		rows, err := store.List(ctx, packQ, skills.ListFilter{Scope: skills.ScopeUser, AgentID: agentID, Limit: page, Offset: offset})
+		if err != nil {
+			s.logger.WarnContext(ctx, "agent pack: list stored packages failed", "agent_id", agentID, "error", err.Error())
+			return
+		}
+		for _, row := range rows {
+			name := skills.CanonicalPackName(row.Name)
+			winner, err := store.GetInstalledPackage(ctx, packQ, agentID, name)
+			if err != nil || referenced[name] == winner.PackageHash {
+				continue
+			}
+			if _, err := store.DeleteInstalledPackage(ctx, packQ, agentID, name, receiptFromWinner(packQ, agentID, name, winner)); err != nil {
+				s.logger.WarnContext(ctx, "agent pack: release unreferenced package failed", "agent_id", agentID, "name", name, "error", err.Error())
+			} else {
+				offset-- // the page shifted under the deletion
+			}
+		}
+		if len(rows) < page {
+			return
 		}
 	}
 }
