@@ -701,7 +701,7 @@ func (s *UserSkillImportService) reviewPackage(ctx context.Context, id identity.
 		return reviewedPackage{}, fmt.Errorf("%w: artifact_id=%q under the caller's exact triple",
 			ErrUserSkillImportArtifactNotFound, artifactID)
 	}
-	ingest, err := s.importer.ImportPackage(ctx, importer.PackageSource{Archive: bytes, PathHint: artifactID})
+	ingest, err := s.ingestArtifact(ctx, bytes, artifactID)
 	if err != nil {
 		return reviewedPackage{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
 	}
@@ -878,7 +878,7 @@ func (s *UserSkillImportService) recheckPackage(ctx context.Context, id identity
 	if sha256Hex(bytes) != claims.ArtifactSHA256 || int64(len(bytes)) != claims.ArtifactSizeBytes {
 		return skills.InstalledPackage{}, fmt.Errorf("%w: the reviewed artifact changed after validation", ErrUserSkillImportArtifactChanged)
 	}
-	ingest, err := s.importer.ImportPackage(ctx, importer.PackageSource{Archive: bytes, PathHint: claims.ArtifactID})
+	ingest, err := s.ingestArtifact(ctx, bytes, claims.ArtifactID)
 	if err != nil {
 		return skills.InstalledPackage{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
 	}
@@ -1667,6 +1667,21 @@ func receiptFromWinner(q identity.Quadruple, agentID, name string, winner skills
 		TenantID: q.TenantID, UserID: q.UserID, AgentID: agentID, Name: name,
 		WrittenHash: winner.PackageHash, WrittenVersion: winner.Package.Version,
 	}
+}
+
+// ingestArtifact runs the ONE production importer over a caller artifact in
+// either documented form: a complete package zip, or a single Markdown
+// SKILL.md document (what the skill drafter writes). Anything that is not a
+// zip is ingested only through the strict resource-free Markdown path, so
+// the package hash is the same one the drafter reported; every other archive
+// rejection is returned unchanged. Review and revalidation share this for
+// every destination, so a commit re-ingest always matches the reviewed form.
+func (s *UserSkillImportService) ingestArtifact(ctx context.Context, data []byte, hint string) (importer.PackageIngest, error) {
+	ingest, err := s.importer.ImportPackage(ctx, importer.PackageSource{Archive: data, PathHint: hint})
+	if errors.Is(err, skillpkg.ErrArchiveNotZip) {
+		return s.importer.ImportPackageMarkdown(ctx, importer.PackageMarkdownSource{Markdown: data, PathHint: hint})
+	}
+	return ingest, err
 }
 
 // artifactScope derives the caller-owned artifact read scope (the exact

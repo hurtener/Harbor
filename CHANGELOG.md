@@ -38,6 +38,12 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Fixed
 
+- **Single-Markdown skill drafts import.** `agent_config.user.skills.import_validate`
+  / `import_commit` and the new `agent_config.agent_packs.import_*` accept the
+  documented single-Markdown `SKILL.md` artifact (what `skill_create_draft`
+  writes) as well as a package zip. Non-zip artifacts are ingested only
+  through the strict resource-free Markdown path, so the reviewed package hash
+  matches the drafter's; the caller-scoped artifact read is unchanged.
 - **The reserved control-plane user id is refused at the request edge.**
   An identity whose user id is `__agentcfg__` (the slot holding agent-level
   records) is rejected by the bearer and carrier middleware, the stream

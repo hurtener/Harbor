@@ -533,3 +533,33 @@ func TestAgentPackImport_UnwiredFailsLoud(t *testing.T) {
 		t.Fatalf("unwired err=%v", err)
 	}
 }
+
+// A drafter-style single SKILL.md artifact imports into the shared pack
+// through the same shared ingest, with the hash of the equivalent zip.
+func TestAgentPackImport_SingleMarkdownDraft(t *testing.T) {
+	fx := newPackImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	zipped := fx.validate(t, importUserA, map[string]string{"SKILL.md": importSkillMD})
+	resp, err := fx.admin.AgentPacksImportValidate(ctx, prototypes.AgentConfigAgentPacksImportValidateRequest{
+		Identity: wireScope(importUserA), AgentID: testAgentID, ArtifactID: fx.uploadMarkdown(t, importUserA, importSkillMD),
+	})
+	if err != nil {
+		t.Fatalf("validate markdown draft: %v", err)
+	}
+	if resp.PackageHash != zipped.PackageHash || len(resp.Review.SupportFiles) != 0 {
+		t.Fatalf("markdown review = %+v hash %q, zip hash %q", resp.Review, resp.PackageHash, zipped.PackageHash)
+	}
+	committed, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, resp, false))
+	if err != nil || committed.PackageHash != resp.PackageHash {
+		t.Fatalf("commit markdown draft: %+v err=%v", committed, err)
+	}
+	list, err := fx.admin.AgentPacksList(context.Background(), prototypes.AgentConfigAgentPacksListRequest{Identity: wireScope(importUserA), AgentID: testAgentID})
+	if err != nil || len(list.Items) != 1 || list.Items[0].PackageHash != resp.PackageHash {
+		t.Fatalf("pack list=%+v err=%v", list.Items, err)
+	}
+	if _, err := fx.admin.AgentPacksImportValidate(ctx, prototypes.AgentConfigAgentPacksImportValidateRequest{
+		Identity: wireScope(importUserA), AgentID: testAgentID, ArtifactID: fx.uploadMarkdown(t, importUserA, "not a skill"),
+	}); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportPackageInvalid) {
+		t.Fatalf("plain text err=%v, want package invalid", err)
+	}
+}

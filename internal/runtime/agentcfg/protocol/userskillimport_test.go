@@ -2324,3 +2324,56 @@ func TestUserSkillImport_Commit_PutAndCompensationBothFail_JoinedLoudNoForeignMu
 		t.Fatalf("retry under the stale marker performed a write: put=%d", put)
 	}
 }
+
+// uploadMarkdown stores one raw SKILL.md document the way the skill drafter
+// does (no archive) under the caller's exact triple.
+func (fx *importFixture) uploadMarkdown(t *testing.T, id identity.Identity, md string) string {
+	t.Helper()
+	ref, err := fx.artifacts.PutBytes(context.Background(), artifacts.ArtifactScope{
+		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
+	}, []byte(md), artifacts.PutOpts{Namespace: "skill-drafts", MimeType: "text/markdown", Filename: "SKILL.md"})
+	if err != nil {
+		t.Fatalf("upload markdown: %v", err)
+	}
+	return ref.ID
+}
+
+// TestUserSkillImport_SingleMarkdownDraft pins the documented second input
+// form: a drafter-style single SKILL.md artifact validates and commits, with
+// the same package hash as the equivalent one-file zip, while non-zip bytes
+// that are not a valid SKILL.md stay a package-invalid refusal.
+func TestUserSkillImport_SingleMarkdownDraft(t *testing.T) {
+	fx := newImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	zipped, err := fx.svc.Validate(ctx, fx.validateReq(fx.uploadPackage(t, importUserA, map[string]string{"SKILL.md": importSkillMD})))
+	if err != nil {
+		t.Fatalf("validate zip: %v", err)
+	}
+	validated, err := fx.svc.Validate(ctx, fx.validateReq(fx.uploadMarkdown(t, importUserA, importSkillMD)))
+	if err != nil {
+		t.Fatalf("validate markdown draft: %v", err)
+	}
+	if validated.PackageHash != zipped.PackageHash || validated.Review.Name != "demo-skill" {
+		t.Fatalf("markdown review = %+v hash %q, zip hash %q", validated.Review, validated.PackageHash, zipped.PackageHash)
+	}
+	committed, err := fx.svc.Commit(ctx, commitReqFromValidate(validated, false))
+	if err != nil {
+		t.Fatalf("commit markdown draft: %v", err)
+	}
+	if committed.PackageHash != validated.PackageHash {
+		t.Fatalf("committed hash %q, reviewed %q", committed.PackageHash, validated.PackageHash)
+	}
+	// The draft stays caller-scoped: another session of the same user cannot
+	// review it.
+	other := importUserA
+	other.SessionID = "another-session"
+	draft := fx.uploadMarkdown(t, importUserA, importSkillMD)
+	if _, err := fx.svc.Validate(importCtx(other, testAgentID), fx.validateReq(draft)); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportArtifactNotFound) {
+		t.Fatalf("cross-session markdown draft err=%v, want not found", err)
+	}
+	for name, body := range map[string]string{"plain text": "not a skill", "missing trigger": "---\nname: x\n---\n## Steps\n- s\n"} {
+		if _, err := fx.svc.Validate(ctx, fx.validateReq(fx.uploadMarkdown(t, importUserA, body))); !errors.Is(err, agentcfgprotocol.ErrUserSkillImportPackageInvalid) {
+			t.Fatalf("%s err=%v, want package invalid", name, err)
+		}
+	}
+}
