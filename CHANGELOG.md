@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.44.1] — 2026-11-10
+
 ### Fixed
 
 - Skill listings and import reviews show the first human-description
