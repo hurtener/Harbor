@@ -169,7 +169,9 @@ jobs:
 
   frontend-e2e:
     name: frontend-e2e (Console Playwright)
-    runs-on: ubuntu-latest
+    # Pinned: Playwright's Chromium does not support the Ubuntu 26.04
+    # image ubuntu-latest moved to. Revisit when Playwright adds it.
+    runs-on: ubuntu-24.04
     # Phase 75 (D-115) — the Console e2e Playwright harness baseline.
     # `needs: [go]` only ORDERS this job after `go`; it does NOT reuse the
     # `go` job's `make build`. Per the D-131 console-build fix this job runs
