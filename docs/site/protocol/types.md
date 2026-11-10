@@ -1243,6 +1243,7 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `name` | `string` |  |
 | `title` | `string` | optional (`omitempty`) |
+| `description` | `string` | optional (`omitempty`) |
 | `trigger` | `string` | optional (`omitempty`) |
 | `task_type` | `string` | optional (`omitempty`) |
 | `origin` | `string` |  |
@@ -1553,6 +1554,7 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `name` | `string` |  |
 | `title` | `string` | optional (`omitempty`) |
+| `description` | `string` | optional (`omitempty`) |
 | `trigger` | `string` |  |
 | `task_type` | `string` | optional (`omitempty`) |
 | `tags` | `[]string` | optional (`omitempty`) |
@@ -1583,6 +1585,7 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `name` | `string` |  |
 | `title` | `string` | optional (`omitempty`) |
+| `description` | `string` | optional (`omitempty`) |
 | `trigger` | `string` |  |
 | `task_type` | `string` | optional (`omitempty`) |
 | `tags` | `[]string` | optional (`omitempty`) |

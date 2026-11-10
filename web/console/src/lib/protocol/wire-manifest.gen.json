@@ -2797,6 +2797,11 @@
           "optional": true
         },
         {
+          "key": "description",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "trigger",
           "type": "string",
           "optional": true
@@ -3432,6 +3437,11 @@
           "optional": true
         },
         {
+          "key": "description",
+          "type": "string",
+          "optional": true
+        },
+        {
           "key": "trigger",
           "type": "string"
         },
@@ -3509,6 +3519,11 @@
         },
         {
           "key": "title",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "key": "description",
           "type": "string",
           "optional": true
         },

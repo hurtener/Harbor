@@ -1499,10 +1499,12 @@ type AgentConfigRemoveOAuthProviderResponse struct {
 }
 
 // AgentConfigSkillSummary is the wire projection of one skill in the
-// agent's store — metadata only, never the full body.
+// agent's store — metadata only, never the full body. Description is the
+// bounded human-visible excerpt of what the skill does (at most 500 runes).
 type AgentConfigSkillSummary struct {
 	Name        string    `json:"name"`
 	Title       string    `json:"title,omitempty"`
+	Description string    `json:"description,omitempty"`
 	Trigger     string    `json:"trigger,omitempty"`
 	TaskType    string    `json:"task_type,omitempty"`
 	Origin      string    `json:"origin"`
@@ -2365,6 +2367,9 @@ type AgentConfigUserSkillImportReview struct {
 	Name string `json:"name"`
 	// Title is the human-readable title (may be empty).
 	Title string `json:"title,omitempty"`
+	// Description is the bounded human-visible excerpt of what the skill
+	// does (at most 500 runes; may be empty).
+	Description string `json:"description,omitempty"`
 	// Trigger is the planner-visible match cue.
 	Trigger string `json:"trigger"`
 	// TaskType is the planner-facing task class (may be empty).
@@ -2474,8 +2479,10 @@ type AgentConfigUserSkillImportReceipt struct {
 // summary a commit receipt carries (a flat projection of the stored
 // skill — never the raw package body).
 type AgentConfigUserSkillInstalledSummary struct {
-	Name        string   `json:"name"`
-	Title       string   `json:"title,omitempty"`
+	Name  string `json:"name"`
+	Title string `json:"title,omitempty"`
+	// Description is the bounded human-visible excerpt (at most 500 runes).
+	Description string   `json:"description,omitempty"`
 	Trigger     string   `json:"trigger"`
 	TaskType    string   `json:"task_type,omitempty"`
 	Tags        []string `json:"tags,omitempty"`

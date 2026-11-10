@@ -10,6 +10,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/skills"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
 // skills.go — the agent-config skills-control methods: the first consumer
@@ -302,6 +303,7 @@ func skillToSummary(sk skills.Skill) prototypes.AgentConfigSkillSummary {
 	return prototypes.AgentConfigSkillSummary{
 		Name:        sk.Name,
 		Title:       sk.Title,
+		Description: skillpkg.DescriptionSummary(sk.Description),
 		Trigger:     sk.Trigger,
 		TaskType:    sk.TaskType,
 		Origin:      string(sk.Origin),

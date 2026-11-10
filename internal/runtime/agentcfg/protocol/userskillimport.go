@@ -413,6 +413,9 @@ type UserSkillImportReview struct {
 	Name string
 	// Title is the human-readable title (may be empty).
 	Title string
+	// Description is the bounded human-visible excerpt of what the skill
+	// does (skillpkg.DescriptionSummary; may be empty).
+	Description string
 	// Trigger is the planner-visible match cue.
 	Trigger string
 	// TaskType is the planner-facing task class (may be empty).
@@ -1602,6 +1605,7 @@ func buildUserSkillImportReview(ingest importer.PackageIngest, stored skills.Ski
 	review := UserSkillImportReview{
 		Name:          stored.Name,
 		Title:         stored.Title,
+		Description:   skillpkg.DescriptionSummary(stored.Description),
 		Trigger:       stored.Trigger,
 		TaskType:      stored.TaskType,
 		Tags:          append([]string(nil), stored.Tags...),

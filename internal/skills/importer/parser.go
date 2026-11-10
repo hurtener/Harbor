@@ -15,6 +15,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/skills"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
 // frontmatterFence is the YAML-frontmatter delimiter Skills.md uses.
@@ -49,6 +50,7 @@ type frontmatterRaw struct {
 type frontmatterFields struct {
 	Name               string   `yaml:"name"`
 	Title              string   `yaml:"title"`
+	Description        string   `yaml:"description"`
 	Trigger            string   `yaml:"trigger"`
 	TaskType           string   `yaml:"task_type"`
 	Tags               []string `yaml:"tags"`
@@ -507,11 +509,16 @@ func doImport(ctx context.Context, store artifacts.ArtifactStore, src ImportSour
 	if err != nil {
 		return skills.Skill{}, ImportArtifacts{}, err
 	}
-	if strings.TrimSpace(fields.Trigger) == "" {
+	trigger := skillpkg.DeriveTrigger(fields.Trigger, fields.Description)
+	if trigger == "" {
 		return skills.Skill{}, ImportArtifacts{}, fmt.Errorf("%w: %w",
 			ErrMissingTrigger, skills.ErrInvalidSkill)
 	}
-	description, sections, imports, err := bodyParse(ctx, store, src, body)
+	bodyDescription, sections, imports, err := bodyParse(ctx, store, src, body)
+	if err != nil {
+		return skills.Skill{}, ImportArtifacts{}, err
+	}
+	description, err := joinDescription(fields.Description, bodyDescription)
 	if err != nil {
 		return skills.Skill{}, ImportArtifacts{}, err
 	}
@@ -532,7 +539,7 @@ func doImport(ctx context.Context, store artifacts.ArtifactStore, src ImportSour
 		Name:          name,
 		Title:         fields.Title,
 		Description:   description,
-		Trigger:       fields.Trigger,
+		Trigger:       trigger,
 		TaskType:      fields.TaskType,
 		Tags:          fields.Tags,
 		Steps:         steps,
@@ -556,6 +563,46 @@ func doImport(ctx context.Context, store artifacts.ArtifactStore, src ImportSour
 		return skills.Skill{}, ImportArtifacts{}, err
 	}
 	return skill, imports, nil
+}
+
+// joinDescription folds the optional frontmatter `description` into the
+// skill's one canonical Description: the trimmed frontmatter value
+// first, then a blank line, then the body prose before the first
+// section (when present). A document without a frontmatter description
+// keeps its body prose verbatim, so existing skills and package hashes
+// are unchanged. The joined form re-parses to itself when exported as
+// body prose, so a frontmatter description whose text carries a `## `
+// section-heading line is refused (it would re-parse as a section).
+func joinDescription(frontmatter, body string) (string, error) {
+	fm := strings.TrimSpace(frontmatter)
+	if fm == "" {
+		return body, nil
+	}
+	if strings.HasPrefix(fm, "## ") || strings.Contains(fm, "\n## ") {
+		return "", fmt.Errorf("%w: frontmatter description contains a section heading",
+			ErrUnknownSection)
+	}
+	if body == "" {
+		return fm, nil
+	}
+	return fm + "\n\n" + body, nil
+}
+
+// splitDescription is the inverse of joinDescription for an export
+// that re-emits the original frontmatter verbatim: it strips the
+// frontmatter description prefix so the body prose is not duplicated.
+func splitDescription(frontmatter, description string) string {
+	fm := strings.TrimSpace(frontmatter)
+	switch {
+	case fm == "":
+		return description
+	case description == fm:
+		return ""
+	case strings.HasPrefix(description, fm+"\n\n"):
+		return description[len(fm)+2:]
+	default:
+		return description
+	}
 }
 
 // sourceHashHex returns the sha256 hex of the source bytes. Used

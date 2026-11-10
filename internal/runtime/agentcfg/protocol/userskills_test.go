@@ -2,9 +2,11 @@ package protocol_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
 // TestUserSkills_DurableAcrossSessions proves the durable-per-user skills verbs
@@ -137,4 +139,48 @@ func TestUserSkills_MissingIdentity_FailsLoud(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected identity-required error on incomplete triple, got nil")
 	}
+}
+
+// TestUserSkills_ListCarriesBoundedDescription pins the human-visible
+// description on the personal and session skill listings: the summary
+// carries the description, bounded to the shared excerpt length.
+func TestUserSkills_ListCarriesBoundedDescription(t *testing.T) {
+	ctx := context.Background()
+	s := sessionSvc(t)
+	id := prototypes.IdentityScope{Tenant: "t", User: "u", Session: "s"}
+	long := strings.Repeat("d", skillpkg.MaxDescriptionSummaryRunes+50)
+	if _, err := s.UserSkillsUpsert(ctx, prototypes.AgentConfigUserSkillsUpsertRequest{
+		Identity: id, AgentID: testAgentID,
+		Skill: prototypes.AgentConfigSkillInput{
+			Name: "described", Description: "Explains the thing.", Trigger: "when asked", Steps: []string{"do it"}, Origin: "generated",
+		},
+	}); err != nil {
+		t.Fatalf("user upsert: %v", err)
+	}
+	if _, err := s.SessionSkillsUpsert(ctx, prototypes.AgentConfigSessionSkillsUpsertRequest{
+		Identity: id, AgentID: testAgentID,
+		Skill: prototypes.AgentConfigSkillInput{
+			Name: "long", Description: long, Trigger: "when long", Steps: []string{"do it"}, Origin: "generated", Scope: "session",
+		},
+	}); err != nil {
+		t.Fatalf("session upsert: %v", err)
+	}
+	userList, err := s.UserSkillsList(ctx, prototypes.AgentConfigUserSkillsListRequest{Identity: id, AgentID: testAgentID})
+	if err != nil || len(userList.Skills) != 1 || userList.Skills[0].Description != "Explains the thing." {
+		t.Fatalf("user list = %+v err=%v", userList.Skills, err)
+	}
+	sessionList, err := s.SessionSkillsList(ctx, prototypes.AgentConfigSessionSkillsListRequest{Identity: id, AgentID: testAgentID})
+	if err != nil {
+		t.Fatalf("session list: %v", err)
+	}
+	for _, sk := range sessionList.Skills {
+		if sk.Name != "long" {
+			continue
+		}
+		if got := []rune(sk.Description); len(got) != skillpkg.MaxDescriptionSummaryRunes {
+			t.Fatalf("session summary description has %d runes, want %d", len(got), skillpkg.MaxDescriptionSummaryRunes)
+		}
+		return
+	}
+	t.Fatalf("session list missing the long skill: %+v", sessionList.Skills)
 }

@@ -2,6 +2,7 @@ package skillpkg_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
@@ -117,5 +118,40 @@ func TestValidateSkillMarkdown_NotUTF8(t *testing.T) {
 	// Valid UTF-8 (including non-ASCII text) passes the gate.
 	if err := skillpkg.ValidateSkillMarkdown([]byte("---\ntrigger: t\n---\n# Café guide\n\n## Steps\n- s\n"), skillpkg.MarkdownLimits{}); err != nil {
 		t.Fatalf("valid UTF-8 rejected: %v", err)
+	}
+}
+
+func TestValidateSkillMarkdown_DescriptionSuppliesTrigger(t *testing.T) {
+	md := "---\nname: demo\ndescription: Explains the demo.\n---\n## Steps\n- step one\n"
+	if err := skillpkg.ValidateSkillMarkdown([]byte(md), skillpkg.MarkdownLimits{}); err != nil {
+		t.Fatalf("description-only document rejected: %v", err)
+	}
+	blank := "---\nname: demo\ndescription: \"\"\n---\n## Steps\n- step one\n"
+	if err := skillpkg.ValidateSkillMarkdown([]byte(blank), skillpkg.MarkdownLimits{}); !errors.Is(err, skillpkg.ErrSkillMDMissingTrigger) {
+		t.Fatalf("blank description: err=%v, want ErrSkillMDMissingTrigger", err)
+	}
+}
+
+func TestDeriveTrigger(t *testing.T) {
+	for _, c := range []struct{ trigger, description, want string }{
+		{"when asked", "Ignored.", "when asked"},
+		{"", "Does a thing.\n\n  Use it   often.\n", "Does a thing. Use it often."},
+		{"  ", "", ""},
+	} {
+		if got := skillpkg.DeriveTrigger(c.trigger, c.description); got != c.want {
+			t.Errorf("DeriveTrigger(%q, %q) = %q, want %q", c.trigger, c.description, got, c.want)
+		}
+	}
+}
+
+func TestDescriptionSummary_Bounded(t *testing.T) {
+	short := "A short description."
+	if got := skillpkg.DescriptionSummary(short); got != short {
+		t.Fatalf("short summary = %q", got)
+	}
+	long := strings.Repeat("ñ", skillpkg.MaxDescriptionSummaryRunes+10)
+	got := []rune(skillpkg.DescriptionSummary(long))
+	if len(got) != skillpkg.MaxDescriptionSummaryRunes || got[len(got)-1] != '…' {
+		t.Fatalf("long summary has %d runes, last %q", len(got), got[len(got)-1])
 	}
 }

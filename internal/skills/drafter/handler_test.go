@@ -385,4 +385,20 @@ func TestCreateDraft_ArtifactPassesValidateIngest(t *testing.T) {
 	if len(ingest.Package.Supports) != 0 {
 		t.Fatalf("draft artifact must be resource-free, got %d support files", len(ingest.Package.Supports))
 	}
+	// The drafted human description is the installed skill's
+	// description and the result's summary.
+	const wantDesc = "Scan the shared inbox and triage every unread message into a queue."
+	if ingest.Skill.Description != wantDesc || result.Summary != wantDesc {
+		t.Fatalf("description = %q, summary = %q, want %q", ingest.Skill.Description, result.Summary, wantDesc)
+	}
+}
+
+func TestSystemPrompt_RequiresHumanDescription(t *testing.T) {
+	p := systemPrompt()
+	if !strings.Contains(p, "all optional except name, description, trigger, steps") {
+		t.Fatalf("prompt does not require a description: %q", p)
+	}
+	if !strings.Contains(p, "telling a person what the skill does") {
+		t.Fatalf("prompt does not explain the description: %q", p)
+	}
 }

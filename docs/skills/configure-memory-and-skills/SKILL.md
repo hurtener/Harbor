@@ -172,12 +172,13 @@ Skills enter the catalog through these producers:
 
 ### Example: a Skills.md file
 
-One skill per file. The frontmatter `trigger:` is the planner-visible match cue (mandatory), `## Steps` needs at least one item; `## Preconditions` and `## Failure modes` are optional sections.
+One skill per file. The frontmatter `description:` is the human-visible explanation of what the skill does (shown in listings and import reviews); it is joined, first, with any prose before the first section. The frontmatter `trigger:` is the planner-visible match cue: when it is absent, it is derived from `description` (whitespace collapsed to one line), and a file with neither is refused. `## Steps` needs at least one item; `## Preconditions` and `## Failure modes` are optional sections.
 
 ```markdown
 ---
 name: triage-incident
 title: Triage an incident
+description: Classifies a support ticket and recommends the next action.
 trigger: when a support ticket needs classification
 tags: [support, triage]
 ---

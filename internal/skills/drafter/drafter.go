@@ -75,7 +75,7 @@ const (
 	// MaxSummaryRunes bounds the normalized description summary the
 	// tool result carries back (the full body lives in the artifact,
 	// never in the result).
-	MaxSummaryRunes = 500
+	MaxSummaryRunes = skillpkg.MaxDescriptionSummaryRunes
 )
 
 // Sentinel errors. Callers compare via errors.Is.

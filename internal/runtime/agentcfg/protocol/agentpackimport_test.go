@@ -563,3 +563,53 @@ func TestAgentPackImport_SingleMarkdownDraft(t *testing.T) {
 		t.Fatalf("plain text err=%v, want package invalid", err)
 	}
 }
+
+// externalDescribedSkillMD is the common external SKILL.md shape: a
+// frontmatter `description` and no `trigger`.
+const externalDescribedSkillMD = "---\nname: described-skill\ndescription: Explains the demo to a person.\n---\nBody prose.\n\n## Steps\n- explain the demo\n"
+
+// TestSkillImport_DescriptionOnlySkillSurfacesDescription pins the
+// description through both import destinations: the shared review, the
+// personal commit, the pack commit summary and the pack listing carry it,
+// and the trigger is derived from it.
+func TestSkillImport_DescriptionOnlySkillSurfacesDescription(t *testing.T) {
+	const wantTrigger = "Explains the demo to a person."
+	const wantDesc = wantTrigger + "\n\nBody prose."
+
+	// Personal destination.
+	personal := newImportFixture(t)
+	validated, committed, err := personal.validateCommit(t, importUserA, map[string]string{"SKILL.md": externalDescribedSkillMD}, false)
+	if err != nil {
+		t.Fatalf("personal validate/commit: %v", err)
+	}
+	if validated.Review.Description != wantDesc || validated.Review.Trigger != wantTrigger {
+		t.Fatalf("personal review = %+v", validated.Review)
+	}
+	if wire := agentcfgprotocol.UserSkillImportReviewToWire(validated.Review); wire.Description != wantDesc {
+		t.Fatalf("wire review description = %q", wire.Description)
+	}
+	if committed.Skill.Description != wantDesc || committed.Skill.Trigger != wantTrigger {
+		t.Fatalf("personal commit skill = %+v", committed.Skill)
+	}
+
+	// Shared Agent-pack destination.
+	fx := newPackImportFixture(t)
+	ctx := importCtx(importUserA, testAgentID)
+	v, err := fx.admin.AgentPacksImportValidate(ctx, prototypes.AgentConfigAgentPacksImportValidateRequest{
+		Identity: wireScope(importUserA), AgentID: testAgentID, ArtifactID: fx.uploadMarkdown(t, importUserA, externalDescribedSkillMD),
+	})
+	if err != nil {
+		t.Fatalf("pack validate: %v", err)
+	}
+	if v.Review.Description != wantDesc || v.Review.Trigger != wantTrigger {
+		t.Fatalf("pack review = %+v", v.Review)
+	}
+	resp, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, v, false))
+	if err != nil || resp.Skill.Description != wantDesc {
+		t.Fatalf("pack commit = %+v err=%v", resp, err)
+	}
+	list, err := fx.admin.AgentPacksList(context.Background(), prototypes.AgentConfigAgentPacksListRequest{Identity: wireScope(importUserA), AgentID: testAgentID})
+	if err != nil || len(list.Items) != 1 || list.Items[0].Description != wantDesc || list.Items[0].Trigger != wantTrigger {
+		t.Fatalf("pack list = %+v err=%v", list.Items, err)
+	}
+}

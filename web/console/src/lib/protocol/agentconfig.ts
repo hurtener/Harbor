@@ -1082,6 +1082,8 @@ export interface AgentConfigRemoveOAuthProviderResponse {
 export interface AgentConfigSkillSummary {
 	name: string;
 	title?: string;
+	/** Bounded human-visible excerpt of what the skill does (at most 500 runes). */
+	description?: string;
 	trigger?: string;
 	task_type?: string;
 	origin: string;
@@ -1473,6 +1475,8 @@ export interface AgentConfigUserSkillImportReview {
 	/** The CANONICAL package/skill name (the stored target-key identity). */
 	name: string;
 	title?: string;
+	/** Bounded human-visible excerpt of what the skill does (at most 500 runes). */
+	description?: string;
 	/** The planner-visible match cue. */
 	trigger: string;
 	task_type?: string;
@@ -1551,6 +1555,8 @@ export interface AgentConfigUserSkillImportReceipt {
 export interface AgentConfigUserSkillInstalledSummary {
 	name: string;
 	title?: string;
+	/** Bounded human-visible excerpt (at most 500 runes). */
+	description?: string;
 	trigger: string;
 	task_type?: string;
 	tags?: string[];

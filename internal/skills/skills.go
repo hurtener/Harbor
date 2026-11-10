@@ -112,8 +112,12 @@ type Skill struct {
 	Name string
 	// AgentID is selection metadata for an agent-owned skill. It is not an
 	// isolation principal; tenant/user/session remain the security boundary.
-	AgentID        string
-	Title          string
+	AgentID string
+	Title   string
+	// Description is the human-visible explanation of what the skill
+	// does (shown in listings and reviews), distinct from Trigger (when
+	// the planner should use it). In a SKILL.md it is the frontmatter
+	// `description` and/or the prose before the first section.
 	Description    string
 	Trigger        string
 	TaskType       string

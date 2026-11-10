@@ -44,8 +44,9 @@ var (
 	ErrSkillMDFrontmatterMissing = errors.New("skillpkg: SKILL.md frontmatter missing")
 	// ErrSkillMDMalformedYAML — SKILL.md frontmatter does not parse.
 	ErrSkillMDMalformedYAML = errors.New("skillpkg: SKILL.md frontmatter malformed")
-	// ErrSkillMDMissingTrigger — SKILL.md frontmatter has no
-	// non-empty trigger (the planner match cue is mandatory).
+	// ErrSkillMDMissingTrigger — SKILL.md frontmatter has neither a
+	// non-empty trigger nor a non-empty description to derive it from
+	// (the planner match cue is mandatory).
 	ErrSkillMDMissingTrigger = errors.New("skillpkg: SKILL.md trigger missing")
 	// ErrSkillMDEmptySteps — SKILL.md body declares no procedural
 	// steps.
@@ -118,7 +119,8 @@ func ValidateRootSkillEntries(entries []ArchiveEntry) error {
 //   - valid UTF-8 (ErrSkillMDNotUTF8 — the document is text);
 //   - YAML frontmatter fences at the very start and a closing fence
 //     (ErrSkillMDFrontmatterMissing / ErrSkillMDMalformedYAML);
-//   - the frontmatter parses and carries a non-empty `trigger`
+//   - the frontmatter parses and carries a non-empty `trigger`, or a
+//     non-empty `description` the trigger is derived from
 //     (ErrSkillMDMalformedYAML / ErrSkillMDMissingTrigger);
 //   - the body declares at least one procedural step under a
 //     `## Steps`-family heading (ErrSkillMDEmptySteps).
@@ -142,18 +144,49 @@ func ValidateSkillMarkdown(b []byte, limits MarkdownLimits) error {
 		return ErrSkillMDMalformedYAML
 	}
 	var fm struct {
-		Trigger string `yaml:"trigger"`
+		Trigger     string `yaml:"trigger"`
+		Description string `yaml:"description"`
 	}
 	if err := yaml.Unmarshal(raw, &fm); err != nil {
 		return fmt.Errorf("%w: %w", ErrSkillMDMalformedYAML, err)
 	}
-	if strings.TrimSpace(fm.Trigger) == "" {
+	if DeriveTrigger(fm.Trigger, fm.Description) == "" {
 		return ErrSkillMDMissingTrigger
 	}
 	if !bodyHasSteps(body) {
 		return ErrSkillMDEmptySteps
 	}
 	return nil
+}
+
+// DeriveTrigger returns the planner match cue of a SKILL.md document.
+// An explicit `trigger` wins verbatim. When it is blank, the trigger is
+// derived from the frontmatter `description` with every whitespace run
+// (newlines included) collapsed to one space, so a description-only
+// document (the common external SKILL.md shape) imports with a
+// deterministic single-line trigger. Returns "" when both are blank.
+func DeriveTrigger(trigger, description string) string {
+	if strings.TrimSpace(trigger) != "" {
+		return trigger
+	}
+	return strings.Join(strings.Fields(description), " ")
+}
+
+// MaxDescriptionSummaryRunes bounds the description excerpt that skill
+// listings and import reviews carry. The full description stays on the
+// stored skill.
+const MaxDescriptionSummaryRunes = 500
+
+// DescriptionSummary returns the human-visible excerpt of a skill
+// description for listings and reviews: the description verbatim when
+// it fits MaxDescriptionSummaryRunes, otherwise its first runes plus an
+// ellipsis.
+func DescriptionSummary(desc string) string {
+	r := []rune(desc)
+	if len(r) <= MaxDescriptionSummaryRunes {
+		return desc
+	}
+	return string(r[:MaxDescriptionSummaryRunes-1]) + "…"
 }
 
 // scanFrontmatterFences extracts the raw frontmatter slice (between

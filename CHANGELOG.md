@@ -17,6 +17,22 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- **Skill `description` in `SKILL.md` frontmatter.** The file importer and
+  the closed package parser (personal import, Agent-pack import, boot packs)
+  accept a frontmatter `description`. It is the skill's human-visible
+  explanation, distinct from `trigger`: its value comes first in the skill's
+  description, followed by any body prose. When `trigger` is absent it is
+  derived from the description (whitespace collapsed to one line), so common
+  external `SKILL.md` files that carry only `name` + `description` import.
+  Documents without a frontmatter `description` keep their exact package and
+  content hashes. Skill summaries (`agent_config.skills.list`,
+  `session.skills.list`, `user.skills.list`, the Agent-pack import commit,
+  the composition preview), the import review, and the installed-skill
+  summary gain an optional `description` excerpt (at most 500 runes).
+  `skill_create_draft` now asks for a short human description (D-497).
+
 ## [1.43.0] — 2026-11-10
 
 ### Added

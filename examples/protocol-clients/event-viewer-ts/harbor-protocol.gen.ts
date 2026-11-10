@@ -1186,6 +1186,7 @@ export interface AgentConfigSkillInput {
 export interface AgentConfigSkillSummary {
   name: string;
   title?: string;
+  description?: string;
   trigger?: string;
   task_type?: string;
   origin: string;
@@ -1380,6 +1381,7 @@ export interface AgentConfigUserSkillImportReceipt {
 export interface AgentConfigUserSkillImportReview {
   name: string;
   title?: string;
+  description?: string;
   trigger: string;
   task_type?: string;
   tags?: string[];
@@ -1402,6 +1404,7 @@ export interface AgentConfigUserSkillImportSupportSummary {
 export interface AgentConfigUserSkillInstalledSummary {
   name: string;
   title?: string;
+  description?: string;
   trigger: string;
   task_type?: string;
   tags?: string[];

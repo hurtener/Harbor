@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/goccy/go-yaml"
+
 	"github.com/hurtener/Harbor/internal/skills"
 )
 
@@ -38,8 +40,16 @@ func doExport(skill skills.Skill, attachments ImportArtifacts) ([]byte, error) {
 	var out bytes.Buffer
 
 	// 1. Frontmatter.
+	description := skill.Description
 	rawFM, ok := skillFrontmatterRaw(skill)
-	if !ok {
+	if ok {
+		// The verbatim frontmatter re-carries its own `description`, so
+		// only the body-prose remainder of the joined Description is
+		// emitted below (the inverse of joinDescription).
+		if fields, err := parseFrontmatter(rawFM); err == nil {
+			description = splitDescription(fields.Description, description)
+		}
+	} else {
 		// Synthesise from structured fields. Round-trip from a
 		// synthetic Skill is not byte-stable against an unrelated
 		// source — the round-trip invariant gates Import->Export
@@ -55,7 +65,7 @@ func doExport(skill skills.Skill, attachments ImportArtifacts) ([]byte, error) {
 	out.WriteByte('\n')
 
 	// 2. Description (de-substitute artifact refs).
-	descOut, err := desubstituteArtifacts(skill.Description, idToPath)
+	descOut, err := desubstituteArtifacts(description, idToPath)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +142,14 @@ func synthesiseFrontmatter(s skills.Skill) []byte {
 		if v == "" {
 			return
 		}
-		fmt.Fprintf(&b, "%s: %s\n", k, v)
+		// Marshal the scalar so a value carrying `: `, `#`, or a
+		// leading indicator (common in a trigger derived from a
+		// description) is quoted; a plain value emits unchanged.
+		out, err := yaml.Marshal(v)
+		if err != nil {
+			out = []byte(v + "\n")
+		}
+		fmt.Fprintf(&b, "%s: %s", k, out)
 	}
 	emitList := func(k string, v []string) {
 		if len(v) == 0 {

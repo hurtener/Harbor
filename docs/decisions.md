@@ -16715,3 +16715,50 @@ run-time tool or Protocol method serves support-file bytes yet, matching the
 personal import; resolution is the runtime's `ResolveAgentPackSupport`.
 
 **Cross-references:** D-411, D-422, D-456.
+
+## D-497 — Skill `description` is a first-class SKILL.md field; a missing trigger is derived from it
+
+**Date:** 2026-11-10. **Scope:** the SKILL.md frontmatter accepted by the
+file importer and the closed package parser (personal import, Agent-pack
+import, boot packs, `skill_create_draft` drafts), and additive optional
+`description` fields on the skill summary, import review and installed-skill
+Protocol shapes. No config keys, no storage change.
+
+Common external `SKILL.md` files lead with `name` + `description` and carry no
+`trigger`. The closed package frontmatter refused `description` as an unknown
+key, and the listings never showed what a skill does.
+
+- **One field, two spellings.** `skills.Skill.Description` already is the
+  human-visible explanation of the skill (the body prose before the first
+  section; the drafter's `description`). The frontmatter `description` feeds
+  the same field: its trimmed value first, then a blank line, then any body
+  prose. No second field, column or hash slot is added, so every document
+  without a frontmatter `description` keeps its exact package and content
+  hash (pinned by test). The joined value re-parses to itself as body prose,
+  so export and reimport are hash-stable; a frontmatter description with a
+  section-heading line (`##` followed by a space) is refused because it would re-parse as a section. The
+  file exporter, which re-emits the original frontmatter verbatim, strips the
+  prefix again so its byte-stable round trip holds.
+- **Trigger derivation.** `trigger` stays mandatory in the canonical model.
+  When the frontmatter `trigger` is blank, it is derived from the frontmatter
+  `description` with every whitespace run collapsed to one space
+  (`skillpkg.DeriveTrigger`); an explicit `trigger` always wins. A document
+  with neither is refused as before. Synthesized export frontmatter now
+  YAML-quotes scalars that need it, so a derived trigger containing a colon
+  followed by a space survives the round trip.
+- **Bounds.** The joined description and the derived trigger keep the
+  package text bound (2000 runes). Listings and reviews carry
+  `skillpkg.DescriptionSummary`, at most 500 runes; the full description
+  stays on the stored skill and the pack item.
+- **Wire.** `description` (string, omitempty) is added to
+  `AgentConfigSkillSummary`, `AgentConfigUserSkillImportReview` and
+  `AgentConfigUserSkillInstalledSummary`. Pack items already carried the full
+  description. Additive only; the Protocol version does not change.
+- **Drafter.** `skill_create_draft` asks the model for a required one- or
+  two-sentence human description, kept distinct from the trigger.
+
+**Not covered:** external SKILL.md files whose bodies use headings other than
+`## Steps` / `## Preconditions` / `## Failure modes` are still refused by the
+canonical body parser.
+
+**Cross-references:** D-053, D-422, D-423, D-496.
