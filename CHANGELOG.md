@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.42.1] — 2026-11-09
+
 ### Fixed
 
 - **Signed receiver MCP sessions survive downstream HTTP 401/403.** For
