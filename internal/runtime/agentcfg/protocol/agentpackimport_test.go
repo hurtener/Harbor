@@ -583,10 +583,10 @@ func TestSkillImport_DescriptionOnlySkillSurfacesDescription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("personal validate/commit: %v", err)
 	}
-	if validated.Review.Description != wantDesc || validated.Review.Trigger != wantTrigger {
+	if validated.Review.Description != wantTrigger || validated.Review.Trigger != wantTrigger {
 		t.Fatalf("personal review = %+v", validated.Review)
 	}
-	if wire := agentcfgprotocol.UserSkillImportReviewToWire(validated.Review); wire.Description != wantDesc {
+	if wire := agentcfgprotocol.UserSkillImportReviewToWire(validated.Review); wire.Description != wantTrigger {
 		t.Fatalf("wire review description = %q", wire.Description)
 	}
 	if committed.Skill.Description != wantDesc || committed.Skill.Trigger != wantTrigger {
@@ -602,11 +602,11 @@ func TestSkillImport_DescriptionOnlySkillSurfacesDescription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pack validate: %v", err)
 	}
-	if v.Review.Description != wantDesc || v.Review.Trigger != wantTrigger {
+	if v.Review.Description != wantTrigger || v.Review.Trigger != wantTrigger {
 		t.Fatalf("pack review = %+v", v.Review)
 	}
 	resp, err := fx.admin.AgentPacksImportCommit(ctx, packCommitReq(importUserA, testAgentID, v, false))
-	if err != nil || resp.Skill.Description != wantDesc {
+	if err != nil || resp.Skill.Description != wantTrigger {
 		t.Fatalf("pack commit = %+v err=%v", resp, err)
 	}
 	list, err := fx.admin.AgentPacksList(context.Background(), prototypes.AgentConfigAgentPacksListRequest{Identity: wireScope(importUserA), AgentID: testAgentID})
@@ -638,7 +638,7 @@ func TestSkillImport_AgentSkillsPackageBothDestinations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("personal validate/commit: %v", err)
 	}
-	if validated.Review.Trigger != wantTrigger || validated.Review.StepCount != 1 || len(validated.Review.RequiredTools) != 0 ||
+	if validated.Review.Description != wantTrigger || validated.Review.Trigger != wantTrigger || validated.Review.StepCount != 1 || len(validated.Review.RequiredTools) != 0 ||
 		len(validated.Review.SupportFiles) != 2 || validated.Review.SupportFiles[0].Path != "references/style.md" ||
 		validated.Review.SupportFiles[1].Path != "scripts/helper.py" || validated.Review.SupportFiles[1].Mime != "text/plain; charset=utf-8" {
 		t.Fatalf("personal review = %+v", validated.Review)
@@ -649,7 +649,7 @@ func TestSkillImport_AgentSkillsPackageBothDestinations(t *testing.T) {
 
 	fx := newPackImportFixture(t)
 	v := fx.validate(t, importUserA, agentSkillsPackage())
-	if v.Review.Trigger != wantTrigger || len(v.Review.SupportFiles) != 2 || len(v.Warnings) != 0 {
+	if v.Review.Description != wantTrigger || v.Review.Trigger != wantTrigger || len(v.Review.SupportFiles) != 2 || len(v.Warnings) != 0 {
 		t.Fatalf("pack review = %+v warnings=%v", v.Review, v.Warnings)
 	}
 	if _, err := fx.admin.AgentPacksImportCommit(importCtx(importUserA, testAgentID), packCommitReq(importUserA, testAgentID, v, false)); err != nil {

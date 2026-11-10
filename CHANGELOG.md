@@ -17,6 +17,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Skill listings and import reviews show the first human-description
+  paragraph (at most 500 runes), without appending the joined instruction
+  body. Stored descriptions, package/content hashes and `skill_get` remain
+  unchanged.
+
 ## [1.44.0] — 2026-11-10
 
 ### Added

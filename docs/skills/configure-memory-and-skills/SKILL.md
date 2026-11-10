@@ -179,6 +179,8 @@ One skill per file. Two body forms are accepted.
 
 The frontmatter `description:` is the human-visible explanation of what the skill does (shown in listings and import reviews); it comes first in the skill's description, followed by the body prose. The frontmatter `trigger:` is the planner-visible match cue: when it is absent, it is derived from `description` (whitespace collapsed to one line), and a file with neither is refused. The Agent Skills keys `license`, `compatibility`, `allowed-tools` and `metadata` are accepted as advisory and are not stored: `allowed-tools` never grants a tool.
 
+Listings and import reviews show only the first prose paragraph, capped at 500 runes; the joined instruction body stays available through `skill_get`. Without a frontmatter description, the first body prose paragraph supplies the summary (leading Markdown headings are skipped). A multi-paragraph frontmatter description is also summarized by its first paragraph: canonical packages retain the joined text, not the original frontmatter boundary.
+
 ```markdown
 ---
 name: triage-incident
