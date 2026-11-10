@@ -47,6 +47,11 @@ assert_grep_present 'MethodAgentConfigUserSkillsList Method = "agent_config.user
 assert_grep_present 'MethodAgentConfigUserSkillsDelete Method = "agent_config.user.skills.delete"' \
   internal/protocol/methods/methods.go "user skills delete method"
 
+assert_grep_present 'MethodAgentConfigUserSkillsExport Method = "agent_config.user.skills.export"' \
+  internal/protocol/methods/methods.go "user skills export method"
+assert_grep_present 'case "user/skills/export":' \
+  internal/protocol/transports/stream/agentconfig_handler.go "user/skills/export route dispatch"
+
 # --- Static: the drivers resolve the durable rung cross-session. ---
 assert_grep_present 'session = \? OR scope = \?' \
   internal/skills/drivers/localdb/localdb.go "localdb resolves user-scope rows cross-session"
@@ -88,6 +93,7 @@ assert_grep_present 'AgentConfigUserSkillsUpsertRequest' \
 UPSERT_URL="$(api_url /v1/agent_config/user/skills/upsert)"
 LIST_URL="$(api_url /v1/agent_config/user/skills/list)"
 DELETE_URL="$(api_url /v1/agent_config/user/skills/delete)"
+EXPORT_URL="$(api_url /v1/agent_config/user/skills/export)"
 
 if ! command -v curl >/dev/null 2>&1; then
   skip "phase 202: live probe — curl not available"
@@ -127,6 +133,42 @@ else
             ok "durable user skill is visible from a different session (durable-by-default)"
           else
             fail "durable user skill not visible cross-session: ${ls}"
+          fi
+          # Legacy upsert-only rows are deliberately not exportable packages.
+          legacy=$(curl -s --max-time 5 -X POST -H "${AUTH}" -H 'X-Harbor-Session: sess-B' \
+            -H 'Content-Type: application/json' \
+            -d '{"agent_id":"harbor-dev-agent","name":"durable-smoke-202"}' "${EXPORT_URL}" || true)
+          if printf '%s' "${legacy}" | jq -e '.code == "not_found"' >/dev/null 2>&1; then
+            ok "personal-skill export refuses a legacy upsert-only row"
+            # Install an actual Markdown package through reviewed import, then
+            # prove the new route returns its normal caller-owned ZIP artifact.
+            source_bytes=$(printf '%s\n' '---' 'name: export-smoke-202' 'description: Export smoke instructions' '---' '# Instructions' 'Verify portable export.' | jq -Rs '@base64')
+            uploaded=$(curl -s --max-time 5 -X POST -H "${AUTH}" -H 'X-Harbor-Session: sess-B' \
+              -H 'Content-Type: application/json' \
+              -d "{\"scope\":{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"sess-B\"},\"bytes\":${source_bytes},\"opts\":{\"filename\":\"SKILL.md\",\"mime_type\":\"text/markdown\"}}" \
+              "$(api_url /v1/control/artifacts.put)" || true)
+            source_id=$(printf '%s' "${uploaded}" | jq -r '.ref.id // ""')
+            review=$(curl -s --max-time 5 -X POST -H "${AUTH}" -H 'X-Harbor-Session: sess-B' \
+              -H 'Content-Type: application/json' \
+              -d "$(jq -nc --arg id "${source_id}" '{agent_id:"harbor-dev-agent",artifact_id:$id}')" \
+              "$(api_url /v1/agent_config/user/skills/import_validate)" || true)
+            commit_body=$(printf '%s' "${review}" | jq -c '{agent_id:"harbor-dev-agent",name:.review.name,proposal_token,reviewed_package_hash:.package_hash,expected_content_hash,replace:true}')
+            committed=$(curl -s --max-time 5 -X POST -H "${AUTH}" -H 'X-Harbor-Session: sess-B' \
+              -H 'Content-Type: application/json' -d "${commit_body}" \
+              "$(api_url /v1/agent_config/user/skills/import_commit)" || true)
+            exported=$(curl -s --max-time 5 -X POST -H "${AUTH}" -H 'X-Harbor-Session: sess-B' \
+              -H 'Content-Type: application/json' \
+              -d '{"agent_id":"harbor-dev-agent","name":"export-smoke-202"}' "${EXPORT_URL}" || true)
+            if printf '%s' "${exported}" | jq -e '.name == "export-smoke-202" and (.artifact.id | length > 0) and .artifact.mime_type == "application/zip" and .size_bytes > 0 and .artifact.size_bytes == .size_bytes and (.package_hash | startswith("v1:"))' >/dev/null 2>&1 && \
+              printf '%s' "${committed}" | jq -e '.package_hash != null' >/dev/null 2>&1; then
+              ok "claim-free export returned the installed personal package ZIP artifact"
+            else
+              fail "installed personal-skill export expected a ZIP artifact: ${exported} (commit=${committed})"
+            fi
+          elif printf '%s' "${legacy}" | jq -e '.code == "unknown_method"' >/dev/null 2>&1; then
+            skip "phase 202: personal-skill export not implemented on this build"
+          else
+            fail "legacy upsert export expected not_found: ${legacy}"
           fi
           # Delete from session B removes it for the whole (tenant, user).
           del=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H "${AUTH}" \

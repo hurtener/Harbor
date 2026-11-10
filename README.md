@@ -250,6 +250,8 @@ omit the additive fields; version and commit must be supplied together.
 - `harbor skill import <path>` / `harbor skill rm <name>` — ingest a Skills.md
   playbook into the runtime skill catalog (the same store `harbor dev` serves)
   or remove one by name.
+- Installed personal skill packages can be exported as portable ZIP artifacts through
+  [`agent_config.user.skills.export`](docs/skills/configure-memory-and-skills/SKILL.md#personal-skill-export).
 - `harbor llm providers` — list provider-neutral technical descriptors without
   secrets; add `--validate` or `--discover` with `--config` and `--provider`
   for a bounded offline/configured-account Bifrost probe (`runtime_origin=false`).

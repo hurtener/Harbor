@@ -246,6 +246,25 @@ For a caller (a Protocol client, not an operator with a shell), installing a per
 
 Authority model to rely on: identity comes from the VERIFIED context (no selectable tenant/user/session/scope — the request carries no authority fields), signed session-reach and agent-reach gates run before any artifact lookup or persistence, and the package frontmatter is CLOSED (authority-bearing fields are rejected by the importer). `required_tools` / `required_namespaces` / `required_tags` are **applicability metadata, never grants**: a requirement outside the run-visible capability snapshot is a WARNING (the injection-time filter scrubs it), and the policy snapshot is sealed into the token so a policy change between validate and commit is a typed revocation refusal. A boot-owned canonical name is read-only to this flow too, even at equal hash (see HA-66 below).
 
+### Personal skill export
+
+`agent_config.user.skills.export` (`POST /v1/agent_config/user/skills/export`)
+accepts `identity`, `agent_id`, and the canonical personal skill `name`. Like
+`user.skills.list`, it requires the verified caller and signed reach to an
+active Agent, without an admin or `agent_config:user` scope. It exports only
+that caller's durable user-scope package installed through reviewed import;
+a same-name shared, foreign, or legacy upsert-only skill is never a fallback.
+
+The response carries `artifact` (the normal `ArtifactRef`), `package_hash`,
+`name`, `size_bytes`, and `protocol_version`. Retrieve its bytes through
+`artifacts.get` or `artifacts.get_ref`. The ZIP has root `SKILL.md` and all
+package support files and can enter the normal reviewed import flow. A
+package installed from a single Markdown document exports in the same form. The
+package hash identifies package content; the artifact SHA256 identifies the
+ZIP bytes. Export writes only the caller-owned artifact, with no skill,
+membership, or revision change. Missing installed packages, including legacy upsert-only rows, return
+`not_found`.
+
 ### Draft-only authoring (HA-62) — `skill_create_draft`
 
 `skill_create_draft` is an ordinary runtime tool that turns a bounded authoring intent (plus optional revision feedback) into ONE validated, caller-scoped, resource-free `SKILL.md` **draft artifact** — `installed: false`, `state: draft`. It is deliberately non-authoritative: it writes exactly one immutable artifact under the invocation's verified run identity and has **zero mutation authority** — no skill-store upsert, no membership/revision write, no operator-pack proposal/publication, no capability registration, no tool exposure, no approval/OAuth path. Identity comes exclusively from the run context; the closed argument shape (intent + optional feedback) rejects any owner/scope/identity/persistence/publication/grant field.

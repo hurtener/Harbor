@@ -259,8 +259,7 @@ func TestE2E_WaveRuntimeHardening_RuntimeGaugesObservable(t *testing.T) {
 			ctx, q := whardSessionID(t, i)
 			for turn := range 20 {
 				ct := memory.ConversationTurn{
-					UserMessage:       fmt.Sprintf("g-turn-%02d ", turn) + strings.Repeat("u", 1500),
-					AssistantResponse: strings.Repeat("a", 1500),
+					UserMessage: fmt.Sprintf("g-turn-%02d ", turn) + strings.Repeat("u", 1500),
 				}
 				if _, err := seam.run(ctx, q, ct.UserMessage); err != nil {
 					t.Errorf("[gauge sess %d] Put: %v", i, err)
@@ -345,8 +344,7 @@ func TestE2E_WaveRuntimeHardening_RetentionNoGoroutineLeak(t *testing.T) {
 			ctx, q := whardSessionID(t, i)
 			for turn := range 15 {
 				ct := memory.ConversationTurn{
-					UserMessage:       fmt.Sprintf("r-turn-%02d ", turn) + strings.Repeat("u", 1200),
-					AssistantResponse: strings.Repeat("a", 1200),
+					UserMessage: fmt.Sprintf("r-turn-%02d ", turn) + strings.Repeat("u", 1200),
 				}
 				if _, err := seam.run(ctx, q, ct.UserMessage); err != nil {
 					t.Errorf("[retention sess %d] Put: %v", i, err)

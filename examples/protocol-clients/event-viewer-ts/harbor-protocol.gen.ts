@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:cefebcba5ba01b7098a81f4406a2e4855d50d1d6d191e0de3e97031411ddfe03";
+export const WIRE_SURFACE_DIGEST = "sha256:174ffaa4ba62b9badd3099626044fe379a4ac79aae75d8b3adcc89c48f81b375";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -66,6 +66,7 @@ export type HarborMethod =
   | "agent_config.user.rollback"
   | "agent_config.user.set_revision"
   | "agent_config.user.skills.delete"
+  | "agent_config.user.skills.export"
   | "agent_config.user.skills.import_commit"
   | "agent_config.user.skills.import_validate"
   | "agent_config.user.skills.list"
@@ -1422,6 +1423,20 @@ export interface AgentConfigUserSkillsDeleteRequest {
 
 export interface AgentConfigUserSkillsDeleteResponse {
   revision: AgentConfigRevisionView;
+  protocol_version: string;
+}
+
+export interface AgentConfigUserSkillsExportRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  name: string;
+}
+
+export interface AgentConfigUserSkillsExportResponse {
+  artifact: ArtifactRef;
+  package_hash: string;
+  name: string;
+  size_bytes: number;
   protocol_version: string;
 }
 

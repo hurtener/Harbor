@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 472 canonical Harbor Protocol wire types, generated from the single-source
+The 474 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -1611,6 +1611,28 @@ Declared in `internal/protocol/types`.
 | Wire key | Go type | Notes |
 |---|---|---|
 | `revision` | `types.AgentConfigRevisionView` — see [`AgentConfigRevisionView`](./types.md#agentconfigrevisionview) |  |
+| `protocol_version` | `string` |  |
+
+## AgentConfigUserSkillsExportRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `agent_id` | `string` |  |
+| `name` | `string` |  |
+
+## AgentConfigUserSkillsExportResponse
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `artifact` | `types.ArtifactRef` — see [`ArtifactRef`](./types.md#artifactref) |  |
+| `package_hash` | `string` |  |
+| `name` | `string` |  |
+| `size_bytes` | `int64` |  |
 | `protocol_version` | `string` |  |
 
 ## AgentConfigUserSkillsImportCommitRequest

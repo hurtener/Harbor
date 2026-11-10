@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- **Portable personal-skill export.** `agent_config.user.skills.export` exports
+  one caller-owned installed personal skill package as a ZIP artifact, including
+  its support files. It uses the same verified identity, signed Agent reach and
+  lifecycle checks as personal-skill listing. The response includes the
+  package hash and archive size; retrieve the ZIP through the normal artifact
+  API and import it through the reviewed package flow. Export leaves skill
+  state and Agent configuration unchanged (D-500).
+
 ## [1.44.0] — 2026-11-10
 
 ### Added

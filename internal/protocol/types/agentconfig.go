@@ -2045,6 +2045,26 @@ type AgentConfigUserSkillsListResponse struct {
 	ProtocolVersion string                    `json:"protocol_version"`
 }
 
+// AgentConfigUserSkillsExportRequest exports exactly one caller-owned installed
+// user-scope skill package. Identity is reconciled against the verified caller; no
+// source scope, owner, artifact destination, or arbitrary bytes are accepted.
+type AgentConfigUserSkillsExportRequest struct {
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	Name     string        `json:"name"`
+}
+
+// AgentConfigUserSkillsExportResponse returns a portable ZIP through the normal
+// caller-owned artifact surface. PackageHash identifies the canonical package;
+// the artifact SHA256 independently identifies the exported ZIP bytes.
+type AgentConfigUserSkillsExportResponse struct {
+	Artifact        ArtifactRef `json:"artifact"`
+	PackageHash     string      `json:"package_hash"`
+	Name            string      `json:"name"`
+	SizeBytes       int64       `json:"size_bytes"`
+	ProtocolVersion string      `json:"protocol_version"`
+}
+
 // AgentConfigUserSkillsUpsertRequest is the `agent_config.user.skills.upsert`
 // request — upserts a DURABLE personal skill at user scope (persists across
 // ALL of the caller's conversations). The skill scope is forced to

@@ -190,6 +190,7 @@ var CanonicalMethods = map[string]struct{}{
 	"agent_config.user.remove_oauth_mcp_capability":   {},
 	"agent_config.user.reconcile_live_profile":        {},
 	"agent_config.user.skills.list":                   {},
+	"agent_config.user.skills.export":                 {},
 	"agent_config.user.skills.upsert":                 {},
 	"agent_config.user.skills.delete":                 {},
 	"agent_config.user.skills.import_validate":        {},
@@ -520,7 +521,9 @@ var CanonicalWireTypes = map[string]string{
 	"AgentConfigUserRollbackResponse":      "types",
 	// Durable-per-user skills wire types (CLAIM-FREE).
 	"AgentConfigUserSkillsListRequest":    "types",
+	"AgentConfigUserSkillsExportRequest":  "types",
 	"AgentConfigUserSkillsListResponse":   "types",
+	"AgentConfigUserSkillsExportResponse": "types",
 	"AgentConfigUserSkillsUpsertRequest":  "types",
 	"AgentConfigUserSkillsUpsertResponse": "types",
 	"AgentConfigUserSkillsDeleteRequest":  "types",

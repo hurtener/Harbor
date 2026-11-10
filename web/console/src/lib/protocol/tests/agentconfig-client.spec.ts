@@ -203,3 +203,36 @@ describe('AgentConfig add MCP connection (92f)', () => {
 		}
 	});
 });
+
+describe('AgentConfig installed personal skill export', () => {
+	it('routes export with agent/name and the ambient identity', async () => {
+		const response = {
+			artifact: {
+				id: 'skill-export-1',
+				mime_type: 'application/zip',
+				size_bytes: 123,
+				scope: CONNECTION.identity
+			},
+			package_hash: 'v1:package-hash',
+			name: 'personal',
+			size_bytes: 123,
+			protocol_version: '0.1.0'
+		};
+		const fetchImpl = vi.fn(async () => okResponse(response));
+		const client = new HarborClient({
+			connection: { ...CONNECTION, scopes: [] },
+			fetchImpl
+		});
+		const exported = await client.agentConfig.userSkillsExport('a1', 'personal');
+		const [url, init] = call(fetchImpl);
+		expect(url).toBe('http://127.0.0.1:18080/v1/agent_config/user/skills/export');
+		expect(init.method).toBe('POST');
+		expect(JSON.parse(init.body as string)).toEqual({
+			agent_id: 'a1',
+			name: 'personal',
+			identity: CONNECTION.identity
+		});
+		expect(exported.artifact.id).toBe(response.artifact.id);
+		expect(exported.package_hash).toBe(response.package_hash);
+	});
+});

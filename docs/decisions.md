@@ -16894,3 +16894,26 @@ dialect MIME such as `text/x-python`.
 text-class, empty-text, schema or basename-matched files.
 
 **Cross-references:** D-422, D-496, D-498.
+
+## D-500 — Personal-skill export returns a portable caller-owned artifact
+
+**Date:** 2026-11-10
+
+**Decision.** `agent_config.user.skills.export` accepts the verified caller's
+identity assertion, effective `agent_id`, and canonical `name`. It uses the
+same claim-free authorization tier, signed Agent reach, and active lifecycle
+requirements as `user.skills.list`. Only caller-owned `ScopeUser` packages
+installed through reviewed import are eligible; shared, session, foreign, and legacy upsert-only rows never
+substitute.
+
+The existing personal import service exports the installed package through
+the production importer/exporter, preserving `SKILL.md`, support-file bytes,
+and package hash. A package installed from a single Markdown document uses
+the same portable form. The response is `{artifact, package_hash, name, size_bytes, protocol_version}`;
+`artifact` is the ordinary caller-owned `ArtifactRef`, whose SHA256 describes
+the ZIP bytes rather than the package hash. Export creates only that artifact:
+no skill, membership, revision, proposal, or sharing mutation. Existing
+`not_found` applies to missing personal skills. Import continues through the
+explicit reviewed validate/commit flow.
+
+**Cross-references:** D-345, D-422, D-499.

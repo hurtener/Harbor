@@ -172,6 +172,25 @@ opaque single-use `proposal_id`, exact `reviewed_hash`, and unchanged body. The
 server-bound proposal receipt is not forgeable from the returned hash or
 provenance string.
 
+### Personal skill export
+
+`agent_config.user.skills.export` (`POST /v1/agent_config/user/skills/export`)
+accepts `identity`, `agent_id`, and the canonical personal skill `name`. Like
+`user.skills.list`, it requires the verified caller and signed reach to an
+active Agent, without an admin or `agent_config:user` scope. It exports only
+that caller's durable user-scope package installed through reviewed import;
+a same-name shared, foreign, or legacy upsert-only skill is never a fallback.
+
+The response carries `artifact` (the normal `ArtifactRef`), `package_hash`,
+`name`, `size_bytes`, and `protocol_version`. Retrieve its bytes through
+`artifacts.get` or `artifacts.get_ref`. The ZIP has root `SKILL.md` and all
+package support files and can enter the normal reviewed import flow. A
+package installed from a single Markdown document exports in the same form. The
+package hash identifies package content; the artifact SHA256 identifies the
+ZIP bytes. Export writes only the caller-owned artifact, with no skill,
+membership, or revision change. Missing installed packages, including legacy upsert-only rows, return
+`not_found`.
+
 To install a complete `SKILL.md` package (with support files) into ONE Agent's
 shared pack, upload it with `artifacts.put`, then call the admin-scoped
 `agent_config.agent_packs.import_validate` (`agent_id`, `artifact_id`). It

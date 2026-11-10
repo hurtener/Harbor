@@ -58,7 +58,7 @@ const (
 //   - font/ttf, font/otf, font/woff, font/woff2 — binary signatures
 //     with a minimum header-size check.
 //
-// v1.44 adds the bounded TEXT class (D-499): common script, source,
+// v1.44 adds the bounded TEXT class: common script, source,
 // data and template extensions (py, sh, js, ts, sql, yaml, csv, html,
 // jinja, ...) are recorded as text/plain; charset=utf-8 and pass only
 // the shared text check (valid UTF-8, no NUL byte, not blank). They

@@ -14,7 +14,7 @@ assert_grep_present 'const AgentReachClaim = "agent_reach"' internal/protocol/au
 # The closed agent-config reach matrix remains load-bearing after HA-61.
 # Historical user ListRevisions/Diff and HA-66 composition preview are
 # reach-only: all preserve/read state without bootstrapping lifecycle. The
-# other sixteen current, mutating, and skill doors MUST perform signed reach
+# other current, mutating, and skill doors MUST perform signed reach
 # before lifecycle lookup through the helper. Named entries reject an added,
 # removed, or reclassified route rather than accepting a numeric bump.
 AGENTCONFIG_HANDLER='internal/protocol/transports/stream/agentconfig_handler.go'
@@ -36,6 +36,7 @@ declare -a P232_LIFECYCLE_REACH_METHODS=(
     MethodAgentConfigUserRemoveOAuthMCPCapability
     MethodAgentConfigUserReconcileLiveProfile
     MethodAgentConfigUserSkillsList
+    MethodAgentConfigUserSkillsExport
     MethodAgentConfigUserSkillsUpsert
     MethodAgentConfigUserSkillsDelete
     MethodAgentConfigUserSkillsImportValidate

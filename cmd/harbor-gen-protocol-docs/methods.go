@@ -719,6 +719,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigUserSkillsListRequest", Response: "AgentConfigUserSkillsListResponse",
 			Auth: sessionSafeNote,
 		},
+		methods.MethodAgentConfigUserSkillsExport: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserSkillsExport),
+			Mutates: true,
+			Request: "AgentConfigUserSkillsExportRequest", Response: "AgentConfigUserSkillsExportResponse",
+			Auth: sessionSafeNote + "; signed reach to the target agent is required; creates only a caller-owned artifact",
+		},
 		methods.MethodAgentConfigUserSkillsUpsert: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserSkillsUpsert),
 			Mutates: true,

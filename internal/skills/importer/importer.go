@@ -38,7 +38,7 @@
 //   - ErrMissingTrigger          — frontmatter has neither `trigger:` nor `description:` (wraps skills.ErrInvalidSkill)
 //   - ErrEmptySteps              — body declares no step and carries no instruction prose (wraps skills.ErrInvalidSkill)
 //   - ErrUnknownSection          — a frontmatter description carries a section-heading line (a non-canonical
-//     body section is no longer an error: the body is kept as free-form instructions, D-498)
+//     body section is no longer an error: the body is kept as free-form instructions)
 //   - ErrAttachmentOutsideRoot   — relative attachment path escapes AllowedRoot
 //   - ErrInvalidAttachmentRef    — Export saw a body ref not in ImportArtifacts
 //   - ErrRoundTripDrift          — bytes.Equal(src, Export(Import(src))) failed (used in tests)
@@ -201,7 +201,7 @@ var (
 	// one of {Steps, Preconditions, Failure modes} where only a
 	// canonical section can stand: the canonical grammar's internal
 	// rejection, and a frontmatter description carrying a heading
-	// line. A body with such headings is imported free-form (D-498).
+	// line. A body with such headings is imported free-form.
 	ErrUnknownSection = errors.New("importer: unknown section heading")
 	// ErrAttachmentOutsideRoot — an `![alt](path)` reference
 	// resolved to a path outside AllowedRoot, or AllowedRoot is

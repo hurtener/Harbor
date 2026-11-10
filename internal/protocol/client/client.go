@@ -164,6 +164,14 @@ type Client interface {
 	Identity() types.IdentityScope
 }
 
+// UserSkillExportClient is the additive caller-owned personal-skill export
+// surface. The concrete client returned by New implements it.
+type UserSkillExportClient interface {
+	AgentConfigUserSkillsExport(context.Context, types.AgentConfigUserSkillsExportRequest) (types.AgentConfigUserSkillsExportResponse, error)
+}
+
+var _ UserSkillExportClient = (*client)(nil)
+
 // RetentionClient is the optional admin-only retention read. It is a separate
 // interface so adding it does not change the method set of Client or
 // RuntimeClient that external implementations and test doubles satisfy. The
@@ -404,6 +412,8 @@ func routeFor(method methods.Method) string {
 		return "/v1/sessions/turns/get"
 	case method == methods.MethodObservabilityQuery:
 		return "/v1/observability/query"
+	case method == methods.MethodAgentConfigUserSkillsExport:
+		return "/v1/agent_config/user/skills/export"
 	case method == methods.MethodAgentConfigUserSkillsImportValidate:
 		return "/v1/agent_config/user/skills/import_validate"
 	case method == methods.MethodAgentConfigUserSkillsImportCommit:
@@ -551,6 +561,14 @@ func (c *client) ObservabilityQuery(ctx context.Context, request types.Observabi
 	request.Identity = c.scope()
 	var out types.ObservabilityQueryResponse
 	err := c.callMethod(ctx, methods.MethodObservabilityQuery, request, &out)
+	return out, err
+}
+
+// AgentConfigUserSkillsExport exports one personal skill as a caller-owned ZIP artifact.
+func (c *client) AgentConfigUserSkillsExport(ctx context.Context, request types.AgentConfigUserSkillsExportRequest) (types.AgentConfigUserSkillsExportResponse, error) {
+	request.Identity = c.scope()
+	var out types.AgentConfigUserSkillsExportResponse
+	err := c.callMethod(ctx, methods.MethodAgentConfigUserSkillsExport, request, &out)
 	return out, err
 }
 

@@ -9,6 +9,8 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +35,7 @@ import (
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
 
@@ -47,7 +50,7 @@ type agentReachStack struct {
 	client *http.Client
 }
 
-func newAgentReachStack(t *testing.T) *agentReachStack {
+func newAgentReachStack(t *testing.T, options ...func(*config.Config)) *agentReachStack {
 	t.Helper()
 	cfg := phase110bConfig(t)
 	cfg.Skills.Driver = "localdb"
@@ -55,6 +58,9 @@ func newAgentReachStack(t *testing.T) *agentReachStack {
 	cfg.Skills.SessionPersonalCutover.Tenants = []config.SessionPersonalCutoverTenant{{
 		TenantID: devstack.DefaultDevTenant, Epoch: "agent-reach-state-only", RosterDigest: "fixture", LegacyWritersDrained: true,
 	}}
+	for _, option := range options {
+		option(cfg)
+	}
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
 		LLMConfigSnapshot: phase110bLLMSnapshot(cfg),
 		SkipRunLoop:       true,
@@ -70,6 +76,20 @@ func newAgentReachStack(t *testing.T) *agentReachStack {
 	server := httptest.NewServer(stack.Handler)
 	t.Cleanup(server.Close)
 	return &agentReachStack{stack: stack, server: server, client: server.Client()}
+}
+
+// withPersonalPackageImports enables the existing production import/export
+// assembly using a fresh test-only KEK, without enabling render admission
+// or an OAuth provider. Other signed-reach fixtures keep their original config.
+func withPersonalPackageImports(t *testing.T) func(*config.Config) {
+	t.Helper()
+	kek := make([]byte, toolauth.KEKSizeBytes)
+	if _, err := rand.Read(kek); err != nil {
+		t.Fatalf("generate import/export fixture KEK: %v", err)
+	}
+	const envName = "HARBOR_TEST_PERSONAL_SKILL_EXPORT_KEK"
+	t.Setenv(envName, hex.EncodeToString(kek))
+	return func(cfg *config.Config) { cfg.Tools.OAuthTokenKEKEnv = envName }
 }
 
 func arIdentity(session string) identity.Identity {
@@ -177,7 +197,7 @@ func arDecode[T any](t *testing.T, body []byte) T {
 	return out
 }
 
-// arConfigSnapshot serializes every state family the thirteen config routes
+// arConfigSnapshot serializes every state family the fourteen config routes
 // can mutate. Comparing snapshots around denied calls proves the reach gate
 // ran before overlay, durable revision, and skill-store side effects.
 func arConfigSnapshot(t *testing.T, s *agentReachStack, id identity.Identity, agentID string) string {
@@ -468,14 +488,14 @@ func TestE2E_AgentReach_AuthenticatedMuxMatrix(t *testing.T) {
 	})
 }
 
-// TestE2E_AgentReach_ClosedAgentConfigCensus proves all thirteen enumerated
+// TestE2E_AgentReach_ClosedAgentConfigCensus proves all fourteen enumerated
 // routes cross the authenticated mux with a valid allowed control arm, then
 // refuse excluded, absent, and empty reach without mutating any of the three
 // backing state families. Malformed reach is authentication-wide and is pinned
-// once in the start matrix above; repeating it thirteen times would only test
+// once in the start matrix above; repeating it fourteen times would only test
 // the same validator exit before route dispatch.
 func TestE2E_AgentReach_ClosedAgentConfigCensus(t *testing.T) {
-	s := newAgentReachStack(t)
+	s := newAgentReachStack(t, withPersonalPackageImports(t))
 	id := arIdentity("p232-census")
 	bootAgent := s.stack.AgentConfigID
 	allScopes := []string{"admin", string(auth.ScopeAgentConfigUser)}
@@ -515,6 +535,26 @@ func TestE2E_AgentReach_ClosedAgentConfigCensus(t *testing.T) {
 	first := setUser("phase 232 first")
 	second := setUser("phase 232 second")
 
+	// Export is a package-only read. Seed its positive control through the
+	// same reviewed import doors as a caller, independently of legacy upserts.
+	artifactScope := prototypes.ArtifactScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
+	status, raw := arPost(t, s, "/v1/control/artifacts.put", setupToken, prototypes.ArtifactsPutRequest{
+		Scope: artifactScope, Bytes: []byte("---\nname: user-package-seeded\ndescription: Signed-reach export fixture\n---\n# Instructions\nVerify reach.\n"),
+		Opts: prototypes.ArtifactsPutOpts{Filename: "SKILL.md", MimeType: "text/markdown"},
+	})
+	arAssertStatus(t, status, raw, http.StatusOK)
+	source := arDecode[prototypes.ArtifactsPutResponse](t, raw)
+	status, raw = arPost(t, s, "/v1/agent_config/user/skills/import_validate", setupToken,
+		map[string]any{"identity": arScope(id), "agent_id": bootAgent, "artifact_id": source.Ref.ID})
+	arAssertStatus(t, status, raw, http.StatusOK)
+	review := arDecode[prototypes.AgentConfigUserSkillsImportValidateResponse](t, raw)
+	status, raw = arPost(t, s, "/v1/agent_config/user/skills/import_commit", setupToken, map[string]any{
+		"identity": arScope(id), "agent_id": bootAgent, "name": review.Review.Name,
+		"proposal_token": review.ProposalToken, "reviewed_package_hash": review.PackageHash,
+		"expected_content_hash": review.ExpectedContentHash,
+	})
+	arAssertStatus(t, status, raw, http.StatusOK)
+
 	type row struct {
 		path   string
 		scopes []string
@@ -538,11 +578,12 @@ func TestE2E_AgentReach_ClosedAgentConfigCensus(t *testing.T) {
 			"revision_id": first.Revision.RevisionID,
 		}},
 		{path: "/v1/agent_config/user/skills/list", body: map[string]any{}},
+		{path: "/v1/agent_config/user/skills/export", body: map[string]any{"name": "user-package-seeded"}},
 		{path: "/v1/agent_config/user/skills/upsert", body: map[string]any{"skill": skill("user-matrix-upsert")}},
 		{path: "/v1/agent_config/user/skills/delete", body: map[string]any{"name": "user-seeded"}},
 	}
-	if len(rows) != 13 {
-		t.Fatalf("closed census has %d rows, want 13", len(rows))
+	if len(rows) != 14 {
+		t.Fatalf("closed census has %d rows, want 14", len(rows))
 	}
 	for _, tc := range rows {
 		t.Run(tc.path, func(t *testing.T) {
