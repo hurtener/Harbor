@@ -152,7 +152,7 @@ func TestUserSkills_ListCarriesBoundedDescription(t *testing.T) {
 	if _, err := s.UserSkillsUpsert(ctx, prototypes.AgentConfigUserSkillsUpsertRequest{
 		Identity: id, AgentID: testAgentID,
 		Skill: prototypes.AgentConfigSkillInput{
-			Name: "described", Description: "Explains the thing.", Trigger: "when asked", Steps: []string{"do it"}, Origin: "generated",
+			Name: "described", Description: "Explains the thing.\n\n# Instructions\nDo the thing.", Trigger: "when asked", Steps: []string{"do it"}, Origin: "generated",
 		},
 	}); err != nil {
 		t.Fatalf("user upsert: %v", err)

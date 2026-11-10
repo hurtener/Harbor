@@ -41,6 +41,9 @@ func TestImportPackageMarkdown_FrontmatterDescription(t *testing.T) {
 		if ingest.Skill.Trigger != wantTrigger || ingest.Package.Skill.Trigger != wantTrigger {
 			t.Fatalf("trigger = %q / %q, want %q", ingest.Skill.Trigger, ingest.Package.Skill.Trigger, wantTrigger)
 		}
+		if got := skillpkg.DescriptionSummary(ingest.Skill.Description); got != wantTrigger {
+			t.Fatalf("summary = %q, want frontmatter description %q", got, wantTrigger)
+		}
 		wantDesc := wantTrigger + "\n\n# Summarize notes\n\nKeep the summary short."
 		if ingest.Skill.Description != wantDesc || ingest.Package.Skill.Description != wantDesc {
 			t.Fatalf("description = %q, want %q", ingest.Skill.Description, wantDesc)
@@ -77,6 +80,9 @@ func TestImportPackageMarkdown_FrontmatterDescription(t *testing.T) {
 		}
 		if ingest.Skill.Description != "Explains things.\nTwice." {
 			t.Fatalf("description = %q", ingest.Skill.Description)
+		}
+		if got := skillpkg.DescriptionSummary(ingest.Skill.Description); got != "Explains things.\nTwice." {
+			t.Fatalf("multiline summary = %q", got)
 		}
 		// The ZIP path shares the same closed parse.
 		if _, err := imp.ImportPackage(ctx, importer.PackageSource{
@@ -146,6 +152,9 @@ func TestImportPackage_HashStableWithoutDescription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportPackageMarkdown(plain): %v", err)
 	}
+	if got := skillpkg.DescriptionSummary(plain.Skill.Description); got != "A bound body." {
+		t.Fatalf("canonical summary = %q", got)
+	}
 	for _, c := range []struct{ name, got, want string }{
 		{"golden package hash", golden.Hash, "v1:ec9ffcf586c15b02c775b33dcb721b848190f6420116ec224aa77b30448cda8e"},
 		{"golden content hash", golden.Skill.ContentHash, "8bd606d7bfce5ffa785500b2130de56c0d0d4503a63421eada063282dd613f43"},
@@ -167,6 +176,9 @@ func TestImport_FrontmatterDescriptionRoundTrip(t *testing.T) {
 	}
 	if skill.Trigger != "Summarizes notes." || skill.Description != "Summarizes notes.\n\nKeep it short." {
 		t.Fatalf("trigger=%q description=%q", skill.Trigger, skill.Description)
+	}
+	if got := skillpkg.DescriptionSummary(skill.Description); got != "Summarizes notes." {
+		t.Fatalf("file summary = %q", got)
 	}
 	if err := skill.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
@@ -235,6 +247,9 @@ func TestImportPackage_AgentSkillsFormat(t *testing.T) {
 	const wantTrigger = "Drafts release notes from a list of merged changes. Use when the user asks for release notes or a changelog entry."
 	if sk.Name != "release-notes" || sk.Trigger != wantTrigger {
 		t.Fatalf("name=%q trigger=%q", sk.Name, sk.Trigger)
+	}
+	if got := skillpkg.DescriptionSummary(sk.Description); got != wantTrigger {
+		t.Fatalf("Agent Skills summary = %q", got)
 	}
 	_, body, ok := strings.Cut(agentSkillMD, "---\n# Release notes")
 	if !ok {

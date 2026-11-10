@@ -385,32 +385,47 @@ func TestGetHandler_DefaultBudgetFitsFreeFormSkill(t *testing.T) {
 func TestListAndSearch_SummarizeDescription(t *testing.T) {
 	t.Parallel()
 
-	bus := newTestBus(t)
 	long := strings.Repeat("instructions ", 1000)
-	store := newFakeStore(bus,
-		skills.Skill{Name: "free-form", Trigger: "release notes", Description: long, Steps: []string{"s"}, Origin: skills.OriginPack, Scope: skills.ScopeProject},
-	)
-	catalog := tcat.NewCatalog()
-	if err := skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	ctx := ctxWithIdentity(t)
-	want := skillpkg.DescriptionSummary(long)
+	for _, tc := range []struct{ name, description, summary string }{
+		{"bounded", long, skillpkg.DescriptionSummary(long)},
+		{"frontmatter", "Plans events.\n\n# Event planning\nRead the identity.", "Plans events."},
+		{"canonical", "Plans events.", "Plans events."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := newTestBus(t)
+			store := newFakeStore(bus,
+				skills.Skill{Name: "free-form", Trigger: "release notes", Description: tc.description, Steps: []string{"s"}, Origin: skills.OriginPack, Scope: skills.ScopeProject},
+			)
+			catalog := tcat.NewCatalog()
+			if err := skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			ctx := ctxWithIdentity(t)
 
-	list, _ := catalog.Resolve(skilltools.ToolNameSkillList)
-	res, err := list.Invoke(ctx, mustMarshal(t, skilltools.ListArgs{}))
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if got := unmarshalListResult(t, res); len(got.Skills) != 1 || got.Skills[0].Description != want {
-		t.Fatalf("list description not summarized: %d skills", len(got.Skills))
-	}
-	search, _ := catalog.Resolve(skilltools.ToolNameSkillSearch)
-	res, err = search.Invoke(ctx, mustMarshal(t, skilltools.SearchArgs{Query: "release", Limit: 5}))
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-	if got := unmarshalSearchResult(t, res); len(got.Skills) != 1 || got.Skills[0].Skill.Description != want {
-		t.Fatalf("search description not summarized: %d skills", len(got.Skills))
+			list, _ := catalog.Resolve(skilltools.ToolNameSkillList)
+			res, err := list.Invoke(ctx, mustMarshal(t, skilltools.ListArgs{}))
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if got := unmarshalListResult(t, res); len(got.Skills) != 1 || got.Skills[0].Description != tc.summary {
+				t.Fatalf("list description not summarized: %+v", got.Skills)
+			}
+			search, _ := catalog.Resolve(skilltools.ToolNameSkillSearch)
+			res, err = search.Invoke(ctx, mustMarshal(t, skilltools.SearchArgs{Query: "release", Limit: 5}))
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+			if got := unmarshalSearchResult(t, res); len(got.Skills) != 1 || got.Skills[0].Skill.Description != tc.summary {
+				t.Fatalf("search description not summarized: %+v", got.Skills)
+			}
+			get, _ := catalog.Resolve(skilltools.ToolNameSkillGet)
+			res, err = get.Invoke(ctx, mustMarshal(t, skilltools.GetArgs{Names: []string{"free-form"}}))
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if got := unmarshalGetResult(t, res); len(got.Skills) != 1 || got.Skills[0].Description != tc.description {
+				t.Fatalf("get description changed: %+v", got.Skills)
+			}
+		})
 	}
 }

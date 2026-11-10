@@ -259,11 +259,28 @@ func UnmarshalFrontmatter(raw []byte, v any, opts ...yaml.DecodeOption) error {
 // stored skill.
 const MaxDescriptionSummaryRunes = 500
 
-// DescriptionSummary returns the human-visible excerpt of a skill
-// description for listings and reviews: the description verbatim when
-// it fits MaxDescriptionSummaryRunes, otherwise its first runes plus an
-// ellipsis.
+// DescriptionSummary returns the first prose paragraph for listings and
+// reviews, bounded to MaxDescriptionSummaryRunes. Importers place the
+// frontmatter description before a blank line and the instruction body,
+// so the body must not be included merely because it fits the rune bound.
+// Leading Markdown headings are skipped for skills without a description.
+// The stored description and its hashes are never changed.
 func DescriptionSummary(desc string) string {
+	var paragraph []string
+	for _, line := range strings.Split(strings.ReplaceAll(desc, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		text := strings.TrimLeft(trimmed, "#")
+		hashes := len(trimmed) - len(text)
+		heading := hashes > 0 && hashes <= 6 && (text == "" || strings.HasPrefix(text, " ") || strings.HasPrefix(text, "\t"))
+		if trimmed == "" || heading {
+			if len(paragraph) > 0 {
+				break
+			}
+			continue
+		}
+		paragraph = append(paragraph, line)
+	}
+	desc = strings.TrimSpace(strings.Join(paragraph, "\n"))
 	r := []rune(desc)
 	if len(r) <= MaxDescriptionSummaryRunes {
 		return desc
