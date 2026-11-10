@@ -17,7 +17,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-## [1.42.1] — 2026-11-09
+## [1.42.2] — 2026-11-10
 
 ### Fixed
 
