@@ -63,6 +63,34 @@ func skillExportMutationCounts(fx *importFixture) [10]int {
 	return [10]int{put, upsert, del, delAgent, delInstalled, restore, save, saveIf, deleteIf, deleteState}
 }
 
+func TestUserSkillExport_RoundTrip_MultilineMetadata(t *testing.T) {
+	for _, field := range []string{"tags", "required_tools", "required_namespaces", "required_tags"} {
+		t.Run(field, func(t *testing.T) {
+			fx := newImportFixture(t)
+			ctx := importCtx(importUserA, testAgentID)
+			md := fmt.Sprintf("---\nname: demo-skill\ntrigger: test\n%s:\n  - before\n  - |-\n    first line\n    second line\n  - 'after: value'\n---\n## Steps\n- Do the work.\n", field)
+			review, _, err := fx.validateCommit(t, importUserA, map[string]string{"SKILL.md": md}, false)
+			if err != nil {
+				t.Fatalf("install source: %v", err)
+			}
+			exported, err := fx.svc.Export(ctx, exportRequest(testAgentID, "demo-skill"))
+			if err != nil {
+				t.Fatalf("export multiline %s: %v", field, err)
+			}
+			if exported.PackageHash != review.PackageHash {
+				t.Fatalf("export hash=%q want=%q", exported.PackageHash, review.PackageHash)
+			}
+			reimported, err := fx.svc.Validate(ctx, fx.validateReq(exported.Artifact.ID))
+			if err != nil {
+				t.Fatalf("reimport multiline %s: %v", field, err)
+			}
+			if reimported.PackageHash != review.PackageHash {
+				t.Fatalf("reimport hash=%q want=%q", reimported.PackageHash, review.PackageHash)
+			}
+		})
+	}
+}
+
 func TestUserSkillExport_RoundTrip_SupportsAndMarkdownOnly(t *testing.T) {
 	for _, markdownOnly := range []bool{false, true} {
 		t.Run(fmt.Sprintf("markdown_only=%t", markdownOnly), func(t *testing.T) {

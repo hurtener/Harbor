@@ -158,7 +158,9 @@ func synthesiseFrontmatter(s skills.Skill) []byte {
 		}
 		fmt.Fprintf(&b, "%s:\n", k)
 		for _, item := range v {
-			fmt.Fprintf(&b, "  - %s", yamlScalar(item))
+			// Scalar continuation lines must also nest beneath the sequence.
+			scalar := strings.TrimSuffix(yamlScalar(item), "\n")
+			fmt.Fprintf(&b, "  - %s\n", strings.ReplaceAll(scalar, "\n", "\n  "))
 		}
 	}
 	emitStr("name", s.Name)
