@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.43.0] — 2026-11-10
+
 ### Added
 
 - **Skill-package import into an Agent's shared pack.** Two admin-scoped
@@ -52,6 +54,11 @@ Two versions move independently in Harbor (RFC §5.3):
   Reconnects reuse the first connect's verified binding through the new
   `identity.CarryVerified`, which only copies an already-verified value; the
   body-scope minting gate passes again.
+- **Preflight structural guards match the shipped surface.** The census
+  checks count the two agent-pack import handlers, routes and CAS carriers and
+  the two downstream-MCP error codes; stale checks follow the v1.39.0 catalog
+  view and the owner-scoped catalog deregistration. The durable fleet-window
+  integrity warning labels its reader `fleet window`.
 
 ## [1.42.2] — 2026-11-10
 

@@ -18,7 +18,7 @@ assert_grep_present 'MethodAgentConfigAgentPacksPropose Method = "agent_config\.
     'phase 237: canonical agent-pack propose method is declared'
 assert_grep_present 'MethodAgentConfigAgentPacksCommit Method = "agent_config\.agent_packs\.commit"' "${METHODS_GO}" \
     'phase 237: canonical agent-pack commit method is declared'
-AGENT_PACK_HANDLERS=(List Inspect Copy Upsert Remove Propose Commit)
+AGENT_PACK_HANDLERS=(List Inspect Copy Upsert Remove Propose Commit ImportValidate ImportCommit)
 EXPECTED_AGENT_PACK_HANDLERS="${#AGENT_PACK_HANDLERS[@]}"
 assert_grep_count '^[[:space:]]*h\.serveAgentPacks[A-Za-z]+\(w, r, body, wireID\)' "${HANDLER_GO}" "${EXPECTED_AGENT_PACK_HANDLERS}" \
     "phase 237: transport dispatch covers all ${EXPECTED_AGENT_PACK_HANDLERS} executable agent-pack handlers"

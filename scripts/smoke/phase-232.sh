@@ -40,6 +40,8 @@ declare -a P232_LIFECYCLE_REACH_METHODS=(
     MethodAgentConfigUserSkillsDelete
     MethodAgentConfigUserSkillsImportValidate
     MethodAgentConfigUserSkillsImportCommit
+    MethodAgentConfigAgentPacksImportValidate
+    MethodAgentConfigAgentPacksImportCommit
 )
 for method in "${P232_DIRECT_REACH_METHODS[@]}"; do
     # The decode method and authorization call are intentionally separate
@@ -65,7 +67,7 @@ for method in "${P232_LIFECYCLE_REACH_METHODS[@]}"; do
 done
 assert_grep_count 'h\.authorizeAgent\(w, r, req\.AgentID\)' "${AGENTCONFIG_HANDLER}" 3 \
     'phase 232: no unclassified direct signed-reach-only agent-config route exists'
-assert_grep_count 'h\.authorizeAndEnsureBootAgent\(w, r, req\.Identity, req\.AgentID, methods\.MethodAgentConfig' "${AGENTCONFIG_HANDLER}" 16 \
+assert_grep_count 'h\.authorizeAndEnsureBootAgent\(w, r, req\.Identity, req\.AgentID, methods\.MethodAgentConfig' "${AGENTCONFIG_HANDLER}" "${#P232_LIFECYCLE_REACH_METHODS[@]}" \
     'phase 232: no unclassified signed-reach-before-lifecycle agent-config route exists'
 assert_grep_present 'func \(h \*AgentConfigHandler\) authorizeAndEnsureBootAgent' "${AGENTCONFIG_HANDLER}" \
     'phase 232: lifecycle helper remains the single signed-reach-before-lifecycle ordering seam'

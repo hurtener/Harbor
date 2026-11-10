@@ -2722,7 +2722,7 @@ func (b *bus) gatherListCandidates(ctx context.Context, q events.EventListQuery)
 				// A fleet read skips a corrupt session (reported truncated)
 				// instead of failing for everyone; the session's own reads
 				// still fail loudly.
-				b.skipCorruptSession(ctx, src.id, "events.list")
+				b.skipCorruptSession(ctx, src.id, "fleet window")
 				out = append(out, sessionCandidates{id: src.id, truncated: true})
 				continue
 			}
@@ -2731,7 +2731,7 @@ func (b *bus) gatherListCandidates(ctx context.Context, q events.EventListQuery)
 		rows, exhausted, err := b.collectBelow(ctx, &view, q.Before, q.Limit+1, match(src.id))
 		sc := sessionCandidates{id: src.id, truncated: exhausted && view.hdr.Trimmed.Count > 0}
 		if err != nil && q.Admin && errors.Is(err, ErrIndexIntegrity) {
-			b.skipCorruptSession(ctx, src.id, "events.list")
+			b.skipCorruptSession(ctx, src.id, "fleet window")
 			out = append(out, sessionCandidates{id: src.id, truncated: true})
 			continue
 		}
