@@ -389,6 +389,21 @@ const (
 	// one revision. Identity-mandatory; requires the `auth.ScopeAdmin` claim.
 	// The wire-transport route is `POST /v1/agent_config/agent_packs/commit`.
 	MethodAgentConfigAgentPacksCommit Method = "agent_config.agent_packs.commit"
+	// MethodAgentConfigAgentPacksImportValidate — admin verb: the ZERO-WRITE
+	// first phase of importing ONE artifact-backed complete skill package
+	// into ONE Agent's shared pack. Same parser, limits and review as the
+	// personal import; returns an opaque token bound to the caller, Agent,
+	// artifact and package hash plus the shared-pack composition witness.
+	// Requires the `auth.ScopeAdmin` claim and signed Agent reach. The
+	// wire-transport route is `POST /v1/agent_config/agent_packs/import_validate`.
+	MethodAgentConfigAgentPacksImportValidate Method = "agent_config.agent_packs.import_validate"
+	// MethodAgentConfigAgentPacksImportCommit — admin verb: the explicit
+	// second phase — installs exactly the reviewed package (support files
+	// as runtime-owned Agent state) and publishes one witness-bound pack
+	// revision; explicit replace, idempotent token replay. Requires the
+	// `auth.ScopeAdmin` claim and signed Agent reach. The wire-transport
+	// route is `POST /v1/agent_config/agent_packs/import_commit`.
+	MethodAgentConfigAgentPacksImportCommit Method = "agent_config.agent_packs.import_commit"
 
 	// Same-runtime organization skill-publication contract (HA-68). The
 	// organization verbs require the verified admin scope; the available,
@@ -1288,6 +1303,8 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigAgentPacksRemove:               {},
 	MethodAgentConfigAgentPacksPropose:              {},
 	MethodAgentConfigAgentPacksCommit:               {},
+	MethodAgentConfigAgentPacksImportValidate:       {},
+	MethodAgentConfigAgentPacksImportCommit:         {},
 	MethodSkillsPublicationsPublish:                 {},
 	MethodSkillsPublicationsList:                    {},
 	MethodSkillsPublicationsGet:                     {},
@@ -1609,6 +1626,8 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	MethodAgentConfigAgentPacksRemove:           {},
 	MethodAgentConfigAgentPacksPropose:          {},
 	MethodAgentConfigAgentPacksCommit:           {},
+	MethodAgentConfigAgentPacksImportValidate:   {},
+	MethodAgentConfigAgentPacksImportCommit:     {},
 	MethodAgentConfigSetToolExposure:            {},
 	MethodAgentConfigSetPromptLayers:            {},
 	MethodAgentConfigSetExtraSystemBlocks:       {},
@@ -1739,6 +1758,8 @@ var canonicalAgentConfigAdminMethods = map[Method]struct{}{
 	MethodAgentConfigAgentPacksRemove:           {},
 	MethodAgentConfigAgentPacksPropose:          {},
 	MethodAgentConfigAgentPacksCommit:           {},
+	MethodAgentConfigAgentPacksImportValidate:   {},
+	MethodAgentConfigAgentPacksImportCommit:     {},
 	MethodAgentConfigSetToolExposure:            {},
 	MethodAgentConfigSetPromptLayers:            {},
 	MethodAgentConfigSetExtraSystemBlocks:       {},

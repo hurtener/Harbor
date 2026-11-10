@@ -921,6 +921,10 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			agentcfgprotocol.WithBootPackReader(in.BootPackReader),
 			agentcfgprotocol.WithAgentPackCatalog(in.Catalog),
 			agentcfgprotocol.WithAgentPackGrantedScopes(append([]string(nil), cfg.Tools.GrantedScopes...)),
+			// The shared Agent-pack package import reuses the personal
+			// import core (parser, limits, token, revalidation); nil keeps
+			// agent_packs.import_* answering 501.
+			agentcfgprotocol.WithPackageImport(in.UserSkillImportService),
 		}
 		if in.AgentPackLLM != nil {
 			proposer, proposerErr := packproposer.New(in.AgentPackLLM)

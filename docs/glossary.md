@@ -1994,6 +1994,13 @@ identity and effective agent, surviving staging cleanup and restart. It is
 addressed by immutable `skillpkg://` references, never by the staging
 session's artifact identity. D-422.
 
+**Package-backed pack item** — a shared Agent pack item installed by
+`agent_config.agent_packs.import_commit`. It carries a read-only
+`package_hash`; the package and its support files are stored as
+runtime-owned installed-package state at the Agent's control-plane key, not
+under any user, and resolve for every caller with signed reach to the Agent.
+Removing or replacing the item releases the package. D-496.
+
 **`PackageHash`** — a new versioned canonical digest over the normalized
 logical semantic body (support-file references as package-relative logical
 paths or digest placeholders) plus, per support file in canonical path order,

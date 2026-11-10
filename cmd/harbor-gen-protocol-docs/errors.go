@@ -171,19 +171,19 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		Retry: "No — supply exactly one authority.",
 	},
 	protoerrors.CodeSkillImportProposalInvalid: {
-		When:  "An `agent_config.user.skills.import_commit` echoed a proposal token that is unknown, consumed, foreign, or stale (oversize, malformed base64, failed authentication, unknown schema, malformed claims, or bound to different server-side inputs).",
-		Retry: "Yes — re-run `agent_config.user.skills.import_validate` for a fresh proposal and echo it exactly.",
+		When:  "An `agent_config.user.skills.import_commit` or `agent_config.agent_packs.import_commit` echoed a proposal token that is unknown, consumed, foreign, or stale (oversize, malformed base64, failed authentication, unknown schema, malformed claims, a different import destination, or bound to different server-side inputs).",
+		Retry: "Yes — re-run the matching `import_validate` for a fresh proposal and echo it exactly.",
 	},
 	protoerrors.CodeSkillImportProposalExpired: {
 		When:  "The echoed import proposal token's review window elapsed before the explicit commit.",
-		Retry: "Yes — re-run `agent_config.user.skills.import_validate` for a fresh proposal.",
+		Retry: "Yes — re-run the matching `import_validate` for a fresh proposal.",
 	},
 	protoerrors.CodeSkillImportPackageInvalid: {
 		When:  "The referenced artifact is not a valid complete skill package (archive / path / MIME / SKILL.md / support-ref / frontmatter violations, including authority-bearing frontmatter). The request envelope was well formed; the package was not.",
 		Retry: "No — fix the package and re-upload, then re-validate.",
 	},
 	protoerrors.CodeSkillImportReplaceRequired: {
-		When:  "A different package already wins the target canonical key and the commit did not carry explicit replacement consent.",
+		When:  "A different package (or, for a shared Agent pack, an existing pack item of the same name) already wins the target canonical key and the commit did not carry explicit replacement consent.",
 		Retry: "Yes — re-review the existing winner and commit again with `replace: true`.",
 	},
 	protoerrors.CodeQueryBudgetExceeded: {

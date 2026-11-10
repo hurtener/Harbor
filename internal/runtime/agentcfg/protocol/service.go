@@ -224,6 +224,9 @@ type Service struct {
 	// only on the interface.
 	agentPackProposer  AgentPackProposer
 	agentPackProposals state.StateStore
+	// packageImport is the shared skill-package import core backing
+	// `agent_packs.import_*`. Optional — nil ⇒ ErrAgentPackImportUnavailable.
+	packageImport *UserSkillImportService
 	// agentPackBoot is the frozen boot-pack reader used by the generic
 	// inspect/copy port. The wire handler still owns reach and admin checks;
 	// this reader only supplies the immutable boot layer for composition.

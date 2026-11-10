@@ -293,6 +293,10 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveAgentPacksPropose(w, r, body, wireID)
 	case "agent_packs/commit":
 		h.serveAgentPacksCommit(w, r, body, wireID)
+	case "agent_packs/import_validate":
+		h.serveAgentPacksImportValidate(w, r, body, wireID)
+	case "agent_packs/import_commit":
+		h.serveAgentPacksImportCommit(w, r, body, wireID)
 	case "session/set_user_prompt":
 		h.serveSessionSetUserPrompt(w, r, body, wireID)
 	case "session/set_source_disables":
@@ -900,6 +904,50 @@ func (h *AgentConfigHandler) serveAgentPacksCommit(w http.ResponseWriter, r *htt
 	writeAgentConfigJSON(w, r, resp, h.logger)
 }
 
+// serveAgentPacksImportValidate serves the ZERO-WRITE first phase of the
+// shared Agent-pack package import (admin tier + signed Agent reach).
+func (h *AgentConfigHandler) serveAgentPacksImportValidate(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAgentPacksImportValidateRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAgentPacksImportValidate) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigAgentPacksImportValidate) {
+		return
+	}
+	resp, err := h.service.AgentPacksImportValidate(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigAgentPacksImportValidate, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
+// serveAgentPacksImportCommit serves the explicit second phase: exactly the
+// reviewed package lands in the Agent's shared pack, replay-safe.
+func (h *AgentConfigHandler) serveAgentPacksImportCommit(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigAgentPacksImportCommitRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigAgentPacksImportCommit) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigAgentPacksImportCommit) {
+		return
+	}
+	resp, err := h.service.AgentPacksImportCommit(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigAgentPacksImportCommit, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
 // --- session-safe (non-admin) routes ---
 
 func (h *AgentConfigHandler) serveSessionSetUserPrompt(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
@@ -1319,40 +1367,14 @@ func (h *AgentConfigHandler) serveUserSkillsImportCommit(w http.ResponseWriter, 
 // ledger key, no raw artifact content ever crosses).
 func projectUserSkillImportValidate(resp agentcfgprotocol.UserSkillImportValidateResponse) prototypes.AgentConfigUserSkillsImportValidateResponse {
 	return prototypes.AgentConfigUserSkillsImportValidateResponse{
-		ProposalToken: resp.ProposalToken,
-		Review: prototypes.AgentConfigUserSkillImportReview{
-			Name:          resp.Review.Name,
-			Title:         resp.Review.Title,
-			Trigger:       resp.Review.Trigger,
-			TaskType:      resp.Review.TaskType,
-			Tags:          append([]string(nil), resp.Review.Tags...),
-			StepCount:     resp.Review.StepCount,
-			RequiredTools: append([]string(nil), resp.Review.RequiredTools...),
-			RequiredNS:    append([]string(nil), resp.Review.RequiredNS...),
-			RequiredTags:  append([]string(nil), resp.Review.RequiredTags...),
-			SupportFiles:  projectSupportSummaries(resp.Review.SupportFiles),
-			ContentHash:   resp.Review.ContentHash,
-			PackageHash:   resp.Review.PackageHash,
-		},
+		ProposalToken:       resp.ProposalToken,
+		Review:              agentcfgprotocol.UserSkillImportReviewToWire(resp.Review),
 		Warnings:            append([]string(nil), resp.Warnings...),
 		PackageHash:         resp.PackageHash,
 		ExpectedContentHash: resp.ExpectedContentHash,
 		ExpiresAt:           resp.ExpiresAt,
 		ProtocolVersion:     prototypes.ProtocolVersion,
 	}
-}
-
-func projectSupportSummaries(in []agentcfgprotocol.UserSkillImportSupportSummary) []prototypes.AgentConfigUserSkillImportSupportSummary {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]prototypes.AgentConfigUserSkillImportSupportSummary, 0, len(in))
-	for _, s := range in {
-		out = append(out, prototypes.AgentConfigUserSkillImportSupportSummary{
-			Path: s.Path, Mime: s.Mime, Size: s.Size, Digest: s.Digest,
-		})
-	}
-	return out
 }
 
 // projectUserSkillImportCommit maps the import service's commit outcome
@@ -1706,6 +1728,8 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrAgentPackProposalUnavailable),
 		errors.Is(err, agentcfgprotocol.ErrAgentPackProposeUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented, m + ": agent pack proposal service is not wired"
+	case errors.Is(err, agentcfgprotocol.ErrAgentPackImportUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented, m + ": agent pack package import is not wired on this runtime"
 	case errors.Is(err, agentcfgprotocol.ErrAgentPackNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound, m + ": " + err.Error()
 	case errors.Is(err, agentcfgprotocol.ErrCoordinatorUnavailable):

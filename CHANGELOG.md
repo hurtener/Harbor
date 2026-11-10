@@ -17,6 +17,24 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- **Skill-package import into an Agent's shared pack.** Two admin-scoped
+  Protocol methods, `agent_config.agent_packs.import_validate` and
+  `agent_config.agent_packs.import_commit`, install one artifact-backed
+  `SKILL.md` package (with support files) into ONE Agent's shared pack. They
+  reuse the personal import's parser, limits, review, sealed token and fresh
+  revalidation. Validate writes nothing and returns the review plus the
+  shared-pack composition witness; the token is bound to the caller, Agent,
+  artifact, package hash and destination, and expires. Commit installs exactly
+  the reviewed package, requires `replace: true` to replace an item of the same
+  name, refuses a moved witness with `revision_conflict`, and replays the same
+  token without a second write. Support files are runtime-owned Agent state
+  readable by every caller with reach to the Agent, and are released when the
+  item is removed or replaced. Pack items gain a read-only `package_hash`.
+  `agent_packs.copy` refuses package-backed items. A package grants no tools
+  (D-496).
+
 ## [1.42.2] — 2026-11-10
 
 ### Fixed

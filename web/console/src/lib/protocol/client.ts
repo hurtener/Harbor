@@ -115,6 +115,8 @@ import type {
 	AgentConfigAgentPacksRemoveResponse,
 	AgentConfigAgentPacksProposeResponse,
 	AgentConfigAgentPacksCommitResponse,
+	AgentConfigAgentPacksImportValidateResponse,
+	AgentConfigAgentPacksImportCommitResponse,
 } from './agentconfig.js';
 import type {
 	SessionTurnsListRequest,
@@ -1435,6 +1437,30 @@ export class AgentConfigNamespace {
 	}
 	agentPacksCommit(agentId: string, proposalId: string, skill: AgentConfigAgentPackItem, reviewedHash: string, provenance: string, expectedContentHash: string, scope = 'agent'): Promise<AgentConfigAgentPacksCommitResponse> {
 		return this.#t.request('/v1/agent_config/agent_packs/commit', { agent_id: agentId, proposal_id: proposalId, skill, scope, reviewed_hash: reviewedHash, provenance, expected_content_hash: expectedContentHash });
+	}
+	/** `agent_config.agent_packs.import_validate` — ZERO-WRITE review of a
+	 * caller-owned package artifact for one Agent's shared pack. */
+	agentPacksImportValidate(agentId: string, artifactId: string): Promise<AgentConfigAgentPacksImportValidateResponse> {
+		return this.#t.request<AgentConfigAgentPacksImportValidateResponse>('/v1/agent_config/agent_packs/import_validate', { agent_id: agentId, artifact_id: artifactId });
+	}
+	/** `agent_config.agent_packs.import_commit` — install exactly the reviewed
+	 * package into the Agent's shared pack; replay-safe, explicit replace. */
+	agentPacksImportCommit(
+		agentId: string,
+		proposalToken: string,
+		name: string,
+		reviewedPackageHash: string,
+		expectedContentHash: string,
+		replace = false,
+	): Promise<AgentConfigAgentPacksImportCommitResponse> {
+		return this.#t.request<AgentConfigAgentPacksImportCommitResponse>('/v1/agent_config/agent_packs/import_commit', {
+			agent_id: agentId,
+			proposal_token: proposalToken,
+			name,
+			reviewed_package_hash: reviewedPackageHash,
+			expected_content_hash: expectedContentHash,
+			replace,
+		});
 	}
 	/** `agent_config.set_tool_exposure` — set MCP pause/resume + per-tool
 	 * policy (desired-state replace of the tool-exposure section); records a

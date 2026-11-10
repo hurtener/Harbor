@@ -505,8 +505,11 @@ type UserSkillImportCommitResponse struct {
 	Replayed bool
 }
 
-// UserSkillImportService implements the two-phase verified-caller import. It
-// is immutable after construction and safe for concurrent reuse by N
+// UserSkillImportService implements the two-phase verified-caller import. Its
+// review, token, commit-admission and revalidation steps are
+// destination-agnostic: the personal verbs below and the shared Agent-pack
+// verbs (agentpackimport.go) run the same code and differ only in where the
+// reviewed unit lands. It is immutable after construction and safe for concurrent reuse by N
 // goroutines: it holds only the injected seams, the reach gates, and a clock
 // + logger; per-call state lives in arguments, and cross-process
 // serialization rides the durable conditional primitives.
@@ -639,52 +642,99 @@ func (s *UserSkillImportService) Validate(ctx context.Context, req UserSkillImpo
 	if err != nil {
 		return UserSkillImportValidateResponse{}, err
 	}
-	if strings.TrimSpace(req.ArtifactID) == "" {
-		return UserSkillImportValidateResponse{}, fmt.Errorf("%w: artifact_id is empty", ErrUserSkillImportIdentityRequired)
-	}
-	if err := s.ensureNotRetiredImport(ctx, q, req.AgentID); err != nil {
-		return UserSkillImportValidateResponse{}, err
-	}
-
-	bytes, found, err := s.artifacts.Get(ctx, artifactScope(id), req.ArtifactID)
-	if err != nil {
-		return UserSkillImportValidateResponse{}, fmt.Errorf("user skill import: read artifact: %w", err)
-	}
-	if !found {
-		return UserSkillImportValidateResponse{}, fmt.Errorf("%w: artifact_id=%q under the caller's exact triple",
-			ErrUserSkillImportArtifactNotFound, req.ArtifactID)
-	}
-
-	ingest, err := s.importer.ImportPackage(ctx, importer.PackageSource{Archive: bytes, PathHint: req.ArtifactID})
-	if err != nil {
-		return UserSkillImportValidateResponse{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
-	}
-
-	stored := storedSkillPreview(ingest, req.AgentID)
-	unit := installedUnit(ingest, req.AgentID)
-	if err := skills.ValidateInstalledPackage(unit); err != nil {
-		return UserSkillImportValidateResponse{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
-	}
-
-	// Boot-owned canonical names are read-only to every control plane:
-	// refuse BEFORE a token exists (the commit re-checks before any
-	// write — a boot baseline wins even at equal hash).
-	if err := guardBootOwnedName(bootOwnershipFromContext(ctx), q.TenantID, req.AgentID, ingest.Package.Name); err != nil {
-		return UserSkillImportValidateResponse{}, err
-	}
-
-	policy, err := s.capability.Policy(ctx, id, req.AgentID)
+	reviewed, err := s.reviewPackage(ctx, id, q, req.AgentID, req.ArtifactID)
 	if err != nil {
 		return UserSkillImportValidateResponse{}, err
 	}
-	warnings := userSkillImportWarnings(stored, policy, req.AgentID)
-
 	expectedContentHash, err := s.expectedUserConfigHash(ctx, q, req.AgentID)
 	if err != nil {
 		return UserSkillImportValidateResponse{}, err
 	}
+	return s.issueProposal(importDestinationUser, id, req.AgentID, req.ArtifactID, reviewed, reviewed.unit.Skill, expectedContentHash)
+}
 
-	review := buildUserSkillImportReview(ingest, stored)
+// importDestination names where a reviewed package lands. It is sealed into
+// the proposal claims, so a token reviewed for one destination can never be
+// committed to another.
+type importDestination string
+
+const (
+	// importDestinationUser is the caller's durable personal skills. The
+	// empty value keeps tokens sealed before destinations existed valid.
+	importDestinationUser importDestination = ""
+	// importDestinationAgentPack is ONE Agent's shared operator pack
+	// (agent_config.agent_packs.import_*).
+	importDestinationAgentPack importDestination = "agent_pack"
+)
+
+// reviewedPackage is the shared zero-write review of ONE caller-owned package
+// artifact: the exact artifact digest/size, the canonical ingest, the
+// installed-package unit, the capability snapshot, and the non-fatal
+// applicability warnings. Every destination reviews through this one path.
+type reviewedPackage struct {
+	artifactSHA256 string
+	artifactSize   int64
+	ingest         importer.PackageIngest
+	unit           skills.InstalledPackage
+	policy         UserSkillImportPolicy
+	warnings       []string
+}
+
+// reviewPackage runs the destination-agnostic zero-write review: retirement
+// gate, the caller-owned immutable artifact read, THE production
+// importer/validator parse (archive / SKILL.md / path / symlink / duplicate /
+// size limits), the installed-unit validation, the boot-owned-name guard, and
+// the capability-policy review (warnings, never grants). Identity and reach
+// were resolved by the caller.
+func (s *UserSkillImportService) reviewPackage(ctx context.Context, id identity.Identity, q identity.Quadruple, agentID, artifactID string) (reviewedPackage, error) {
+	if strings.TrimSpace(artifactID) == "" {
+		return reviewedPackage{}, fmt.Errorf("%w: artifact_id is empty", ErrUserSkillImportIdentityRequired)
+	}
+	if err := s.ensureNotRetiredImport(ctx, q, agentID); err != nil {
+		return reviewedPackage{}, err
+	}
+	bytes, found, err := s.artifacts.Get(ctx, artifactScope(id), artifactID)
+	if err != nil {
+		return reviewedPackage{}, fmt.Errorf("skill import: read artifact: %w", err)
+	}
+	if !found {
+		return reviewedPackage{}, fmt.Errorf("%w: artifact_id=%q under the caller's exact triple",
+			ErrUserSkillImportArtifactNotFound, artifactID)
+	}
+	ingest, err := s.importer.ImportPackage(ctx, importer.PackageSource{Archive: bytes, PathHint: artifactID})
+	if err != nil {
+		return reviewedPackage{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
+	}
+	unit := installedUnit(ingest, agentID)
+	if err := skills.ValidateInstalledPackage(unit); err != nil {
+		return reviewedPackage{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
+	}
+	// Boot-owned canonical names are read-only to every control plane:
+	// refuse BEFORE a token exists (the commit re-checks before any write —
+	// a boot baseline wins even at equal hash).
+	if err := guardBootOwnedName(bootOwnershipFromContext(ctx), q.TenantID, agentID, ingest.Package.Name); err != nil {
+		return reviewedPackage{}, err
+	}
+	policy, err := s.capability.Policy(ctx, id, agentID)
+	if err != nil {
+		return reviewedPackage{}, err
+	}
+	return reviewedPackage{
+		artifactSHA256: sha256Hex(bytes),
+		artifactSize:   int64(len(bytes)),
+		ingest:         ingest,
+		unit:           unit,
+		policy:         policy,
+		warnings:       userSkillImportWarnings(unit.Skill, policy, agentID),
+	}, nil
+}
+
+// issueProposal seals the versioned claims of one reviewed package for the
+// named destination into the opaque proposal token. `stored` is the skill as
+// the destination stores it (the review's ContentHash source) and
+// `expectedContentHash` is the destination's config witness. Zero writes.
+func (s *UserSkillImportService) issueProposal(dest importDestination, id identity.Identity, agentID, artifactID string, r reviewedPackage, stored skills.Skill, expectedContentHash string) (UserSkillImportValidateResponse, error) {
+	review := buildUserSkillImportReview(r.ingest, stored)
 	now := s.now().UTC()
 	nonce, err := newUserSkillImportNonce()
 	if err != nil {
@@ -692,35 +742,35 @@ func (s *UserSkillImportService) Validate(ctx context.Context, req UserSkillImpo
 	}
 	claims := userSkillImportProposalClaims{
 		SchemaVersion:       userSkillImportProposalSchemaVersion,
+		Destination:         dest,
 		Nonce:               nonce,
 		IssuedAt:            now,
 		ExpiresAt:           now.Add(s.proposalTTL),
 		Actor:               id,
-		AgentID:             req.AgentID,
-		ArtifactID:          req.ArtifactID,
-		ArtifactSHA256:      sha256Hex(bytes),
-		ArtifactSizeBytes:   int64(len(bytes)),
-		Name:                ingest.Package.Name,
-		PackageHash:         ingest.Hash,
+		AgentID:             agentID,
+		ArtifactID:          artifactID,
+		ArtifactSHA256:      r.artifactSHA256,
+		ArtifactSizeBytes:   r.artifactSize,
+		Name:                r.ingest.Package.Name,
+		PackageHash:         r.ingest.Hash,
 		ContentHash:         stored.ContentHash,
 		ExpectedContentHash: expectedContentHash,
-		Policy:              policy,
-		PolicyHash:          userSkillImportPolicyHash(policy),
+		Policy:              r.policy,
+		PolicyHash:          userSkillImportPolicyHash(r.policy),
 		ArchiveLimits:       skillpkg.ArchiveLimits{}.Normalize(),
 		MarkdownLimits:      skillpkg.MarkdownLimits{}.Normalize(),
 		Review:              review,
-		Warnings:            append([]string(nil), warnings...),
+		Warnings:            append([]string(nil), r.warnings...),
 	}
 	token, err := s.sealProposalClaims(claims)
 	if err != nil {
-		return UserSkillImportValidateResponse{}, fmt.Errorf("user skill import: seal proposal claims: %w", err)
+		return UserSkillImportValidateResponse{}, fmt.Errorf("skill import: seal proposal claims: %w", err)
 	}
-
 	return UserSkillImportValidateResponse{
 		ProposalToken:       token,
 		Review:              review,
-		Warnings:            warnings,
-		PackageHash:         ingest.Hash,
+		Warnings:            append([]string(nil), r.warnings...),
+		PackageHash:         r.ingest.Hash,
 		ExpectedContentHash: expectedContentHash,
 		ExpiresAt:           claims.ExpiresAt,
 	}, nil
@@ -744,41 +794,8 @@ func (s *UserSkillImportService) Commit(ctx context.Context, req UserSkillImport
 	if err != nil {
 		return UserSkillImportCommitResponse{}, err
 	}
-	if strings.TrimSpace(req.ProposalToken) == "" {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: proposal token is empty", ErrUserSkillImportProposalInvalid)
-	}
-	if strings.TrimSpace(req.ReviewedPackageHash) == "" {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: reviewed package hash is empty", ErrUserSkillImportProposalInvalid)
-	}
-	if strings.TrimSpace(req.Name) == "" {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: reviewed name is empty", ErrUserSkillImportProposalInvalid)
-	}
-	if err := s.ensureNotRetiredImport(ctx, q, req.AgentID); err != nil {
-		return UserSkillImportCommitResponse{}, err
-	}
-
-	// Authenticate and strictly decode the sealed claims. Every failure
-	// form (oversize, malformed base64, failed AEAD authentication,
-	// unknown schema, malformed / out-of-bounds claims) is the SAME typed
-	// refusal — no oracle — and happens before any write.
-	claims, err := s.unsealProposalToken(req.ProposalToken)
+	claims, err := s.openProposal(ctx, id, q, importDestinationUser, req)
 	if err != nil {
-		return UserSkillImportCommitResponse{}, err
-	}
-	// The review window is enforced before any ledger read or write.
-	if !s.now().UTC().Before(claims.ExpiresAt) {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: the proposal token expired", ErrUserSkillImportExpired)
-	}
-	// The caller's echo must match the sealed review exactly (actor,
-	// agent, name, reviewed hash, expected config hash).
-	if err := s.verifyClaimsBindings(id, req, claims); err != nil {
-		return UserSkillImportCommitResponse{}, err
-	}
-	// A boot-declared canonical name is read-only to every control
-	// plane. The commit refuses it on EVERY path — initial commit,
-	// response-loss replay, and prepared/committing resume alike — so
-	// no token can ever land a boot-owned name (even at equal hash).
-	if err := guardBootOwnedName(bootOwnershipFromContext(ctx), q.TenantID, req.AgentID, claims.Name); err != nil {
 		return UserSkillImportCommitResponse{}, err
 	}
 
@@ -806,6 +823,92 @@ func (s *UserSkillImportService) Commit(ctx context.Context, req UserSkillImport
 	default:
 		return UserSkillImportCommitResponse{}, ErrUserSkillImportProposalInvalid
 	}
+}
+
+// openProposal is the destination-agnostic commit admission: echo
+// presence, retirement gate, strict token authentication/decoding (every
+// failure form is the SAME typed refusal — no oracle — before any write),
+// the review-window expiry, the exact echo/destination bindings, and the
+// boot-owned-name guard (on EVERY path — initial commit, replay and resume).
+func (s *UserSkillImportService) openProposal(ctx context.Context, id identity.Identity, q identity.Quadruple, dest importDestination, req UserSkillImportCommitRequest) (userSkillImportProposalClaims, error) {
+	if strings.TrimSpace(req.ProposalToken) == "" {
+		return userSkillImportProposalClaims{}, fmt.Errorf("%w: proposal token is empty", ErrUserSkillImportProposalInvalid)
+	}
+	if strings.TrimSpace(req.ReviewedPackageHash) == "" {
+		return userSkillImportProposalClaims{}, fmt.Errorf("%w: reviewed package hash is empty", ErrUserSkillImportProposalInvalid)
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		return userSkillImportProposalClaims{}, fmt.Errorf("%w: reviewed name is empty", ErrUserSkillImportProposalInvalid)
+	}
+	if err := s.ensureNotRetiredImport(ctx, q, req.AgentID); err != nil {
+		return userSkillImportProposalClaims{}, err
+	}
+	claims, err := s.unsealProposalToken(req.ProposalToken)
+	if err != nil {
+		return userSkillImportProposalClaims{}, err
+	}
+	if !s.now().UTC().Before(claims.ExpiresAt) {
+		return userSkillImportProposalClaims{}, fmt.Errorf("%w: the proposal token expired", ErrUserSkillImportExpired)
+	}
+	if claims.Destination != dest {
+		return userSkillImportProposalClaims{}, fmt.Errorf("%w: token was reviewed for a different import destination", ErrUserSkillImportProposalInvalid)
+	}
+	if err := s.verifyClaimsBindings(id, req, claims); err != nil {
+		return userSkillImportProposalClaims{}, err
+	}
+	if err := guardBootOwnedName(bootOwnershipFromContext(ctx), q.TenantID, req.AgentID, claims.Name); err != nil {
+		return userSkillImportProposalClaims{}, err
+	}
+	return claims, nil
+}
+
+// recheckPackage is the destination-agnostic fresh revalidation a commit
+// runs before ANY write: it re-resolves the exact immutable caller-owned
+// artifact, repeats THE production parse, and rechecks the reviewed package
+// hash/name, the capability snapshot, the ceiling snapshot and the
+// installed-unit invariants. It returns the exact unit to install.
+func (s *UserSkillImportService) recheckPackage(ctx context.Context, id identity.Identity, agentID string, claims userSkillImportProposalClaims) (skills.InstalledPackage, error) {
+	bytes, found, err := s.artifacts.Get(ctx, artifactScope(id), claims.ArtifactID)
+	if err != nil {
+		return skills.InstalledPackage{}, fmt.Errorf("skill import: re-read artifact: %w", err)
+	}
+	if !found {
+		return skills.InstalledPackage{}, fmt.Errorf("%w: the reviewed artifact no longer resolves under the caller's exact triple", ErrUserSkillImportArtifactNotFound)
+	}
+	if sha256Hex(bytes) != claims.ArtifactSHA256 || int64(len(bytes)) != claims.ArtifactSizeBytes {
+		return skills.InstalledPackage{}, fmt.Errorf("%w: the reviewed artifact changed after validation", ErrUserSkillImportArtifactChanged)
+	}
+	ingest, err := s.importer.ImportPackage(ctx, importer.PackageSource{Archive: bytes, PathHint: claims.ArtifactID})
+	if err != nil {
+		return skills.InstalledPackage{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
+	}
+	if ingest.Hash != claims.PackageHash {
+		return skills.InstalledPackage{}, fmt.Errorf("%w: re-parsed package hash differs from the reviewed hash (the reviewed package changed)",
+			ErrUserSkillImportHashMismatch)
+	}
+	if ingest.Package.Name != claims.Name {
+		return skills.InstalledPackage{}, fmt.Errorf("%w: re-parsed name differs from the reviewed name (the reviewed package changed)",
+			ErrUserSkillImportHashMismatch)
+	}
+	// Policy revocation: the reviewed capability snapshot must still be
+	// current.
+	policy, err := s.capability.Policy(ctx, id, agentID)
+	if err != nil {
+		return skills.InstalledPackage{}, err
+	}
+	if claims.PolicyHash == "" || userSkillImportPolicyHash(policy) != claims.PolicyHash {
+		return skills.InstalledPackage{}, fmt.Errorf("%w: the reviewed capability snapshot changed", ErrUserSkillImportPolicyRevoked)
+	}
+	// Changed configured ceilings: the effective archive/SKILL.md bounds
+	// must still equal the reviewed snapshot.
+	if err := s.verifyCeilingSnapshot(claims); err != nil {
+		return skills.InstalledPackage{}, err
+	}
+	unit := installedUnit(ingest, agentID)
+	if err := skills.ValidateInstalledPackage(unit); err != nil {
+		return skills.InstalledPackage{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
+	}
+	return unit, nil
 }
 
 // userSkillImportCommitPhase values.
@@ -857,6 +960,9 @@ func (n *userSkillImportNonce) UnmarshalJSON(b []byte) error {
 // package bytes are never duplicated into the claims.
 type userSkillImportProposalClaims struct {
 	SchemaVersion int `json:"schema_version"`
+	// Destination is where the reviewed package may land (empty = the
+	// caller's personal skills). A token never crosses destinations.
+	Destination importDestination `json:"destination,omitempty"`
 	// Nonce is the crypto-random 128-bit claims binding.
 	Nonce userSkillImportNonce `json:"nonce"`
 	// IssuedAt is when the review was sealed.
@@ -1020,6 +1126,9 @@ func unmarshalUserSkillImportProposalClaims(b []byte) (userSkillImportProposalCl
 func validateUserSkillImportProposalClaims(c userSkillImportProposalClaims) error {
 	if c.SchemaVersion != userSkillImportProposalSchemaVersion {
 		return fmt.Errorf("user skill import: unsupported claims schema version %d", c.SchemaVersion)
+	}
+	if c.Destination != importDestinationUser && c.Destination != importDestinationAgentPack {
+		return fmt.Errorf("skill import: unknown claims destination")
 	}
 	if c.Nonce == (userSkillImportNonce{}) {
 		return fmt.Errorf("user skill import: claims nonce is all-zero")
@@ -1218,40 +1327,12 @@ func (s *UserSkillImportService) verifyClaimsBindings(id identity.Identity, req 
 // absent-slot CAS creation of the "committing" marker, THE ONE atomic package
 // write, and the terminal transition to "committed".
 func (s *UserSkillImportService) commitFresh(ctx context.Context, q identity.Quadruple, id identity.Identity, req UserSkillImportCommitRequest, claims userSkillImportProposalClaims, kind string) (UserSkillImportCommitResponse, error) {
-	// Re-resolve the exact immutable caller-owned artifact and repeat the
-	// FULL validation: a moved / changed / erased source is refused before
-	// any write.
-	bytes, found, err := s.artifacts.Get(ctx, artifactScope(id), claims.ArtifactID)
-	if err != nil {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("user skill import: re-read artifact: %w", err)
-	}
-	if !found {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: the reviewed artifact no longer resolves under the caller's exact triple", ErrUserSkillImportArtifactNotFound)
-	}
-	if sha256Hex(bytes) != claims.ArtifactSHA256 || int64(len(bytes)) != claims.ArtifactSizeBytes {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: the reviewed artifact changed after validation", ErrUserSkillImportArtifactChanged)
-	}
-	ingest, err := s.importer.ImportPackage(ctx, importer.PackageSource{Archive: bytes, PathHint: claims.ArtifactID})
-	if err != nil {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
-	}
-	if ingest.Hash != claims.PackageHash {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: re-parsed package hash differs from the reviewed hash (the reviewed package changed)",
-			ErrUserSkillImportHashMismatch)
-	}
-	if ingest.Package.Name != claims.Name {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: re-parsed name differs from the reviewed name (the reviewed package changed)",
-			ErrUserSkillImportHashMismatch)
-	}
-
-	// Policy revocation: the reviewed capability snapshot must still be
-	// current.
-	policy, err := s.capability.Policy(ctx, id, req.AgentID)
+	// Repeat the FULL validation against the exact immutable caller-owned
+	// artifact: a moved / changed / erased source is refused before any
+	// write.
+	unit, err := s.recheckPackage(ctx, id, req.AgentID, claims)
 	if err != nil {
 		return UserSkillImportCommitResponse{}, err
-	}
-	if claims.PolicyHash == "" || userSkillImportPolicyHash(policy) != claims.PolicyHash {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: the reviewed capability snapshot changed", ErrUserSkillImportPolicyRevoked)
 	}
 
 	// Moved config base: the caller's user-scope revision must still carry
@@ -1262,17 +1343,6 @@ func (s *UserSkillImportService) commitFresh(ctx context.Context, q identity.Qua
 	}
 	if err := agentcfg.CheckExpectedRevision(agentcfg.SetOptions{ExpectedContentHash: claims.ExpectedContentHash}, active, hasActive); err != nil {
 		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: %w", ErrUserSkillImportConfigMoved, err)
-	}
-
-	// Changed configured ceilings: the effective archive/SKILL.md bounds
-	// must still equal the reviewed snapshot.
-	if err := s.verifyCeilingSnapshot(claims); err != nil {
-		return UserSkillImportCommitResponse{}, err
-	}
-
-	unit := installedUnit(ingest, req.AgentID)
-	if err := skills.ValidateInstalledPackage(unit); err != nil {
-		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: %w", ErrUserSkillImportPackageInvalid, err)
 	}
 
 	// Determine the exact conditional write against the CURRENT winner:
@@ -1291,7 +1361,7 @@ func (s *UserSkillImportService) commitFresh(ctx context.Context, q identity.Qua
 	// refused; its retry then resumes onto the winner's terminal state.
 	committingID := state.NewEventID()
 	committingRecord := userSkillImportCommitRecord{
-		Phase: userSkillImportPhaseCommitting, Name: ingest.Package.Name, WrittenPackageHash: ingest.Hash,
+		Phase: userSkillImportPhaseCommitting, Name: unit.Package.Name, WrittenPackageHash: unit.PackageHash,
 	}
 	committingBytes, err := marshalUserSkillImportCommitRecord(committingRecord)
 	if err != nil {
@@ -1320,7 +1390,7 @@ func (s *UserSkillImportService) commitFresh(ctx context.Context, q identity.Qua
 		}
 		return UserSkillImportCommitResponse{}, fmt.Errorf("user skill import: put installed package: %w", err)
 	}
-	if receipt.WrittenHash != ingest.Hash {
+	if receipt.WrittenHash != unit.PackageHash {
 		s.logger.ErrorContext(ctx, "user skill import: receipt hash diverged from reviewed package",
 			"receipt", receipt.WrittenHash)
 		return UserSkillImportCommitResponse{}, fmt.Errorf("%w: receipt hash diverged from the reviewed package", ErrUserSkillImportProposalInvalid)
@@ -1333,7 +1403,7 @@ func (s *UserSkillImportService) commitFresh(ctx context.Context, q identity.Qua
 	// A genuine store failure surfaces loud; a retry recognizes the
 	// terminal state via the committing marker and returns the same result.
 	committedRecord := userSkillImportCommitRecord{
-		Phase: userSkillImportPhaseCommitted, Name: ingest.Package.Name, WrittenPackageHash: ingest.Hash, Receipt: &receipt,
+		Phase: userSkillImportPhaseCommitted, Name: unit.Package.Name, WrittenPackageHash: unit.PackageHash, Receipt: &receipt,
 	}
 	committedBytes, err := marshalUserSkillImportCommitRecord(committedRecord)
 	if err != nil {

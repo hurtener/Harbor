@@ -329,6 +329,9 @@ export interface AgentConfigAgentPackItem {
 	preconditions?: string[]; failure_modes?: string[]; required_tools?: string[];
 	required_ns?: string[]; required_tags?: string[]; origin?: string; scope?: string;
 	origin_ref?: string; extra?: Record<string, string>;
+	/** Read-only versioned package hash of the package backing this item
+	 * (stamped by `agent_packs.import_commit`; refused when caller-supplied). */
+	package_hash?: string;
 }
 
 export interface AgentConfigAgentPacksInspectRequest { identity: IdentityScope; agent_id: string; }
@@ -381,6 +384,42 @@ export interface AgentConfigAgentPacksProposeResponse {
 	policy_id: string; policy_hash: string;
 }
 export interface AgentConfigAgentPacksCommitResponse { revision: AgentConfigRevisionView; skill: AgentConfigSkillSummary; hash: string; protocol_version: string; }
+
+/** `agent_config.agent_packs.import_validate` request — admin; ZERO-WRITE
+ * review of one caller-owned package artifact for ONE Agent's shared pack. */
+export interface AgentConfigAgentPacksImportValidateRequest { identity: IdentityScope; agent_id: string; artifact_id: string; }
+/** `agent_config.agent_packs.import_validate` response — the personal
+ * import's review shape plus the shared-pack composition witness
+ * (`expected_content_hash`, "-" when the Agent has no revision). */
+export interface AgentConfigAgentPacksImportValidateResponse {
+	proposal_token: string;
+	review: AgentConfigUserSkillImportReview;
+	warnings?: string[];
+	package_hash: string;
+	expected_content_hash: string;
+	expires_at: string;
+	protocol_version: string;
+}
+/** `agent_config.agent_packs.import_commit` request — admin; explicit
+ * replace for an existing item of the same name. */
+export interface AgentConfigAgentPacksImportCommitRequest {
+	identity: IdentityScope;
+	proposal_token: string;
+	agent_id: string;
+	name: string;
+	reviewed_package_hash: string;
+	expected_content_hash: string;
+	replace?: boolean;
+}
+/** `agent_config.agent_packs.import_commit` response — `replayed` is true
+ * when a retry of the same token recognized the landed commit. */
+export interface AgentConfigAgentPacksImportCommitResponse {
+	revision: AgentConfigRevisionView;
+	skill: AgentConfigSkillSummary;
+	package_hash: string;
+	replayed: boolean;
+	protocol_version: string;
+}
 
 /** One immutable config revision. Mirrors `types.AgentConfigRevisionView`. */
 export interface AgentConfigRevisionView {

@@ -16647,3 +16647,56 @@ typing), so the runtime accepts a `prepare` hint and does that work early.
   durations). `turn.pre_model` gains `prepared` and `provider_route_cached`.
 
 **Cross-references:** D-450, D-491.
+
+## D-496 — Skill-package import into an Agent's shared pack reuses the personal import core
+
+**Date:** 2026-11-09. **Scope:** Protocol methods
+`agent_config.agent_packs.import_validate` and
+`agent_config.agent_packs.import_commit` (admin tier, signed Agent reach), the
+read-only `package_hash` on pack items, and the HA-61 import core. No config
+keys.
+
+A downstream console needs an operator to install one artifact-backed
+`SKILL.md` package, support files included, into ONE Agent's shared pack
+(D-411) so every authorized user of that Agent gets it. The personal import
+(HA-61) only lands in the caller's own skills, and the pack verbs (D-411,
+D-456) accept no package.
+
+- **One import core, two destinations.** The HA-61 service is split into
+  destination-agnostic steps: review (artifact read, the one production
+  parser and its limits, installed-unit validation, boot-owned guard,
+  capability warnings), token issue, commit admission (token authentication,
+  expiry, echo bindings) and fresh revalidation. The personal verbs and the
+  pack verbs call the same steps. The sealed claims carry the destination
+  (empty means personal, so tokens sealed before this change stay valid); a
+  token never crosses destinations, Agents, actors or tenants.
+- **Storage.** The package unit is stored through the existing
+  installed-package SkillStore contract at the Agent's control-plane key
+  `agentcfg.AgentScope(tenant, agent)`, not under any user. Membership is the
+  agent-scope revision: the pack item carries the server-stamped
+  `package_hash` (refused when caller-supplied). Support files resolve for
+  any caller with signed reach to the Agent, and only for the package the
+  active item references.
+- **Commit.** The witness is the active agent-scope content hash sealed at
+  validate; a moved witness is `revision_conflict`. An existing item of the
+  same name needs `replace: true`. The package is written first, then one
+  revision fenced by a token-derived ledger slot in the registry's state
+  store. If the revision write fails, the exact-receipt Delete/Restore
+  primitives undo only that package write. A retry of the same token returns
+  the landed revision (`replayed: true`) without a second write.
+- **Cleanup.** Removing an item, or replacing it with a body-only item through
+  `upsert`/`commit`, deletes its package after the revision lands. This is best
+  effort; an unreferenced package cannot be resolved. `agent_packs.copy`
+  refuses package-backed items rather than leave a dangling reference.
+- **No grants.** Required tools stay applicability metadata reported as
+  warnings, as in HA-61.
+
+**Residual, stated:** a rollback to a revision that references a package which
+was later replaced resolves that item's support files as not found. A crash
+after the package write and before the revision publish, on a replace, leaves
+the new package under the old membership until the same token is retried
+(resume republishes the recorded target). No Protocol method serves
+support-file bytes yet, matching the personal import; resolution is the
+runtime's `ResolveAgentPackSupport`.
+
+**Cross-references:** D-411, D-422, D-456.
