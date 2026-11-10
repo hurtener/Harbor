@@ -1894,7 +1894,11 @@ func TestBuildSystemContent_CurrentDateIsDateOnly(t *testing.T) {
 	if m == nil {
 		t.Fatalf("no trailing <current_date> section found. Body:\n%s", body)
 	}
-	if strings.Contains(body[:strings.Index(body, "</identity>")], "Current date") {
+	identityEnd := strings.Index(body, "</identity>")
+	if identityEnd < 0 {
+		t.Fatalf("no </identity> section. Body:\n%s", body)
+	}
+	if strings.Contains(body[:identityEnd], "Current date") {
 		t.Errorf("the date still renders inside <identity>, ahead of the cacheable sections")
 	}
 	date := m[1]

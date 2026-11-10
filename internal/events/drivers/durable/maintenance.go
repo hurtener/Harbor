@@ -1,8 +1,8 @@
 package durable
 
 // The bus owns one bounded maintenance goroutine in durable mode. It runs the
-// always-on v1→v2 index migrator (D-492) and, when
-// events.retention.audit_max_age > 0, the audit-retention sweeper (D-493).
+// always-on v1→v2 index migrator and, when
+// events.retention.audit_max_age > 0, the audit-retention sweeper.
 // Neither ever takes publishMu: the header CAS serializes them against
 // publishers in this and every other process. Close cancels the goroutine
 // and waits for it before the store is released.

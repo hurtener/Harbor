@@ -122,7 +122,6 @@ Two versions move independently in Harbor (RFC §5.3):
 - **The current date moved to a trailing `<current_date>` system section** so
   the static sections ahead of it stay byte-stable across days.
 
-
 ## [1.40.0] — 2026-11-07
 
 ### Fixed

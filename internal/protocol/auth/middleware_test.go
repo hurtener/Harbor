@@ -598,7 +598,7 @@ func TestCarrierIdentityMiddleware_RefusesReservedUser(t *testing.T) {
 	req.Header.Set(auth.HeaderSession, "s")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if reached || rec.Code != http.StatusUnauthorized {
-		t.Fatalf("reserved user reached=%v status=%d, want refused 401", reached, rec.Code)
+	if reached || rec.Code != http.StatusForbidden {
+		t.Fatalf("reserved user reached=%v status=%d, want refused 403", reached, rec.Code)
 	}
 }

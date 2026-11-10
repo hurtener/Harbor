@@ -11,7 +11,7 @@
 // rehydrated sequence counter ARE the source, so a projector resuming
 // from its own durable checkpoint pages exactly the events it missed.
 //
-// The durable log is gap-free unless opt-in audit retention (D-493)
+// The durable log is gap-free unless opt-in audit retention
 // trimmed a session's oldest audit-only rows: RetentionGap is true when
 // the reader's cursor sits before such a cut, or a trim removed rows
 // during the read. Erasure is handled by fence exclusion (a fenced

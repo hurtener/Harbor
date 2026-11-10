@@ -1436,7 +1436,7 @@ func identityFromScope(scope prototypes.IdentityScope, agentID string) (identity
 		return identity.Identity{}, fmt.Errorf("%w: agent_id is empty", ErrIdentityRequired)
 	}
 	if identity.IsReservedUser(id) {
-		return identity.Identity{}, fmt.Errorf("%w: user id is reserved for control-plane records", ErrIdentityRequired)
+		return identity.Identity{}, fmt.Errorf("%w: user id is reserved for control-plane records", agentcfg.ErrReservedUser)
 	}
 	return id, nil
 }

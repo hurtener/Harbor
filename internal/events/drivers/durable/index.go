@@ -1,6 +1,6 @@
 package durable
 
-// This file owns the v2 chunked durable event index (D-492). A session's
+// This file owns the v2 chunked durable event index. A session's
 // routing index is split into one small mutable header (the existing
 // `events.durable.head` slot, magic-prefixed so binaries below v1.37.0 fail
 // closed on it) and immutable sealed chunks of exactly indexChunkRows rows.
@@ -39,7 +39,7 @@ const (
 	// from kindHead, so the maintenance head scan never loads chunks.
 	kindChunkPrefix = "events.durable.chunk/"
 	// kindRetentionSummary is the cumulative audit-retention summary record
-	// stored beside the header under the same session key (D-493).
+	// stored beside the header under the same session key.
 	kindRetentionSummary = "events.durable.retention_summary"
 	// indexMagic prefixes every v2 header and chunk. JSON decoders in older
 	// binaries reject it, which is the fail-closed rollback boundary.

@@ -2731,7 +2731,7 @@ Renders the ReAct system prompt's `<deferred_tools>` section, right after
 `<available_tools>`: an index, grouped by provider source, of the
 deferred-loading tools the run may load on demand, e.g.
 
-```
+```text
 - Sales CRM (12 tools): add_lead_note, add_leads_to_campaign, create_lead, …
 - Docs (agent) (2 tools): read_document, search_documents
 ```

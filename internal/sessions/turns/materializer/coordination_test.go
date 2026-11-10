@@ -148,7 +148,7 @@ func TestCoordination_DeferralIsBoundedThenRepaired(t *testing.T) {
 	c.src.publish(t, spawnEv(c.id, "", "task-y", tasks.KindForeground, ""))
 	c.src.publish(t, failedEv(c.id, "task-y", "timeout"))
 
-	for i := 0; i < defaultSpawnDeferAttempts; i++ {
+	for i := range defaultSpawnDeferAttempts {
 		if res := mustMaterialize(t, m); !res.SpawnDeferred {
 			t.Fatalf("attempt %d: not deferred within the bound", i)
 		}

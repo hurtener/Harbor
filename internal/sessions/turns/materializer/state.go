@@ -182,6 +182,12 @@ func (m *Materializer) newSessionState(ctx context.Context, id identity.Identity
 // validateTaskRoute checks the two immutable indexes without mutation. It is
 // deliberately separate from commitTaskRoute so a root append can validate,
 // durably append, and only then publish its in-memory routing state.
+// taskRouteAdmissible reports whether validateTaskRoute accepts the route.
+// Adoption treats an inadmissible route as "not adoptable", never a failure.
+func (s *sessionState) taskRouteAdmissible(taskID, parent, runID string, derived bool) bool {
+	return s.validateTaskRoute(taskID, parent, runID, derived) == nil
+}
+
 func (s *sessionState) validateTaskRoute(taskID, parent, runID string, derived bool) error {
 	if boundParent, ok := s.tasks[taskID]; ok && boundParent != parent {
 		return fmt.Errorf("%w: task %q parent %q, event parent %q", ErrTaskRoutingConflict, taskID, boundParent, parent)

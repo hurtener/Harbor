@@ -1,6 +1,6 @@
 package durable
 
-// Background v1 → v2 index migration (D-492, plan §H4.4). Each legacy head is
+// Background v1 → v2 index migration. Each legacy head is
 // converted by (1) authenticating it against bodies when needed, (2) building
 // its deterministic sealed chunks, (3) pre-writing those chunks expected-absent
 // in bounded batches — unreferenced, so invisible to readers — and (4) one

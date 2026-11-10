@@ -37,7 +37,7 @@
 //     session triple with RunID="" — an event's own RunID is preserved
 //     INSIDE the persisted bytes, not in the storage key.
 //   - Head record:  Kind = "events.durable.head" — the session's routing
-//     index. Since v1.37.0 (D-492) it is a small magic-prefixed v2 header
+//     index. Since v1.37.0 it is a small magic-prefixed v2 header
 //     (index.go): bounds, chain digests and an unsealed tail of at most 256
 //     rows. Legacy (v1) heads holding the whole ordered sequence list plus
 //     metadata are migrated lazily (migrate.go); binaries below v1.37.0 fail
@@ -45,7 +45,7 @@
 //   - Chunk record: Kind = "events.durable.chunk/<index>" — one immutable
 //     sealed chunk of exactly 256 routing rows, SHA-256 chained.
 //   - Summary record: Kind = "events.durable.retention_summary" — the
-//     cumulative opt-in audit-retention summary (D-493, retention.go).
+//     cumulative opt-in audit-retention summary (retention.go).
 //   - Entry record: Kind = "events.durable.entry/<seq>" — holds the
 //     JSON-encoded event for bus-sequence <seq>.
 //
@@ -2492,7 +2492,7 @@ func (b *bus) Window(ctx context.Context, before uint64, limit int, f events.Fil
 // makes the sanctioned fan-in observable.
 //
 // A durable-mode page reports truncated=true only when a contributing
-// session's walk reached its opt-in audit-retention cut (D-493) or a
+// session's walk reached its opt-in audit-retention cut or a
 // concurrent trim ended it; the log is otherwise gap-free. In best-effort
 // ring mode (no StateStore) it reports truncated=evicted, exactly like
 // boundsBestEffort.

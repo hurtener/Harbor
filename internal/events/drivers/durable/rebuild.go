@@ -1,6 +1,6 @@
 package durable
 
-// Offline single-session index recovery (D-492 amendment). A session whose v2
+// Offline single-session index recovery. A session whose v2
 // header or chunk fails integrity checks is quarantined at boot and refused on
 // its own reads and publishes. RebuildSessionIndex recovers just that session
 // from its immutable entry bodies — the canonical source — instead of a

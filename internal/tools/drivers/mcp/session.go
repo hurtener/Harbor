@@ -59,7 +59,9 @@ func preparationBase(ctx context.Context) context.Context {
 	if _, ok := identity.FromVerified(ctx); ok {
 		base = identity.CarryVerified(base, ctx)
 	} else if id, ok := identity.From(ctx); ok {
-		base, _ = identity.With(base, id)
+		if withID, err := identity.With(base, id); err == nil {
+			base = withID
+		}
 	}
 	if agent, ok := tools.InvokingAgentFrom(ctx); ok {
 		base = tools.WithInvokingAgent(base, agent)

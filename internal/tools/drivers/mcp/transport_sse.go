@@ -409,7 +409,11 @@ func (t *injectedHeaderTransport) RoundTrip(req *http.Request) (*http.Response, 
 	// its generic HTTP status error as a permanent connection failure. Never
 	// retain response text: it may contain credential material.
 	if resp.Body != nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// A failed drain only forfeits connection reuse; the refusal stands.
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			_ = resp.Body.Close()
+			return nil, &DownstreamUnauthorizedError{StatusCode: resp.StatusCode}
+		}
 		_ = resp.Body.Close()
 	}
 	return nil, &DownstreamUnauthorizedError{StatusCode: resp.StatusCode}

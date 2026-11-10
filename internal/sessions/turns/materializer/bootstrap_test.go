@@ -73,7 +73,7 @@ func upgradeStores(t *testing.T) []upgradeStore {
 				defer func() { _ = db.Close() }()
 				if _, err := db.Exec(`
                     INSERT INTO turn_materializer (name, cursor, bootstrap) VALUES ('turns', $1, 'pending')
-                    ON CONFLICT (name) DO UPDATE SET cursor = EXCLUDED.cursor, bootstrap = 'pending'`, int64(cursor)); err != nil { //nolint:gosec // G115: small test sequence
+                    ON CONFLICT (name) DO UPDATE SET cursor = EXCLUDED.cursor, bootstrap = 'pending'`, int64(cursor)); err != nil {
 					t.Fatalf("simulate migration: %v", err)
 				}
 			},

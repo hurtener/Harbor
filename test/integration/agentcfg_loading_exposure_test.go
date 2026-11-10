@@ -112,7 +112,7 @@ func newLEHarness(t *testing.T, stdioAllowlist []string) *leHarness {
 	}
 	t.Cleanup(func() { _ = sc.Close() })
 	cat := tools.NewCatalog(tools.WithSearchCache(sc))
-	if err := builtin.Register(cat, []string{"tool_search"}); err != nil {
+	if err := builtin.RegisterWith(builtin.RegistryContext{Catalog: cat}, []string{"tool_search"}); err != nil {
 		t.Fatalf("register tool_search: %v", err)
 	}
 

@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/telemetry"
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/hurtener/Harbor/internal/telemetry"
 )
 
 func TestEmbedTiming_UsageAndPrivacy(t *testing.T) {

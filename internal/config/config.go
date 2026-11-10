@@ -1251,7 +1251,7 @@ type EventsConfig struct {
 	// when the current head scan is empty.
 	LegacyWritersDrained bool `yaml:"legacy_writers_drained,omitempty"`
 	// Retention configures opt-in audit-trail retention for the durable
-	// driver (D-493). The zero value disables it. Restart-required.
+	// driver. The zero value disables it. Restart-required.
 	Retention EventsRetentionConfig `yaml:"retention,omitempty"`
 }
 

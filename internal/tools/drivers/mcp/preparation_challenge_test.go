@@ -44,6 +44,9 @@ func TestInjectedHeaderTransport_PreparationCapturesChallengeBeforeRefusal(t *te
 			ctx = withScopeShortfallSlot(ctx, slot)
 			req := httptest.NewRequest(http.MethodPost, "https://receiver.test/mcp?secret=private", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x"}}`)).WithContext(ctx)
 			resp, err := transport.RoundTrip(req)
+			if resp != nil {
+				defer func() { _ = resp.Body.Close() }()
+			}
 			if resp != nil || !errors.Is(err, ErrDownstreamUnauthorized) {
 				t.Fatalf("response/error = %v/%v, want typed refusal", resp, err)
 			}
@@ -67,9 +70,10 @@ func TestProvider_AutoModeSignedPreparationRefusalDoesNotTrySSE(t *testing.T) {
 	var posts atomic.Int64
 	var sseGets atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method == http.MethodGet {
+		switch req.Method {
+		case http.MethodGet:
 			sseGets.Add(1)
-		} else if req.Method == http.MethodPost {
+		case http.MethodPost:
 			posts.Add(1)
 		}
 		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="https://auth.example.test/metadata"`)

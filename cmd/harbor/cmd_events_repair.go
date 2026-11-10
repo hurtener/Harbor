@@ -62,7 +62,7 @@ func newRebuildSessionIndexCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rebuild-session-index",
 		Short: "rebuild one session's durable event index from its entry bodies",
-		Long: `Rebuild one session's chunked durable event index (D-492) from its immutable
+		Long: `Rebuild one session's chunked durable event index from its immutable
 entry bodies — the recovery for a session quarantined for failing index
 integrity checks. The default inspects and prints a content-free report.
 --apply requires --freeze-ack after every event writer for the store is

@@ -513,9 +513,6 @@ func resolveIdentity(r *http.Request) (identity.Identity, *http.Request, error) 
 	if err := identity.Validate(id); err != nil {
 		return identity.Identity{}, r, err
 	}
-	if identity.IsReservedUser(id) {
-		return identity.Identity{}, r, fmt.Errorf("%w: user id is reserved", identity.ErrIdentityIncomplete)
-	}
 	ctx, err := identity.WithVerified(r.Context(), id)
 	if err != nil {
 		return identity.Identity{}, r, err

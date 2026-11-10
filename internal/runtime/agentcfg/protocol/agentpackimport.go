@@ -181,12 +181,19 @@ func (s *Service) AgentPacksImportValidate(ctx context.Context, req prototypes.A
 		return prototypes.AgentConfigAgentPacksImportValidateResponse{}, err
 	}
 	// Refuse a package that could never fit before handing out a token.
+	// Placement is checked with replacement assumed; consent is decided at
+	// commit.
+	var placeErr error
 	payload, err := s.packPayloadFromActive(ctx, q, req.AgentID, func(current []skills.AgentPackItem) []skills.AgentPackItem {
-		out, _ := withImportedPackItem(current, item, true)
+		var out []skills.AgentPackItem
+		out, placeErr = withImportedPackItem(current, item, true)
 		return out
 	})
 	if err != nil {
 		return prototypes.AgentConfigAgentPacksImportValidateResponse{}, err
+	}
+	if placeErr != nil {
+		return prototypes.AgentConfigAgentPacksImportValidateResponse{}, placeErr
 	}
 	if err := boundPackSize(payload.AgentPacks); err != nil {
 		return prototypes.AgentConfigAgentPacksImportValidateResponse{}, err

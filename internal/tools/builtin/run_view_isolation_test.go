@@ -84,7 +84,6 @@ func sharedServerCatalog(t *testing.T, principals []principal, crowd int, invoke
 		sources = append(sources, tools.ToolSourceID(fmt.Sprintf("mailsrv~a-crowd%03d", i)))
 	}
 	for _, src := range sources {
-		src := src
 		var descs []tools.ToolDescriptor
 		for _, op := range []string{"send_message", "list_messages"} {
 			name := string(src) + "_" + op

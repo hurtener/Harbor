@@ -236,7 +236,11 @@ type streamHeap []*pageStream
 func (h streamHeap) Len() int           { return len(h) }
 func (h streamHeap) Less(i, j int) bool { return h[i].key < h[j].key }
 func (h streamHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *streamHeap) Push(x any)        { *h = append(*h, x.(*pageStream)) }
+func (h *streamHeap) Push(x any) {
+	if st, ok := x.(*pageStream); ok {
+		*h = append(*h, st)
+	}
+}
 func (h *streamHeap) Pop() any {
 	old := *h
 	x := old[len(old)-1]
@@ -263,7 +267,10 @@ func (b *bus) mergePageStreams(ctx context.Context, streams []*pageStream, after
 		if err := ctx.Err(); err != nil {
 			return nil, false, false, err
 		}
-		st := heap.Pop(&h).(*pageStream)
+		st, ok := heap.Pop(&h).(*pageStream)
+		if !ok {
+			return nil, false, false, fmt.Errorf("durable: page merge heap held a foreign value")
+		}
 		if len(st.rows) == 0 {
 			if ferr := b.fill(ctx, st); ferr != nil {
 				b.chunkSpans.drop(st.view.id)
