@@ -54,6 +54,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/skills"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 	tcat "github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
@@ -80,9 +81,14 @@ const (
 )
 
 // Default budgeter envelope when the caller does not supply
-// `MaxTokens`. Picked to align with the §6.5 LLM safety net's
-// chars/4 estimator at the per-skill scale.
-const defaultMaxTokens = 1024
+// `MaxTokens`, in the chars/4 (bytes/4) estimator the budgeter uses.
+// A description at skillpkg.MaxPackageDescriptionBytes estimates to
+// 8192 tokens, and no ladder rung trims a description, so the default
+// adds 4096 tokens of headroom: one free-form SKILL.md at the bound,
+// with its derived trigger and a title at their 2000-rune bounds, fits
+// without the caller sizing the budget. Larger multi-skill fetches
+// still go through the ladder or need an explicit max_tokens.
+const defaultMaxTokens = 12288
 
 // ErrSkillTooLarge is returned by `skill_get` when the tiered
 // budgeter cannot fit the requested skills within `max_tokens`
@@ -158,7 +164,7 @@ type GetArgs struct {
 	// a partial response remains useful when one name is stale.
 	Names []string `json:"names"`
 	// MaxTokens caps the returned skills' combined estimated
-	// token count. 0 → `defaultMaxTokens` (1024).
+	// token count. 0 → `defaultMaxTokens` (12288).
 	MaxTokens int `json:"max_tokens,omitempty"`
 	// Capability gates + redacts the returned skills.
 	Capability CapabilityContext `json:"capability"`
@@ -310,7 +316,7 @@ func SearchHandler(ctx context.Context, baseReader skills.SkillReader, bus event
 	// it is dominated by the redactor's regex passes.
 	out := make([]skills.RankedSkill, 0, len(filtered))
 	for _, s := range filtered {
-		redacted := normalizeSkill(Redact(s, args.Capability))
+		redacted := summaryView(normalizeSkill(Redact(s, args.Capability)))
 		// Find the matching RankedSkill to preserve Score + Path.
 		for _, r := range ranked {
 			if r.Skill.Name == s.Name {
@@ -419,7 +425,16 @@ func ListHandler(ctx context.Context, baseReader skills.SkillReader, bus events.
 		// Listing returns summary-only views; the budgeter is
 		// reserved for `skill_get`. Apply redaction so disallowed
 		// tool names still don't leak via titles / triggers.
-		out[i] = normalizeSkill(Redact(s, args.Capability))
+		out[i] = summaryView(normalizeSkill(Redact(s, args.Capability)))
 	}
 	return ListResult{Skills: out}, nil
+}
+
+// summaryView is the listing projection skill_list and skill_search
+// share: the description is cut to skillpkg.DescriptionSummary (a
+// free-form skill keeps its whole instruction body there). The full
+// content is skill_get's.
+func summaryView(s skills.Skill) skills.Skill {
+	s.Description = skillpkg.DescriptionSummary(s.Description)
+	return s
 }

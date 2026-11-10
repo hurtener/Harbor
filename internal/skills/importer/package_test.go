@@ -199,19 +199,19 @@ func TestImportPackage_Rejects(t *testing.T) {
 		{"nested archive", packageZip(t, map[string]string{"SKILL.md": validMD, "payload.txt": "PK\x03\x04nested"}), skills.ErrArchiveNested},
 		{"unsupported mime", packageZip(t, map[string]string{"SKILL.md": validMD, "tool.exe": "MZ"}), skills.ErrArchiveMimeUnsupported},
 		{"missing skillmd", packageZip(t, map[string]string{"README.md": "hi"}), skills.ErrSkillMDMissing},
-		{"non-root skillmd", packageZip(t, map[string]string{"docs/SKILL.md": validMD}), skills.ErrSkillMDNotRoot},
+		// A lone `<dir>/SKILL.md` is a wrapper folder and is stripped;
+		// a SKILL.md below the root beside a root file is not.
+		{"non-root skillmd", packageZip(t, map[string]string{"docs/SKILL.md": validMD, "notes.txt": "n"}), skills.ErrSkillMDNotRoot},
 		{"case-mismatch skillmd", packageZip(t, map[string]string{"skill.md": validMD}), skills.ErrSkillMDCaseMismatch},
 		{"skillmd no frontmatter", packageZip(t, map[string]string{"SKILL.md": "plain"}), skills.ErrSkillMDFrontmatterMissing},
 		{"skillmd missing trigger", packageZip(t, map[string]string{"SKILL.md": "---\nname: x\n---\n## Steps\n- s\n"}), skills.ErrSkillMDMissingTrigger},
-		{"skillmd empty steps", packageZip(t, map[string]string{"SKILL.md": "---\ntrigger: t\n---\nno steps\n"}), skills.ErrSkillMDEmptySteps},
-		// An empty `- ` item is rejected at the SKILL.md gate first
-		// (bodyHasSteps requires a non-empty item); the DTO-level empty
-		// item check (PackageSkill.Validate) is defense-in-depth for
-		// the canonical-bytes / direct-construction paths.
+		{"skillmd blank body", packageZip(t, map[string]string{"SKILL.md": "---\ntrigger: t\n---\n\n"}), skills.ErrSkillMDEmptySteps},
+		{"bare steps heading", packageZip(t, map[string]string{"SKILL.md": "---\ntrigger: t\n---\n## Steps\n\n"}), importer.ErrEmptySteps},
+		// An empty `- ` item is refused by the DTO-level check
+		// (PackageSkill.Validate).
 		{"empty step item", packageZip(t, map[string]string{
 			"SKILL.md": "---\nname: x\ntrigger: t\n---\n## Steps\n- \n",
-		}), skills.ErrSkillMDEmptySteps},
-		{"unknown section", packageZip(t, map[string]string{"SKILL.md": "---\ntrigger: t\n---\n## Steps\n- s\n## Bizarre\n- x\n"}), importer.ErrUnknownSection},
+		}), skillpkg.ErrInvalidSkillContent},
 		{"missing support ref", packageZip(t, map[string]string{
 			"SKILL.md": "---\nname: x\ntrigger: t\n---\n![missing](assets/nope.png)\n\n## Steps\n- s\n",
 		}), importer.ErrPackageSupportRefMissing},
@@ -534,11 +534,9 @@ func TestImportPackageMarkdown_Rejects(t *testing.T) {
 		{"over bound", bytes.Repeat([]byte("a"), skillpkg.MaxPackageSkillMDBytes+1), skills.ErrSkillMDTooLarge},
 		{"no frontmatter", []byte("plain text"), skills.ErrSkillMDFrontmatterMissing},
 		{"missing trigger", []byte("---\nname: x\n---\n## Steps\n- s\n"), skills.ErrSkillMDMissingTrigger},
-		{"empty steps", []byte("---\ntrigger: t\n---\nno steps\n"), skills.ErrSkillMDEmptySteps},
-		// Rejected at the SKILL.md gate (empty `- ` item); the DTO
-		// check is defense-in-depth.
-		{"empty step item", []byte("---\nname: x\ntrigger: t\n---\n## Steps\n- \n"), skills.ErrSkillMDEmptySteps},
-		{"unknown section", []byte("---\ntrigger: t\n---\n## Steps\n- s\n## Bizarre\n- x\n"), importer.ErrUnknownSection},
+		{"blank body", []byte("---\ntrigger: t\n---\n\n"), skills.ErrSkillMDEmptySteps},
+		// Refused by the DTO-level empty-item check.
+		{"empty step item", []byte("---\nname: x\ntrigger: t\n---\n## Steps\n- \n"), skillpkg.ErrInvalidSkillContent},
 		{"support ref in description", []byte("---\nname: x\ntrigger: t\n---\n![diagram](assets/logo.png)\n\n## Steps\n- s\n"), importer.ErrPackageSupportRefMissing},
 		{"support ref in step", []byte("---\nname: x\ntrigger: t\n---\n## Steps\n- see ![diagram](assets/logo.png)\n"), importer.ErrPackageSupportRefMissing},
 	}

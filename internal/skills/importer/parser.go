@@ -11,10 +11,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/goccy/go-yaml"
-
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/skills"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
 // frontmatterFence is the YAML-frontmatter delimiter Skills.md uses.
@@ -49,6 +48,7 @@ type frontmatterRaw struct {
 type frontmatterFields struct {
 	Name               string   `yaml:"name"`
 	Title              string   `yaml:"title"`
+	Description        string   `yaml:"description"`
 	Trigger            string   `yaml:"trigger"`
 	TaskType           string   `yaml:"task_type"`
 	Tags               []string `yaml:"tags"`
@@ -182,7 +182,7 @@ func scanFrontmatter(src []byte) (frontmatterRaw, []byte, error) {
 // ErrMalformedYAML on YAML parse failure.
 func parseFrontmatter(raw []byte) (frontmatterFields, error) {
 	var f frontmatterFields
-	if err := yaml.Unmarshal(raw, &f); err != nil {
+	if err := skillpkg.UnmarshalFrontmatter(raw, &f); err != nil {
 		return frontmatterFields{}, fmt.Errorf("%w: %w", ErrMalformedYAML, err)
 	}
 	return f, nil
@@ -202,7 +202,7 @@ func bodyParse(ctx context.Context, store artifacts.ArtifactStore, src ImportSou
 	imports ImportArtifacts,
 	err error,
 ) {
-	description, sections, err = parseBodyLines(ctx, body)
+	description, sections, err = parseSkillBody(ctx, body)
 	if err != nil {
 		return "", nil, ImportArtifacts{}, err
 	}
@@ -290,6 +290,111 @@ func parseBodyLines(ctx context.Context, body []byte) (
 	// final newline. The Export side re-adds exactly one trailing
 	// newline before the first section heading (or end-of-file).
 	return stripTrailingBlankLines(descBuilder.String()), sections, nil
+}
+
+// FreeFormStep is the one procedural step a free-form skill carries.
+// A free-form body (see parseSkillBody) keeps its instructions verbatim
+// in Description, which the model receives with the skill; this step
+// points at it so the canonical "at least one step" rule still holds.
+const FreeFormStep = "Follow the instructions in this skill's description."
+
+// parseSkillBody is the body parse both entry points use. A canonical
+// body (prose, then only `## Steps` / `## Preconditions` /
+// `## Failure modes` sections of `- ` items, with at least one step)
+// parses exactly as parseBodyLines does. Any other non-blank body is
+// FREE-FORM (the common external SKILL.md shape: arbitrary `## `
+// headings, numbered lists, no `## Steps`): it is kept as instruction
+// content instead of being refused.
+//
+//   - The longest trailing run that is a valid canonical section tail
+//     (canonical headings, no duplicates, only `- ` items and blank
+//     lines) is parsed as sections; everything before it is the
+//     description, verbatim.
+//   - When that yields no step, the single FreeFormStep is supplied,
+//     provided the description carries instructions to point at.
+//
+// The free-form result round-trips: the export writes the description
+// followed by the canonical sections, and that document's longest
+// canonical tail is exactly the exported sections, so it re-parses to
+// the same description and steps. A body with no step and no
+// instruction prose (blank, or bare headings) stays the caller's
+// ErrEmptySteps refusal.
+func parseSkillBody(ctx context.Context, body []byte) (string, map[canonicalSection][]string, error) {
+	description, sections, err := parseBodyLines(ctx, body)
+	if err == nil && len(sections[sectionSteps]) > 0 {
+		return description, sections, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
+	}
+	if strings.TrimSpace(string(body)) == "" {
+		return description, sections, err
+	}
+	lines := splitLinesKeepEmpty(body)
+	tail := canonicalTailStart(lines)
+	description = stripTrailingBlankLines(strings.Join(lines[:tail], ""))
+	sections = make(map[canonicalSection][]string, 3)
+	if tail < len(lines) {
+		_, tailSections, tailErr := parseBodyLines(ctx, []byte(strings.Join(lines[tail:], "")))
+		if tailErr != nil {
+			return "", nil, tailErr
+		}
+		sections = tailSections
+	}
+	if len(sections[sectionSteps]) == 0 && hasProse(description) {
+		sections[sectionSteps] = []string{FreeFormStep}
+	}
+	return description, sections, nil
+}
+
+// canonicalTailStart returns the index of the first line of the
+// longest trailing run of lines that parseBodyLines accepts as
+// sections (a canonical heading, then only canonical, non-duplicate
+// headings, `- ` items and blank lines), or len(lines) when there is
+// none. One backward pass, mirroring parseBodyLines' line rules, with
+// one addition: every tail section must carry at least one item. The
+// export never emits an empty section, so an empty heading stays in
+// the description; that keeps export -> reimport exact.
+func canonicalTailStart(lines []string) int {
+	start := len(lines)
+	seen := make(map[canonicalSection]bool, 3)
+	hasItem := false
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		if strings.HasPrefix(line, "## ") {
+			sec := classifySection(line)
+			if sec == sectionUnknown || seen[sec] || !hasItem {
+				break
+			}
+			seen[sec] = true
+			start = i
+			hasItem = false
+			continue
+		}
+		t := strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(t, "- ") {
+			hasItem = true
+			continue
+		}
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
+		break
+	}
+	return start
+}
+
+// hasProse reports whether text carries an instruction line: a
+// non-blank line that is not a Markdown heading. A body of bare
+// headings has nothing for a free-form step to point at.
+func hasProse(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		t := strings.TrimSpace(line)
+		if t != "" && !strings.HasPrefix(t, "#") {
+			return true
+		}
+	}
+	return false
 }
 
 // resolvedBody is the intermediate after attachment-substitution.
@@ -499,7 +604,7 @@ func doImport(ctx context.Context, store artifacts.ArtifactStore, src ImportSour
 		return skills.Skill{}, ImportArtifacts{}, fmt.Errorf("%w: empty source",
 			ErrMissingFrontmatter)
 	}
-	rawFM, body, err := scanFrontmatter(src.Bytes)
+	rawFM, body, err := scanFrontmatter(skillpkg.NormalizeNewlines(src.Bytes))
 	if err != nil {
 		return skills.Skill{}, ImportArtifacts{}, err
 	}
@@ -507,11 +612,16 @@ func doImport(ctx context.Context, store artifacts.ArtifactStore, src ImportSour
 	if err != nil {
 		return skills.Skill{}, ImportArtifacts{}, err
 	}
-	if strings.TrimSpace(fields.Trigger) == "" {
+	trigger := skillpkg.DeriveTrigger(fields.Trigger, fields.Description)
+	if trigger == "" {
 		return skills.Skill{}, ImportArtifacts{}, fmt.Errorf("%w: %w",
 			ErrMissingTrigger, skills.ErrInvalidSkill)
 	}
-	description, sections, imports, err := bodyParse(ctx, store, src, body)
+	bodyDescription, sections, imports, err := bodyParse(ctx, store, src, body)
+	if err != nil {
+		return skills.Skill{}, ImportArtifacts{}, err
+	}
+	description, err := joinDescription(fields.Description, bodyDescription)
 	if err != nil {
 		return skills.Skill{}, ImportArtifacts{}, err
 	}
@@ -532,7 +642,7 @@ func doImport(ctx context.Context, store artifacts.ArtifactStore, src ImportSour
 		Name:          name,
 		Title:         fields.Title,
 		Description:   description,
-		Trigger:       fields.Trigger,
+		Trigger:       trigger,
 		TaskType:      fields.TaskType,
 		Tags:          fields.Tags,
 		Steps:         steps,
@@ -556,6 +666,48 @@ func doImport(ctx context.Context, store artifacts.ArtifactStore, src ImportSour
 		return skills.Skill{}, ImportArtifacts{}, err
 	}
 	return skill, imports, nil
+}
+
+// joinDescription folds the optional frontmatter `description` into the
+// skill's one canonical Description: the trimmed frontmatter value
+// first, then a blank line, then the body prose before the first
+// section (when present). A document without a frontmatter description
+// keeps its body prose verbatim, so existing skills and package hashes
+// are unchanged. The joined form re-parses to itself when exported as
+// body prose, so a frontmatter description whose text carries a `## `
+// section-heading line is refused (it would re-parse as a section).
+func joinDescription(frontmatter, body string) (string, error) {
+	fm := strings.TrimSpace(frontmatter)
+	if fm == "" {
+		return body, nil
+	}
+	if strings.HasPrefix(fm, "## ") || strings.Contains(fm, "\n## ") {
+		return "", fmt.Errorf("%w: frontmatter description contains a section heading",
+			ErrUnknownSection)
+	}
+	if body == "" {
+		return fm, nil
+	}
+	return fm + "\n\n" + body, nil
+}
+
+// splitDescription is the inverse of joinDescription for an export
+// that re-emits the original frontmatter verbatim: it strips the
+// frontmatter description prefix so the body prose is not duplicated.
+// ok is false when the description no longer carries that prefix (the
+// stashed frontmatter is stale).
+func splitDescription(frontmatter, description string) (string, bool) {
+	fm := strings.TrimSpace(frontmatter)
+	switch {
+	case fm == "":
+		return description, true
+	case description == fm:
+		return "", true
+	case strings.HasPrefix(description, fm+"\n\n"):
+		return description[len(fm)+2:], true
+	default:
+		return description, false
+	}
 }
 
 // sourceHashHex returns the sha256 hex of the source bytes. Used

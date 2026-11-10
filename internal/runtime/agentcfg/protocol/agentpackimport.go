@@ -557,7 +557,7 @@ func (s *UserSkillImportService) ResolveAgentPackSupport(ctx context.Context, ag
 // wire shape both import destinations return.
 func UserSkillImportReviewToWire(r UserSkillImportReview) prototypes.AgentConfigUserSkillImportReview {
 	out := prototypes.AgentConfigUserSkillImportReview{
-		Name: r.Name, Title: r.Title, Trigger: r.Trigger, TaskType: r.TaskType,
+		Name: r.Name, Title: r.Title, Description: r.Description, Trigger: r.Trigger, TaskType: r.TaskType,
 		Tags: append([]string(nil), r.Tags...), StepCount: r.StepCount,
 		RequiredTools: append([]string(nil), r.RequiredTools...),
 		RequiredNS:    append([]string(nil), r.RequiredNS...),

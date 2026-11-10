@@ -15,7 +15,7 @@ import (
 // packages, and the bounded content validation that makes MIME a
 // claim about BYTES, not a filename-suffix lookup.
 //
-// The v1.28 allowlist is deliberately narrow and closed: every
+// The allowlist (v1.28, widened by the v1.44 text class) is closed: every
 // retained type has an honest, bounded content check a validator can
 // run over the file's (already decompression-bounded) bytes. There is
 // no operator override knob, because the package identity (the
@@ -42,11 +42,11 @@ const (
 	// table implements. Bumping the table (adding or removing a
 	// retained type) MUST bump this string: it is part of the
 	// semantic contract resolvers rely on.
-	MIMEAllowlistVersion = "v1.28"
+	MIMEAllowlistVersion = "v1.44"
 )
 
 // extensionMIME maps a lowercase file extension (without the dot) to
-// its canonical support MIME type. The set is the v1.28 allowlist:
+// its canonical support MIME type. The set is the v1.44 allowlist:
 //
 //   - text/plain; charset=utf-8 and text/markdown — UTF-8 text with a
 //     non-empty content check (the charset claim is verified);
@@ -58,15 +58,41 @@ const (
 //   - font/ttf, font/otf, font/woff, font/woff2 — binary signatures
 //     with a minimum header-size check.
 //
-// Source-code dialects (text/x-go, text/x-python, ...), YAML/TOML/
-// CSV/HTML/CSS and other formats with no honest bounded byte-level
-// validator are intentionally NOT in the allowlist: claiming them
-// would be extension-lookup masquerading as content truth.
+// v1.44 adds the bounded TEXT class (D-499): common script, source,
+// data and template extensions (py, sh, js, ts, sql, yaml, csv, html,
+// jinja, ...) are recorded as text/plain; charset=utf-8 and pass only
+// the shared text check (valid UTF-8, no NUL byte, not blank). They
+// are never given a script or executable MIME, are stored as data, and
+// Harbor never executes them. Dialect-specific MIMEs (text/x-python,
+// text/html, ...) are still never claimed: no bounded validator could
+// back them. Binary executables and archives have no entry and stay
+// refused.
+// textPlain is the one MIME the text class records.
+const textPlain = "text/plain; charset=utf-8"
+
 var extensionMIME = map[string]string{
 	// Documents.
 	"md":       "text/markdown",
 	"markdown": "text/markdown",
 	"txt":      "text/plain; charset=utf-8",
+	// XML schemas and stylesheets (office-format skills ship these).
+	"xsd": "application/xml", "xsl": "application/xml", "xslt": "application/xml",
+	// Text class (v1.44): scripts, source, data and templates bundled
+	// as plain-text data. Recorded as text/plain, never executed.
+	"py": textPlain, "js": textPlain, "mjs": textPlain, "cjs": textPlain,
+	"ts": textPlain, "tsx": textPlain, "jsx": textPlain,
+	"sh": textPlain, "bash": textPlain, "zsh": textPlain, "ps1": textPlain,
+	"rb": textPlain, "go": textPlain, "rs": textPlain, "java": textPlain,
+	"kt": textPlain, "swift": textPlain, "c": textPlain, "h": textPlain,
+	"cpp": textPlain, "hpp": textPlain, "cs": textPlain, "php": textPlain,
+	"pl": textPlain, "r": textPlain, "lua": textPlain, "sql": textPlain,
+	"yaml": textPlain, "yml": textPlain, "toml": textPlain,
+	"csv": textPlain, "tsv": textPlain,
+	"html": textPlain, "htm": textPlain, "css": textPlain, "scss": textPlain,
+	"ini": textPlain, "cfg": textPlain, "conf": textPlain,
+	"jinja": textPlain, "j2": textPlain, "tmpl": textPlain, "tpl": textPlain,
+	"mustache": textPlain, "hbs": textPlain,
+	"rst": textPlain, "tex": textPlain, "graphql": textPlain, "proto": textPlain,
 	// Structured data.
 	"json": "application/json",
 	"xml":  "application/xml",
@@ -124,11 +150,23 @@ func classifyMIME(path string) string {
 		last = path[i+1:]
 	}
 	dot := strings.LastIndexByte(last, '.')
+	if dot < 0 && textBasenames[last] {
+		return textPlain
+	}
 	if dot < 0 || dot == len(last)-1 {
 		return ""
 	}
 	ext := strings.ToLower(last[dot+1:])
 	return extensionMIME[ext]
+}
+
+// textBasenames are the common extension-less text files, matched by
+// exact basename, recorded as plain-text data under the text check.
+var textBasenames = map[string]bool{
+	"LICENSE": true, "LICENCE": true, "NOTICE": true, "COPYING": true, "AUTHORS": true,
+	"README": true, "CHANGELOG": true, "VERSION": true, "CODEOWNERS": true,
+	"Makefile": true, "Dockerfile": true, "Containerfile": true, "Gemfile": true,
+	"Rakefile": true, "Procfile": true, "Brewfile": true, "Pipfile": true, "Vagrantfile": true,
 }
 
 // supportMIME reports whether path classifies to a supported MIME.
@@ -142,7 +180,7 @@ func supportMIME(path string) (string, bool) {
 
 // ClassifySupportMIME reports the canonical support MIME a canonical
 // package path proposes, and whether that proposal is inside the
-// v1.28 allowlist. The proposal still must be validated from bytes
+// current allowlist. The proposal still must be validated from bytes
 // (ValidateMimeContent) before a MIME is recorded — classification is
 // the candidate, never the claim.
 func ClassifySupportMIME(path string) (string, bool) {
@@ -213,19 +251,16 @@ func ValidateMimeContent(mime string, data []byte) error {
 	}
 }
 
-// validateTextContent enforces the shared text claim: valid UTF-8, no
-// NUL bytes, and at least one non-whitespace rune (an empty or
-// whitespace-only file carries no content a text claim can be checked
-// against — it is ambiguous data).
+// validateTextContent enforces the shared text claim: valid UTF-8 and
+// no NUL bytes. An empty text file (an empty `__init__.py`, a blank
+// placeholder) is valid text; the structured types reject it through
+// their own parse.
 func validateTextContent(mime string, data []byte) error {
 	if !utf8.Valid(data) {
 		return fmt.Errorf("%w: %s carries non-UTF-8 bytes", ErrMimeContentMismatch, mime)
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
 		return fmt.Errorf("%w: %s carries a NUL byte", ErrMimeContentMismatch, mime)
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return fmt.Errorf("%w: %s is empty or whitespace-only (ambiguous data)", ErrMimeContentMismatch, mime)
 	}
 	return nil
 }

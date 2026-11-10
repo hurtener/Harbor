@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/skills"
@@ -57,7 +58,7 @@ func TestNegative_MissingTrigger(t *testing.T) {
 func TestNegative_EmptySteps(t *testing.T) {
 	imp, _ := newImporter(t)
 	_, _, err := imp.Import(context.Background(), importer.ImportSource{
-		Bytes:    []byte("---\nname: no-steps\ntrigger: yes\n---\n\nbody without steps\n"),
+		Bytes:    []byte("---\nname: no-steps\ntrigger: yes\n---\n\n\n"),
 		PathHint: "no-steps.md",
 	})
 	if !errors.Is(err, importer.ErrEmptySteps) {
@@ -88,7 +89,9 @@ func TestNegative_MalformedYAML(t *testing.T) {
 	}
 }
 
-func TestNegative_UnknownSection(t *testing.T) {
+// TestNegative_UnknownSectionIsFreeForm: an unknown `## ` heading no
+// longer refuses the file; the body is kept as free-form instructions.
+func TestNegative_UnknownSectionIsFreeForm(t *testing.T) {
 	imp, _ := newImporter(t)
 	src := []byte(`---
 name: unknown-section
@@ -103,13 +106,16 @@ desc
 
 ## Examples
 
-- not allowed
+- not a canonical section
 `)
-	_, _, err := imp.Import(context.Background(), importer.ImportSource{
+	skill, _, err := imp.Import(context.Background(), importer.ImportSource{
 		Bytes: src, PathHint: "unknown.md",
 	})
-	if !errors.Is(err, importer.ErrUnknownSection) {
-		t.Errorf("err = %v, want ErrUnknownSection", err)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if !strings.Contains(skill.Description, "## Examples") || len(skill.Steps) != 1 || skill.Steps[0] != importer.FreeFormStep {
+		t.Fatalf("free-form skill = %+v", skill)
 	}
 }
 

@@ -13,8 +13,10 @@
 // one URI per support file, delivered by PackageIngest.SupportURI.
 //
 // The package frontmatter is CLOSED: the pure parser accepts only the
-// canonical key set (name, title, trigger, task_type, tags,
-// required_tools, required_namespaces, required_tags) and REJECTS
+// canonical key set (name, title, description, trigger, task_type,
+// tags, required_tools, required_namespaces, required_tags, plus the
+// advisory Agent Skills keys license, compatibility, allowed-tools and
+// metadata, which are accepted but not stored) and REJECTS
 // authority-bearing fields (scope, origin, tenant, user, agent,
 // authority, audience) and any other unknown key
 // (ErrPackageFrontmatterDisallowed). The stored-skill envelope
@@ -91,8 +93,9 @@ var ErrPackageMarkdownNotUTF8 = errors.New("importer: package SKILL.md is not va
 
 // ErrPackageFrontmatterDisallowed — the root SKILL.md frontmatter of a
 // complete skill package carries a field outside the CLOSED package
-// key set (name, title, trigger, task_type, tags, required_tools,
-// required_namespaces, required_tags). Authority-bearing fields
+// key set (name, title, description, trigger, task_type, tags,
+// required_tools, required_namespaces, required_tags, and the advisory
+// license / compatibility / allowed-tools / metadata). Authority-bearing fields
 // (scope, origin, tenant, user, agent, authority, audience) and any
 // other unknown key are rejected: the pure package ingest must not
 // let caller YAML set storage / authority envelope fields that the
@@ -255,12 +258,25 @@ func doImportPackageMarkdown(ctx context.Context, src PackageMarkdownSource) (Pa
 type packageFrontmatterFields struct {
 	Name               string   `yaml:"name"`
 	Title              string   `yaml:"title"`
+	Description        string   `yaml:"description"`
 	Trigger            string   `yaml:"trigger"`
 	TaskType           string   `yaml:"task_type"`
 	Tags               []string `yaml:"tags"`
 	RequiredTools      []string `yaml:"required_tools"`
 	RequiredNamespaces []string `yaml:"required_namespaces"`
 	RequiredTags       []string `yaml:"required_tags"`
+
+	// Optional keys of the open Agent Skills SKILL.md format. They are
+	// accepted so standard skills import, and they are ADVISORY: none
+	// is stored, hashed, or exported, and none carries authority.
+	// `allowed-tools` in particular never grants a tool and is not
+	// mapped onto required_tools (a package grants no tools, and
+	// foreign tool names would only make the capability filter hide
+	// the skill).
+	License       string         `yaml:"license"`
+	Compatibility string         `yaml:"compatibility"`
+	AllowedTools  any            `yaml:"allowed-tools"`
+	Metadata      map[string]any `yaml:"metadata"`
 }
 
 // parsePackageFrontmatter parses the raw package frontmatter through
@@ -272,12 +288,13 @@ type packageFrontmatterFields struct {
 // (goccy rejects them by default).
 func parsePackageFrontmatter(raw []byte) (frontmatterFields, error) {
 	var f packageFrontmatterFields
-	if err := yaml.UnmarshalWithOptions(raw, &f, yaml.DisallowUnknownField()); err != nil {
+	if err := skillpkg.UnmarshalFrontmatter(raw, &f, yaml.DisallowUnknownField()); err != nil {
 		return frontmatterFields{}, fmt.Errorf("%w: %w", ErrPackageFrontmatterDisallowed, err)
 	}
 	return frontmatterFields{
 		Name:               f.Name,
 		Title:              f.Title,
+		Description:        f.Description,
 		Trigger:            f.Trigger,
 		TaskType:           f.TaskType,
 		Tags:               f.Tags,
@@ -306,6 +323,7 @@ func parsePackageFrontmatter(raw []byte) (frontmatterFields, error) {
 // so the returned stored Skill is a deterministic function of the
 // canonical Package.
 func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, supports []skillpkg.ArchiveEntry, manifest map[string]struct{}) (skills.Skill, skillpkg.Package, error) {
+	skillMD = skillpkg.NormalizeNewlines(skillMD)
 	if err := skillpkg.ValidateSkillMarkdown(skillMD, skillpkg.MarkdownLimits{}); err != nil {
 		return skills.Skill{}, skillpkg.Package{}, fmt.Errorf("importer: package SKILL.md: %w", err)
 	}
@@ -317,11 +335,16 @@ func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, s
 	if err != nil {
 		return skills.Skill{}, skillpkg.Package{}, err
 	}
-	if strings.TrimSpace(fields.Trigger) == "" {
+	trigger := skillpkg.DeriveTrigger(fields.Trigger, fields.Description)
+	if trigger == "" {
 		return skills.Skill{}, skillpkg.Package{}, fmt.Errorf("%w: %w",
 			ErrMissingTrigger, skills.ErrInvalidSkill)
 	}
-	description, sections, err := parseBodyLines(ctx, body)
+	bodyDescription, sections, err := parseSkillBody(ctx, body)
+	if err != nil {
+		return skills.Skill{}, skillpkg.Package{}, err
+	}
+	description, err := joinDescription(fields.Description, bodyDescription)
 	if err != nil {
 		return skills.Skill{}, skillpkg.Package{}, err
 	}
@@ -347,7 +370,7 @@ func parseSkillToPackage(ctx context.Context, skillMD []byte, pathHint string, s
 		Name:          name,
 		Title:         fields.Title,
 		Description:   description,
-		Trigger:       fields.Trigger,
+		Trigger:       trigger,
 		TaskType:      fields.TaskType,
 		Tags:          fields.Tags,
 		Steps:         steps,

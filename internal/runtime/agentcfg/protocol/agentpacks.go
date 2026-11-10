@@ -48,6 +48,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 	"github.com/hurtener/Harbor/internal/skills"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -1005,6 +1006,7 @@ func packSkillSummary(sk skills.Skill) prototypes.AgentConfigSkillSummary {
 	return prototypes.AgentConfigSkillSummary{
 		Name:        sk.Name,
 		Title:       sk.Title,
+		Description: skillpkg.DescriptionSummary(sk.Description),
 		Trigger:     sk.Trigger,
 		TaskType:    sk.TaskType,
 		Origin:      string(sk.Origin),

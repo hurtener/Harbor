@@ -44,11 +44,12 @@ var (
 	ErrSkillMDFrontmatterMissing = errors.New("skillpkg: SKILL.md frontmatter missing")
 	// ErrSkillMDMalformedYAML — SKILL.md frontmatter does not parse.
 	ErrSkillMDMalformedYAML = errors.New("skillpkg: SKILL.md frontmatter malformed")
-	// ErrSkillMDMissingTrigger — SKILL.md frontmatter has no
-	// non-empty trigger (the planner match cue is mandatory).
+	// ErrSkillMDMissingTrigger — SKILL.md frontmatter has neither a
+	// non-empty trigger nor a non-empty description to derive it from
+	// (the planner match cue is mandatory).
 	ErrSkillMDMissingTrigger = errors.New("skillpkg: SKILL.md trigger missing")
-	// ErrSkillMDEmptySteps — SKILL.md body declares no procedural
-	// steps.
+	// ErrSkillMDEmptySteps — SKILL.md body is blank: it declares no
+	// procedural steps and carries no instruction content.
 	ErrSkillMDEmptySteps = errors.New("skillpkg: SKILL.md steps empty")
 )
 
@@ -118,10 +119,13 @@ func ValidateRootSkillEntries(entries []ArchiveEntry) error {
 //   - valid UTF-8 (ErrSkillMDNotUTF8 — the document is text);
 //   - YAML frontmatter fences at the very start and a closing fence
 //     (ErrSkillMDFrontmatterMissing / ErrSkillMDMalformedYAML);
-//   - the frontmatter parses and carries a non-empty `trigger`
+//   - the frontmatter parses and carries a non-empty `trigger`, or a
+//     non-empty `description` the trigger is derived from
 //     (ErrSkillMDMalformedYAML / ErrSkillMDMissingTrigger);
-//   - the body declares at least one procedural step under a
-//     `## Steps`-family heading (ErrSkillMDEmptySteps).
+//   - the body is not blank (ErrSkillMDEmptySteps). A canonical body
+//     declares its steps under a `## Steps`-family heading; any other
+//     non-blank body is free-form instruction content the importer
+//     keeps verbatim.
 //
 // The full parse (field extraction, section normalization, attachment
 // resolution, round-trip) remains the importer's; this gate is the
@@ -134,6 +138,7 @@ func ValidateSkillMarkdown(b []byte, limits MarkdownLimits) error {
 	if !utf8.Valid(b) {
 		return fmt.Errorf("%w: %d bytes are not valid UTF-8", ErrSkillMDNotUTF8, len(b))
 	}
+	b = NormalizeNewlines(b)
 	if !bytes.HasPrefix(b, []byte("---\n")) {
 		return ErrSkillMDFrontmatterMissing
 	}
@@ -142,18 +147,128 @@ func ValidateSkillMarkdown(b []byte, limits MarkdownLimits) error {
 		return ErrSkillMDMalformedYAML
 	}
 	var fm struct {
-		Trigger string `yaml:"trigger"`
+		Trigger     string `yaml:"trigger"`
+		Description string `yaml:"description"`
 	}
-	if err := yaml.Unmarshal(raw, &fm); err != nil {
+	if err := UnmarshalFrontmatter(raw, &fm); err != nil {
 		return fmt.Errorf("%w: %w", ErrSkillMDMalformedYAML, err)
 	}
-	if strings.TrimSpace(fm.Trigger) == "" {
+	if DeriveTrigger(fm.Trigger, fm.Description) == "" {
 		return ErrSkillMDMissingTrigger
 	}
-	if !bodyHasSteps(body) {
+	if len(bytes.TrimSpace(body)) == 0 {
 		return ErrSkillMDEmptySteps
 	}
 	return nil
+}
+
+// DeriveTrigger returns the planner match cue of a SKILL.md document.
+// An explicit `trigger` wins verbatim. When it is blank, the trigger is
+// derived from the frontmatter `description` with every whitespace run
+// (newlines included) collapsed to one space, so a description-only
+// document (the common external SKILL.md shape) imports with a
+// deterministic single-line trigger. A derived trigger is capped at
+// MaxPackageTextRunes on a rune boundary (ellipsis included), keeping
+// the whole "use when" cue of an ordinary description. Returns "" when
+// both are blank.
+func DeriveTrigger(trigger, description string) string {
+	if strings.TrimSpace(trigger) != "" {
+		return trigger
+	}
+	return truncateRunes(strings.Join(strings.Fields(description), " "), MaxPackageTextRunes)
+}
+
+// truncateRunes returns s when it fits max runes, otherwise its first
+// max-1 runes plus an ellipsis.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
+// NormalizeNewlines rewrites CRLF line endings to LF. SKILL.md
+// documents written on Windows parse exactly like their LF form (the
+// package hash covers the parsed fields, so both hash identically); an
+// LF document is returned unchanged.
+func NormalizeNewlines(b []byte) []byte {
+	if !bytes.Contains(b, []byte("\r\n")) {
+		return b
+	}
+	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+}
+
+// lenientScalarKeys are the descriptive top-level frontmatter keys
+// whose unquoted values may carry `: ` (a common hand-written form,
+// e.g. `description: Use for: reports`). Authority-bearing and list
+// keys are never repaired.
+var lenientScalarKeys = map[string]bool{"name": true, "description": true, "license": true, "compatibility": true}
+
+// RepairPlainScalars quotes the value of a top-level `name` /
+// `description` / `license` / `compatibility` line whose plain value
+// contains `: ` — YAML reads that as a nested mapping and refuses it.
+// A value that starts with a YAML indicator is left alone (it is not a
+// plain prose scalar).
+// Every other line is returned verbatim, and ok reports whether any
+// line changed. Callers retry a failed strict decode with the repaired
+// bytes only.
+func RepairPlainScalars(raw []byte) (out []byte, ok bool) {
+	lines := strings.Split(string(raw), "\n")
+	for i, line := range lines {
+		key, value, found := strings.Cut(line, ": ")
+		if !found || !lenientScalarKeys[key] {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if !strings.Contains(value, ": ") || strings.ContainsAny(value[:1], "\"'|>[{&*!%@`:?-,#") {
+			continue
+		}
+		quoted, err := yaml.Marshal(value)
+		if err != nil {
+			continue
+		}
+		lines[i] = key + ": " + strings.TrimSuffix(string(quoted), "\n")
+		ok = true
+	}
+	if !ok {
+		return raw, false
+	}
+	return []byte(strings.Join(lines, "\n")), true
+}
+
+// UnmarshalFrontmatter decodes raw frontmatter into v, retrying once
+// with RepairPlainScalars when the strict decode fails and a repair
+// applies. The original error is returned when no repair applies or
+// the repaired document still fails.
+func UnmarshalFrontmatter(raw []byte, v any, opts ...yaml.DecodeOption) error {
+	err := yaml.UnmarshalWithOptions(raw, v, opts...)
+	if err == nil {
+		return nil
+	}
+	if repaired, ok := RepairPlainScalars(raw); ok {
+		if retryErr := yaml.UnmarshalWithOptions(repaired, v, opts...); retryErr == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// MaxDescriptionSummaryRunes bounds the description excerpt that skill
+// listings and import reviews carry. The full description stays on the
+// stored skill.
+const MaxDescriptionSummaryRunes = 500
+
+// DescriptionSummary returns the human-visible excerpt of a skill
+// description for listings and reviews: the description verbatim when
+// it fits MaxDescriptionSummaryRunes, otherwise its first runes plus an
+// ellipsis.
+func DescriptionSummary(desc string) string {
+	r := []rune(desc)
+	if len(r) <= MaxDescriptionSummaryRunes {
+		return desc
+	}
+	return string(r[:MaxDescriptionSummaryRunes-1]) + "…"
 }
 
 // scanFrontmatterFences extracts the raw frontmatter slice (between
@@ -175,26 +290,4 @@ func scanFrontmatterFences(b []byte) (raw, body []byte, ok bool) {
 		bodyStart++
 	}
 	return raw, b[bodyStart:], true
-}
-
-// bodyHasSteps reports whether the body declares at least one
-// procedural step: a `## Steps`-family heading (case-insensitive,
-// optional trailing colon) followed by a list item (`- `). This is a
-// minimal mirror of the importer's section classification — the
-// importer's parser remains canonical for the full parse.
-func bodyHasSteps(body []byte) bool {
-	inSteps := false
-	for _, line := range strings.Split(string(body), "\n") {
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "## ") {
-			h := strings.TrimSpace(strings.TrimPrefix(t, "## "))
-			h = strings.TrimSuffix(strings.TrimSpace(h), ":")
-			inSteps = strings.ToLower(h) == "step" || strings.ToLower(h) == "steps"
-			continue
-		}
-		if inSteps && strings.HasPrefix(t, "- ") {
-			return true
-		}
-	}
-	return false
 }

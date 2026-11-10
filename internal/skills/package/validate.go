@@ -39,8 +39,8 @@ func (s PackageSkill) Validate() error {
 	if err := boundedText("title", s.Title); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidSkillContent, err)
 	}
-	if err := boundedText("description", s.Description); err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidSkillContent, err)
+	if n := len(s.Description); n > MaxPackageDescriptionBytes {
+		return fmt.Errorf("%w: description exceeds %d bytes (%d)", ErrInvalidSkillContent, MaxPackageDescriptionBytes, n)
 	}
 	if err := boundedText("trigger", s.Trigger); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidSkillContent, err)

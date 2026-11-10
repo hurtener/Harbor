@@ -17,8 +17,10 @@ func systemPrompt() string {
 	return "You are Harbor's skill-draft authoring assistant. " +
 		"Emit a SINGLE JSON object and nothing else: no prose around it, no markdown fences. " +
 		"The object describes a bounded, resource-free skill draft. " +
-		"Use EXACTLY these keys (all optional except name, trigger, steps): " +
-		"name (lowercase, trimmed, short), title, description, trigger (a planner match cue), " +
+		"Use EXACTLY these keys (all optional except name, trigger, steps; always include description): " +
+		"name (lowercase, trimmed, short), title, " +
+		"description (one or two plain sentences telling a person what the skill does), " +
+		"trigger (a planner match cue: when the skill should be used), " +
 		"task_type, tags, steps (a non-empty list of concrete single-line actions), " +
 		"preconditions, failure_modes, required_tools, required_ns, required_tags. " +
 		"Keep every field short and the whole draft small. " +

@@ -140,14 +140,7 @@ func CreateDraft(ctx context.Context, a *Adapter, w ArtifactWriter, args Args) (
 // description for the tool result. The full body lives in the
 // artifact; the result carries at most MaxSummaryRunes.
 func boundedSummary(desc string) string {
-	if desc == "" {
-		return ""
-	}
-	r := []rune(desc)
-	if len(r) <= MaxSummaryRunes {
-		return string(r)
-	}
-	return string(r[:MaxSummaryRunes-1]) + "…"
+	return skillpkg.DescriptionSummary(desc)
 }
 
 // buildWarnings assembles the bounded non-secret review warnings for a

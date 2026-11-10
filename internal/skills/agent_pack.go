@@ -50,7 +50,7 @@ const (
 	// RequiredTags on one pack item.
 	MaxAgentPackAnnotations = 32
 	// MaxAgentPackTextRunes bounds each single text field (title,
-	// description, trigger, task_type, one step, one precondition, one
+	// trigger, task_type, one step, one precondition, one
 	// failure mode, one tag, one tool/ns/tag annotation). Bound in runes
 	// because the planner renders these into the prompt.
 	MaxAgentPackTextRunes = 2000
@@ -145,8 +145,11 @@ func (p AgentPackItem) Validate() error {
 // bounded enforces the per-item size bounds. Runed so multi-byte text is
 // counted in what the planner actually renders.
 func (p AgentPackItem) bounded() error {
+	if n := len(p.Description); n > skillpkg.MaxPackageDescriptionBytes {
+		return fmt.Errorf("%w: pack item description exceeds %d bytes (%d)", ErrInvalidSkill, skillpkg.MaxPackageDescriptionBytes, n)
+	}
 	for field, text := range map[string]string{
-		"name": p.Name, "title": p.Title, "description": p.Description,
+		"name": p.Name, "title": p.Title,
 		"trigger": p.Trigger, "task_type": p.TaskType,
 	} {
 		if r := len([]rune(text)); r > MaxAgentPackTextRunes {

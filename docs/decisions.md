@@ -16715,3 +16715,182 @@ run-time tool or Protocol method serves support-file bytes yet, matching the
 personal import; resolution is the runtime's `ResolveAgentPackSupport`.
 
 **Cross-references:** D-411, D-422, D-456.
+
+## D-497 — Skill `description` is a first-class SKILL.md field; a missing trigger is derived from it
+
+**Date:** 2026-11-10. **Scope:** the SKILL.md frontmatter accepted by the
+file importer and the closed package parser (personal import, Agent-pack
+import, boot packs, `skill_create_draft` drafts), and additive optional
+`description` fields on the skill summary, import review and installed-skill
+Protocol shapes. No config keys, no storage change.
+
+Common external `SKILL.md` files lead with `name` + `description` and carry no
+`trigger`. The closed package frontmatter refused `description` as an unknown
+key, and the listings never showed what a skill does.
+
+- **One field, two spellings.** `skills.Skill.Description` already is the
+  human-visible explanation of the skill (the body prose before the first
+  section; the drafter's `description`). The frontmatter `description` feeds
+  the same field: its trimmed value first, then a blank line, then any body
+  prose. No second field, column or hash slot is added, so every document
+  without a frontmatter `description` keeps its exact package and content
+  hash (pinned by test). The joined value re-parses to itself as body prose,
+  so export and reimport are hash-stable; a frontmatter description with a
+  section-heading line (`##` followed by a space) is refused because it would re-parse as a section. The
+  file exporter, which re-emits the original frontmatter verbatim, strips the
+  prefix again so its byte-stable round trip holds; when the skill's
+  description no longer starts with the stashed frontmatter description
+  (it changed after import), the stale frontmatter is dropped and
+  synthesized instead, so no text is duplicated.
+- **Trigger derivation.** `trigger` stays mandatory in the canonical model.
+  When the frontmatter `trigger` is blank, it is derived from the frontmatter
+  `description` with every whitespace run collapsed to one space
+  (`skillpkg.DeriveTrigger`) and capped at 2000 runes on a rune boundary
+  (an ellipsis marks the cut), so a long description is never refused for
+  its trigger and the file-import path never stores an unbounded one. The
+  whole collapsed description is kept rather than its first sentence,
+  because the "use when" cue usually follows the first sentence. An
+  explicit `trigger` always wins. A document with neither is refused as
+  before. Synthesized export frontmatter YAML-quotes scalars and list
+  entries that need it, so a derived trigger or a tag containing a colon
+  followed by a space survives the round trip.
+- **Bounds.** The derived trigger keeps the package text bound (2000
+  runes); the description bound is D-498's. Listings and reviews carry
+  `skillpkg.DescriptionSummary`, at most 500 runes; the full description
+  stays on the stored skill and the pack item.
+- **Wire.** `description` (string, omitempty) is added to
+  `AgentConfigSkillSummary`, `AgentConfigUserSkillImportReview` and
+  `AgentConfigUserSkillInstalledSummary`. Pack items already carried the full
+  description. Additive only; the Protocol version does not change.
+- **Drafter.** `skill_create_draft` tells the model to always include a one-
+  or two-sentence human description, kept distinct from the trigger. The
+  decoder stays lenient: a draft without one is still accepted.
+
+**Not covered:** free-form bodies are D-498.
+
+**Cross-references:** D-053, D-422, D-423, D-496.
+
+## D-498 — Agent Skills SKILL.md files import as free-form skills
+
+**Date:** 2026-11-10. **Scope:** the SKILL.md body parse shared by the file
+importer and the package parser (personal import, Agent-pack import, boot
+packs), the SKILL.md gate, the package and pack-item description bound, the
+advisory frontmatter keys, and the `skill_get` default budget. No config keys,
+no storage or Protocol shape change.
+
+Standard Agent Skills files (`name` + `description` frontmatter, then free
+Markdown with any headings and no `## Steps`) were refused by the canonical
+body grammar (`ErrUnknownSection`, `ErrEmptySteps`). The owner requires them
+to import everywhere Harbor handles skills.
+
+- **Canonical first.** A body the canonical grammar accepts with at least one
+  step parses exactly as before: same fields, same package and content hashes
+  (pinned), same byte-stable file round trip.
+- **Free-form fallback.** Any other non-blank body is kept. The longest
+  trailing run of lines that is a valid canonical section tail (canonical,
+  non-duplicate headings, each followed by at least one dash list item, with
+  only list items and blank lines) is parsed as sections, found in one
+  backward pass; everything before it is the description, verbatim. An empty
+  canonical heading ends the tail, because the export never writes an empty
+  section; without that rule a body such as `Intro`, a Preconditions item,
+  then a second empty Preconditions heading exported to a document that
+  re-parsed differently. When no step results and the description carries a
+  prose line (a non-blank line that is not a Markdown heading), the single
+  step "Follow the instructions in this skill's description."
+  (`importer.FreeFormStep`) is supplied, so `Steps >= 1` stays a model
+  invariant. A body with neither steps nor prose (blank, or headings only) is
+  refused with `ErrEmptySteps`.
+- **Where the instructions live.** In `Description`. `skill_get` already
+  returns the whole skill, description included, so the instructions reach
+  the model the same way steps do. No new field was needed. The export writes
+  the description followed by the canonical sections; that document's longest
+  canonical tail is exactly those sections, so reimport reproduces the same
+  description, steps and hash.
+- **Bounds and budget.** The description bound is raised from 2000 runes to
+  32 KiB of UTF-8 for packages and pack items
+  (`skillpkg.MaxPackageDescriptionBytes`). It is measured in bytes because the
+  `skill_get` budgeter estimates tokens as bytes/4, so a description at the
+  bound is 8192 estimated tokens in any script. No ladder rung trims a
+  description, so the `skill_get` default budget is raised from 1024 to 12288
+  estimated tokens: the bound plus 4096 tokens of headroom, which covers a
+  derived trigger and a title at their 2000-rune bounds. Every other text
+  field keeps 2000 runes; multi-skill fetches still go through the ladder.
+- **Listings.** `skill_list` and `skill_search` share one summary projection
+  that cuts the description to `skillpkg.DescriptionSummary` (500 runes); the
+  full instructions are `skill_get`'s.
+- **Line endings and lenient scalars.** A CRLF `SKILL.md` is normalized to LF
+  before the frontmatter and body are scanned (both importers and the gate).
+  The package hash covers the parsed fields, so a CRLF document hashes like
+  its LF form and LF documents are unchanged. When the strict frontmatter
+  decode fails, it is retried once after quoting the value of a top-level
+  `name`, `description`, `license` or `compatibility` line whose plain value
+  contains a colon followed by a space (for example `description: Use for:
+  reports`) and does not start with a YAML indicator. No other key, and no
+  authority-bearing key, is ever repaired.
+- **Zip layouts.** Zips built by `zip -r` or Finder import. An empty
+  directory entry is skipped, but only after its name passes the same
+  canonicalization and traversal checks as a file (an absolute, `..` or
+  otherwise invalid name is still refused, as are symlinks, devices and a
+  directory entry carrying bytes); it creates nothing. When there is no root
+  `SKILL.md` and every entry sits under one top-level `<dir>/` that holds
+  `<dir>/SKILL.md`, that prefix is stripped, so the package hashes exactly
+  like the same content zipped at the root. Two skill folders, a root
+  `SKILL.md` beside a wrapped one, or a file outside the folder keep the
+  root-`SKILL.md` refusal. This relaxes the D-422 archive rule that refused
+  every directory entry and required `SKILL.md` at the root.
+- **Gate.** `ValidateSkillMarkdown` now requires a non-blank body instead of a
+  `## Steps` item; the importer then refuses a body without prose or steps.
+- **Advisory keys.** `license`, `compatibility`, `allowed-tools` and
+  `metadata` are accepted by the closed package frontmatter and are not
+  stored, hashed or exported. `allowed-tools` is not mapped onto
+  `required_tools`: a package grants no tools, and foreign tool names would
+  only make the capability filter hide the skill. Authority-bearing and other
+  unknown keys are still refused.
+
+**Not covered:** bundled scripts were refused by the v1.28 support MIME
+allowlist; D-499 admits them as text data. A free-form export
+is the Harbor form (frontmatter `trigger`, instructions as body prose), not a
+byte copy of the source. Binaries before this change refuse free-form packages
+and descriptions over 2000 runes; rolling back past it leaves such installed
+skills unreadable by the older validator.
+
+**Cross-references:** D-053, D-422, D-496, D-497.
+
+## D-499 — Bundled scripts, data and templates are plain-text support data
+
+**Date:** 2026-11-10. **Scope:** the support-file MIME allowlist
+(`internal/skills/package/mime.go`, `MIMEAllowlistVersion` v1.28 → v1.44). No
+config keys, no Protocol shape change.
+
+Agent Skills packages routinely bundle `scripts/`, data and template files,
+which the v1.28 allowlist refused because no honest bounded validator backs a
+dialect MIME such as `text/x-python`.
+
+- **One text class.** Common script, source, data and template extensions
+  (for example `py`, `sh`, `js`, `ts`, `rb`, `go`, `sql`, `yaml`/`yml`,
+  `toml`, `csv`, `html`, `css`, `ini`, `cfg`, `jinja`/`j2`, `tmpl`) classify
+  as `text/plain; charset=utf-8` and pass only the text check: valid UTF-8
+  and no NUL byte. An empty text file (an empty `__init__.py`) is valid text;
+  JSON and XML still parse, so an empty one stays refused. Common
+  extension-less text files are matched by exact, case-sensitive basename
+  (`LICENSE`, `LICENCE`, `NOTICE`, `COPYING`, `AUTHORS`, `README`,
+  `CHANGELOG`, `VERSION`, `CODEOWNERS`, `Makefile`, `Dockerfile`,
+  `Containerfile`, `Gemfile`, `Rakefile`, `Procfile`, `Brewfile`, `Pipfile`,
+  `Vagrantfile`) into the same class. `xsd`, `xsl` and `xslt` map to
+  `application/xml` under its well-formedness check (office-format skills
+  ship schema trees). No script, dialect or executable MIME is ever recorded
+  or served.
+- **Archive junk.** The macOS `__MACOSX/` tree and `.DS_Store` files are
+  skipped by raw entry name before any other check and never read; they do
+  not enter the manifest or the hash.
+- **Data, never code.** The files are stored and resolved as package support
+  data. Harbor never executes them; a model or tool that reads one gets text.
+- **Unchanged.** The per-file, total, count and ratio limits, nested-archive
+  rejection and path rules apply as before. Binary executables, archives,
+  other extension-less files and binary bytes behind a text extension stay
+  refused. Packages without such files keep their exact hashes.
+
+**Residual, stated:** a binary older than v1.44 refuses packages that carry
+text-class, empty-text, schema or basename-matched files.
+
+**Cross-references:** D-422, D-496, D-498.

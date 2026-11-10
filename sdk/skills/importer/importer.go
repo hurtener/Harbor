@@ -35,9 +35,11 @@ var (
 	ErrMalformedYAML = internal.ErrMalformedYAML
 	// ErrMissingTrigger — the mandatory planner match cue is absent.
 	ErrMissingTrigger = internal.ErrMissingTrigger
-	// ErrEmptySteps — Skills.md requires at least one step.
+	// ErrEmptySteps — the body declares no step and no instruction
+	// prose (a free-form body gets one step pointing at its prose).
 	ErrEmptySteps = internal.ErrEmptySteps
-	// ErrUnknownSection — an unrecognised `## Heading` (fails closed).
+	// ErrUnknownSection — a frontmatter description carries a section
+	// heading line. An unrecognised body heading is imported free-form.
 	ErrUnknownSection = internal.ErrUnknownSection
 	// ErrAttachmentOutsideRoot — an attachment path escaped the
 	// allowed root (CLAUDE.md §7 path-traversal rule).

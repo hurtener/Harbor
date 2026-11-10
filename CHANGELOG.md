@@ -17,6 +17,50 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.44.0] — 2026-11-10
+
+### Added
+
+- **Skill `description` in `SKILL.md` frontmatter.** The file importer and
+  the closed package parser (personal import, Agent-pack import, boot packs)
+  accept a frontmatter `description`. It is the skill's human-visible
+  explanation, distinct from `trigger`: its value comes first in the skill's
+  description, followed by any body prose. When `trigger` is absent it is
+  derived from the description (whitespace collapsed to one line), so common
+  external `SKILL.md` files that carry only `name` + `description` import.
+  Documents without a frontmatter `description` keep their exact package and
+  content hashes. Skill summaries (`agent_config.skills.list`,
+  `session.skills.list`, `user.skills.list`, the Agent-pack import commit,
+  the composition preview), the import review, and the installed-skill
+  summary gain an optional `description` excerpt (at most 500 runes).
+  `skill_create_draft` now asks for a short human description (D-497).
+- **Agent Skills `SKILL.md` files import.** A body with arbitrary headings,
+  numbered lists and no `## Steps` is no longer refused: it is kept verbatim as
+  the skill's instructions (its description, which `skill_get` returns), any
+  trailing canonical sections are still parsed, and one step pointing at the
+  instructions is supplied when none is declared. Sectioned Harbor documents
+  parse, hash and round-trip exactly as before. The frontmatter keys `license`,
+  `compatibility`, `allowed-tools` and `metadata` are accepted as advisory and
+  never grant tools. The description bound is 32 KiB (other text fields stay
+  at 2000 runes), the `skill_get` default budget is 12288 estimated tokens,
+  and `skill_list` / `skill_search` return a 500-rune description excerpt.
+  A derived trigger is capped at 2000 runes. CRLF `SKILL.md` files and an
+  unquoted colon in a `name` / `description` / `license` / `compatibility`
+  value are accepted (D-498).
+- **Bundled scripts and data in skill packages.** Common script, source, data
+  and template files (`.py`, `.sh`, `.js`, `.ts`, `.sql`, `.yaml`, `.csv`,
+  `.html`, `.j2`, and similar) are accepted as support files. They must be
+  UTF-8 without NUL bytes (empty files included), are recorded as
+  `text/plain; charset=utf-8`, and are stored as data that Harbor never
+  executes. Common extension-less text files (`LICENSE`, `NOTICE`,
+  `Makefile`, `Dockerfile`, …) are accepted by exact name, `.xsd` / `.xsl` /
+  `.xslt` as XML, and macOS `__MACOSX/` and `.DS_Store` entries are skipped.
+  Zips made by `zip -r` or Finder import: empty directory entries are skipped
+  after the usual path checks, and one top-level folder wrapping the whole
+  skill is stripped, hashing like the same content zipped at the root.
+  Binary executables and archives stay refused. The support MIME allowlist
+  version is now `v1.44` (D-499).
+
 ## [1.43.0] — 2026-11-10
 
 ### Added

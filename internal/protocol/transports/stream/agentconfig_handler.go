@@ -59,6 +59,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/skills"
+	skillpkg "github.com/hurtener/Harbor/internal/skills/package"
 )
 
 // AgentConfigRoutePattern is the http.ServeMux prefix pattern the
@@ -1395,6 +1396,7 @@ func projectUserSkillImportCommit(resp agentcfgprotocol.UserSkillImportCommitRes
 		Skill: prototypes.AgentConfigUserSkillInstalledSummary{
 			Name:        resp.Skill.Name,
 			Title:       resp.Skill.Title,
+			Description: skillpkg.DescriptionSummary(resp.Skill.Description),
 			Trigger:     resp.Skill.Trigger,
 			TaskType:    resp.Skill.TaskType,
 			Tags:        append([]string(nil), resp.Skill.Tags...),
@@ -1474,6 +1476,7 @@ func projectCompositionPreview(resp agentcfgprotocol.CompositionPreviewResponse)
 			Skill: prototypes.AgentConfigSkillSummary{
 				Name:        it.Skill.Name,
 				Title:       it.Skill.Title,
+				Description: skillpkg.DescriptionSummary(it.Skill.Description),
 				Trigger:     it.Skill.Trigger,
 				TaskType:    it.Skill.TaskType,
 				Origin:      string(it.Skill.Origin),

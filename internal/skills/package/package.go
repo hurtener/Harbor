@@ -74,9 +74,16 @@ const (
 	// MaxPackageVersionRunes bounds the optional package version.
 	MaxPackageVersionRunes = 64
 	// MaxPackageTextRunes bounds each single logical text field
-	// (title, description, trigger, task_type, one step, one
+	// (title, trigger, task_type, one step, one
 	// precondition, one failure mode, one annotation).
 	MaxPackageTextRunes = 2000
+	// MaxPackageDescriptionBytes bounds the description in UTF-8
+	// bytes — the unit skill_get's chars/4 token estimator counts, so
+	// a description at the bound is a fixed 8192 estimated tokens
+	// whatever its script. It is larger than the other text fields
+	// because a free-form SKILL.md keeps its whole instruction body
+	// there.
+	MaxPackageDescriptionBytes = 32 << 10
 	// MaxPackageSteps bounds the ordered procedural steps.
 	MaxPackageSteps = 64
 	// MaxPackageTags bounds the tags.
@@ -188,7 +195,7 @@ type SupportFile struct {
 	// Unicode-collision class by construction).
 	Path string `json:"path"`
 	// Mime is the canonical MIME type of the file, drawn from the
-	// closed v1.28 support allowlist (mime.go). Entries outside the
+	// closed support allowlist (mime.go). Entries outside the
 	// allowlist are rejected before a SupportFile ever exists, and
 	// when the entry carries materialized Data the MIME is CONTENT
 	// TRUTH: the bytes must satisfy the MIME's bounded content check
