@@ -158,6 +158,9 @@ type TaskSnapshot struct {
 	// deferred honestly (the row stays mutable).
 	AnswerPresent bool
 	Answer        turns.Answer
+	// CompletedFinishReason is the completed answer's finish reason when it
+	// is not a satisfied goal (limit_reached); empty means goal.
+	CompletedFinishReason turns.FinishReason
 
 	// OutputsPresent reports whether the record carries output
 	// attachment metadata (never bytes). When true, Outputs replace

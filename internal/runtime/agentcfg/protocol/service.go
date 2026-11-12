@@ -1157,6 +1157,9 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 	if req.Payload.Memory != nil && (!s.memoryBudgetAvailable || req.Payload.Memory.BudgetTokens < 0) {
 		return prototypes.AgentConfigSetRevisionResponse{}, ErrInvalidMemory
 	}
+	if err := ValidateRunLimits(req.Payload.RunLimits); err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
 	// A full-payload set that pins additive prompt blocks runs the SAME
 	// name-charset + uniqueness + non-empty-body validation the
 	// set_extra_system_blocks door enforces, so a section this second door
@@ -1527,6 +1530,10 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 	if p.Memory != nil {
 		out.Memory = &prototypes.AgentConfigMemory{BudgetTokens: p.Memory.BudgetTokens}
 	}
+	if p.RunLimits != nil {
+		limits := p.RunLimits.Clone()
+		out.RunLimits = &prototypes.AgentConfigRunLimits{MaxDurationSeconds: limits.MaxDurationSeconds, MaxTokens: limits.MaxTokens}
+	}
 	if p.Naming != nil {
 		out.Naming = &prototypes.AgentConfigNaming{
 			Auto:           p.Naming.Auto,
@@ -1771,6 +1778,9 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 	if p.Memory != nil {
 		out.Memory = &agentcfg.MemorySection{BudgetTokens: p.Memory.BudgetTokens}
 	}
+	if p.RunLimits != nil {
+		out.RunLimits = (&agentcfg.RunLimitsSection{MaxDurationSeconds: p.RunLimits.MaxDurationSeconds, MaxTokens: p.RunLimits.MaxTokens}).Clone()
+	}
 	if p.Naming != nil {
 		out.Naming = &agentcfg.NamingSection{
 			Auto:           p.Naming.Auto,
@@ -1859,6 +1869,7 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			BudgetTokensFrom:    d.Memory.BudgetTokensFrom,
 			BudgetTokensTo:      d.Memory.BudgetTokensTo,
 		},
+		RunLimits: runLimitsDiffToWire(d.RunLimits),
 		Naming: prototypes.AgentConfigNamingDiff{
 			AutoChanged: d.Naming.AutoChanged,
 			AutoFrom:    d.Naming.AutoFrom,

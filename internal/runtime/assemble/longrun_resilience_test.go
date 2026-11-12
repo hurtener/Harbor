@@ -12,6 +12,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -203,5 +204,69 @@ func TestLongRun_StuckSessionRecoversOnNextTurn(t *testing.T) {
 				t.Fatalf("turn after recovery: %v", err)
 			}
 		})
+	}
+}
+
+// limitDriver reports real usage and answers the runtime's final instruction.
+type limitDriver struct {
+	mu        sync.Mutex
+	calls     int
+	finalReqs []llm.CompleteRequest
+}
+
+func (d *limitDriver) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls++
+	usage := llm.Usage{ReportPresent: true, PromptTokens: 5000, CompletionTokens: 100}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Content.Text != nil && strings.Contains(*last.Content.Text, "Do not call any tools") {
+		d.finalReqs = append(d.finalReqs, req)
+		return llm.CompleteResponse{Content: "Read three reports; two remain.", FinishReason: "stop", Usage: usage}, nil
+	}
+	return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{ID: fmt.Sprint("read-", d.calls), Name: "bulk_read",
+		Args: json.RawMessage(`{"ordinal":1}`)}}, FinishReason: "tool_calls", Usage: usage}, nil
+}
+
+func (*limitDriver) Close(context.Context) error { return nil }
+
+// A token limit stops an embedded run gracefully: the composed client counts
+// real usage, the final call offers no tools, and the envelope reports
+// limit_reached with the partial answer instead of an error.
+func TestLongRun_TokenLimitStopsWithPartialAnswer(t *testing.T) {
+	cfg := minimalCfg(t)
+	cfg.Runtime.RunLimits.MaxTokens = 1_000_000 // the per-run option below is stricter
+	driver := &limitDriver{}
+	name := "run-limit-" + string(state.NewEventID())
+	llm.Register(name, func(llm.ConfigSnapshot, llm.Deps) (llm.Driver, error) { return driver, nil })
+	snapshot := llm.ConfigSnapshot{Driver: name, Model: "fixture", ContextWindowReserve: .05, HeavyOutputThreshold: 128 * 1024,
+		ModelProfiles:      map[string]llm.ModelProfile{"fixture": {ContextWindowTokens: 100_000}},
+		DisableCorrections: true, DisableDowngrade: true, DisableRetry: true, DisableGovernance: true}
+	stack, err := assemble.Assemble(t.Context(), cfg, assemble.Options{LLMSnapshot: &snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stack.Close(context.Background()) }()
+	if err := stack.Catalog.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "bulk_read", Description: "Read one report",
+		Transport: tools.TransportInProcess, Source: "limit-fixture", Loading: tools.LoadingAlways,
+		ArgsSchema: json.RawMessage(`{"type":"object","properties":{"ordinal":{"type":"integer"}}}`)},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{Value: map[string]any{"report": "ok"}}, nil
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	env, err := stack.RunOnce(t.Context(), "Read every report", identity.Identity{TenantID: "t", UserID: "u", SessionID: "limit"},
+		assemble.WithRunID("limited"), assemble.WithRunLimits(planner.RunLimits{MaxTokens: 12_000}))
+	if err != nil {
+		t.Fatalf("a run limit must not fail the run: %v", err)
+	}
+	if env.FinishReason != string(planner.FinishLimitReached) || env.Answer != "Read three reports; two remain." {
+		t.Fatalf("envelope = %+v", env)
+	}
+	driver.mu.Lock()
+	defer driver.mu.Unlock()
+	// 5100 tokens per call: the third call crosses 12000, then one final call.
+	if driver.calls != 4 || len(driver.finalReqs) != 1 || len(driver.finalReqs[0].Tools) != 0 {
+		t.Fatalf("calls=%d final=%d; want three tool calls then one tool-free final call", driver.calls, len(driver.finalReqs))
 	}
 }

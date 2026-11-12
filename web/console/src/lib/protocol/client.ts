@@ -167,6 +167,13 @@ export interface RunLLMSettings {
  max_tokens?: number;
 }
 
+/** Per-run request to tighten the effective run limits; it can never loosen
+ * or remove a limit. Mirrors `types.RunLimitsRequest`. */
+export interface RunLimitsRequest {
+	max_duration_seconds?: number;
+	max_tokens?: number;
+}
+
 /** Options the `HarborClient` is constructed with. */
 export interface HarborClientOptions {
 	/** The resolved Runtime connection (base URL + token + identity triple). */
@@ -904,12 +911,15 @@ export class ControlNamespace {
 			 */
 			providerRoute?: LLMProviderRouteSelector;
 			llmSettings?: RunLLMSettings;
+			/** Optional stricter run limits for this run. */
+			runLimits?: RunLimitsRequest;
 			/** Physical catalog tool names allowed for this run; [] closes tool access. */
 			toolAllowlist?: string[];
 		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
 		if (opts.llmSettings !== undefined) body.llm_settings = opts.llmSettings;
+		if (opts.runLimits !== undefined) body.run_limits = opts.runLimits;
 		if (opts.toolAllowlist !== undefined) body.tool_allowlist = opts.toolAllowlist;
 		if (opts.description !== undefined) {
 			body.description = opts.description;

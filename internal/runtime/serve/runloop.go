@@ -220,6 +220,11 @@ type RunLoopDriverOptions struct {
 	TokenBudget int
 	Compression *planner.CompressionRunner
 
+	// RunLimits is the runtime-default per-run limit (`runtime.run_limits`).
+	// An active agent-config `run_limits` section replaces it at run start;
+	// a task's own request can only tighten the result.
+	RunLimits planner.RunLimits
+
 	// the per-agent attachment disposition policy
 	// decoded from `multimodal.disposition` (the middle precedence
 	// layer of the disposition resolution). Zero value = no agent
@@ -417,6 +422,7 @@ type RunLoopDriver struct {
 
 	// trajectory compression projection.
 	tokenBudget int
+	runLimits   planner.RunLimits
 	compression *planner.CompressionRunner
 
 	// per-agent attachment disposition policy.
@@ -609,6 +615,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		namingLLM:                opts.NamingLLM,
 		trajectories:             make(map[tasks.TaskID]*trackedTrajectory),
 		tokenBudget:              opts.TokenBudget,
+		runLimits:                opts.RunLimits,
 		compression:              opts.Compression,
 	}
 	if opts.StateStore != nil && opts.SignedOAuthMCPReconciler != nil {
@@ -2093,6 +2100,22 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
+	runLimits, limitsErr := projection.ActiveRunLimits(taskCtx, d.agentConfig, effectiveAgentID, q, d.runLimits)
+	if limitsErr != nil {
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: run-limit projection failed", slog.String("err", limitsErr.Error()))
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(limitsErr, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "run-limit projection failed: " + limitsErr.Error(),
+		})); mErr != nil {
+			d.logger.Warn("RunLoopDriver: MarkFailed after run-limit projection failed", slog.String("err", mErr.Error()))
+		}
+		return
+	}
+	if req := task.RunLimits; req != nil {
+		runLimits = runLimits.Stricter(planner.RunLimits{
+			MaxDuration: time.Duration(req.MaxDurationSeconds) * time.Second, MaxTokens: req.MaxTokens,
+		})
+	}
 	if virtualProfile != nil {
 		profile := *virtualProfile
 		maxSteps = virtualagent.OverlayClampMaxSteps(maxSteps, profile.Overlay.MaxSteps)
@@ -2190,6 +2213,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		ToolExecutor:     d.executor,   // dispatch CallTool decisions
 		OnToolDispatched: dispatchHook, // item 7 — advance Task.ToolCount on dispatch
 		MaxSteps:         maxSteps,
+		Limits:           runLimits,      // agent-config over runtime default, tightened by the task
 		TrancheSteps:     d.trancheSteps, // 0 = tranche pausing disabled (legacy terminal ceiling)
 		Compression:      d.compression,  // trajectory compression runner
 		CompletionHook:   completionHook, // run-completion transcript egress (nil = no hook)
@@ -2303,7 +2327,11 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// / MarkFailed. Only FinishGoal maps to Complete; every other reason
 	// is a non-success terminal (the run finished but did not satisfy
 	// the goal) and maps to Failed with the reason as the error code.
-	if fin.Reason == planner.FinishGoal {
+	if planner.FinishAnswersTurn(fin.Reason) {
+		// A graceful stop at a run limit completes the turn with its
+		// partial answer exactly like a satisfied goal; the envelope's
+		// finish_reason carries limit_reached.
+		//
 		// populate the answer envelope so Protocol
 		// consumers (Console Playground, CLI, third-party UIs) read the
 		// actual assistant response via tasks.get → result_inline.

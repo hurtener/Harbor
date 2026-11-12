@@ -196,6 +196,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	// --- Run-completion hook lifecycle.
 	steering.EventTypeRunHookDispatched: {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookDispatchedPayload{})}},
 	steering.EventTypeRunHookFailed:     {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookFailedPayload{})}},
+	steering.EventTypeRunLimitReached:   {Payloads: []reflect.Type{reflect.TypeOf(steering.RunLimitReachedPayload{})}},
 
 	// --- Session auto-naming.
 	steering.EventTypeSessionNamingFailed: {Payloads: []reflect.Type{reflect.TypeOf(steering.SessionNamingFailedPayload{})}},

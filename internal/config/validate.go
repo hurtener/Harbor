@@ -169,6 +169,12 @@ func (c *Config) validateRuntime() error {
 		return fieldError("runtime.hooks.run_completion.tool",
 			"must be set when runtime.hooks.run_completion.timeout is configured")
 	}
+	if l := c.Runtime.RunLimits; l.MaxDuration < 0 || l.MaxDuration > MaxRunLimitDuration {
+		return fieldError("runtime.run_limits.max_duration", "must be between 0 (no limit) and 720h")
+	}
+	if c.Runtime.RunLimits.MaxTokens < 0 {
+		return fieldError("runtime.run_limits.max_tokens", "must not be negative (0 means no limit)")
+	}
 	return c.validateRuntimeNaming()
 }
 

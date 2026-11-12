@@ -641,6 +641,9 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 	if deps.ProviderRoute.Resolver != nil {
 		client = newProviderRouteClient(client, deps.ProviderRoute, routeValidator)
 	}
+	// Run usage accounting is outermost so every call a run makes, including
+	// context maintenance, counts toward its cumulative token limit.
+	client = &runUsageClient{inner: client}
 	return client, nil
 }
 

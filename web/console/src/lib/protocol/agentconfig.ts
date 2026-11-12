@@ -262,6 +262,25 @@ export interface AgentConfigMemoryDiff {
 	budget_tokens_to: string;
 }
 
+/** Per-run limits replacing the runtime default for subsequent runs. A
+ * present section is authoritative: an omitted field means no limit for that
+ * dimension. Mirrors `types.AgentConfigRunLimits`. */
+export interface AgentConfigRunLimits {
+	max_duration_seconds?: number;
+	max_tokens?: number;
+}
+
+/** Present only when the run-limit section changed. Empty means the section
+ * is absent; "none" means present without a limit for that dimension. */
+export interface AgentConfigRunLimitsDiff {
+	max_duration_changed: boolean;
+	max_duration_from: string;
+	max_duration_to: string;
+	max_tokens_changed: boolean;
+	max_tokens_from: string;
+	max_tokens_to: string;
+}
+
 export interface AgentConfigNaming {
 	auto?: boolean;
 	after_turns?: number;
@@ -315,6 +334,7 @@ export interface AgentConfigPayload {
 	hooks?: AgentConfigHooks;
 	naming?: AgentConfigNaming;
 	memory?: AgentConfigMemory;
+	run_limits?: AgentConfigRunLimits;
 	extra_system_blocks?: AgentConfigExtraSystemBlocks;
 	/** Read-only; generic set_revision must not author or clear this field. */
 	signed_oauth_mcp_pair?: AgentConfigSignedOAuthMCPPair;
@@ -573,6 +593,7 @@ export interface AgentConfigDiff {
 	hooks: AgentConfigHooksDiff;
 	naming: AgentConfigNamingDiff;
 	memory?: AgentConfigMemoryDiff;
+	run_limits?: AgentConfigRunLimitsDiff;
 	extra_system_blocks: AgentConfigExtraSystemBlocksDiff;
 }
 

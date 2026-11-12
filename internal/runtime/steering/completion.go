@@ -205,6 +205,8 @@ func outcomeFor(fin planner.Finish, err error) string {
 		return "deadline_exceeded"
 	case planner.FinishConstraintsConflict:
 		return "constraints_conflict"
+	case planner.FinishLimitReached:
+		return "limit_reached"
 	default:
 		// An unknown / empty FinishReason on a nil-error return is a
 		// runtime invariant slip; classify it as "error" rather than

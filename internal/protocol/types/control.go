@@ -125,6 +125,9 @@ type StartRequest struct {
 	// LLMSettings is copied into this task at acceptance, including durable
 	// recovery and retries. It changes neither runtime config nor preferences.
 	LLMSettings *RunLLMSettings `json:"llm_settings,omitempty"`
+	// RunLimits optionally tightens this run's maximum active duration or
+	// cumulative tokens. It can only narrow the agent/runtime limits.
+	RunLimits *RunLimitsRequest `json:"run_limits,omitempty"`
 	// Query is the user-facing query that starts the run. Optional —
 	// some runs are kicked off without a natural-language query.
 	Query string `json:"query,omitempty"`

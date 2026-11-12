@@ -82,6 +82,8 @@ type runOnceConfig struct {
 	// is disabled for this run even when the config enables one).
 	completionHook    *steering.CompletionHookSpec
 	completionHookSet bool
+	// runLimits tightens the configured runtime.run_limits for this run.
+	runLimits planner.RunLimits
 }
 
 // RunOption configures a RunOnce invocation. The functional-option
@@ -191,6 +193,12 @@ func WithCompletionHook(spec *steering.CompletionHookSpec) RunOption {
 		c.completionHook = spec
 		c.completionHookSet = true
 	}
+}
+
+// WithRunLimits tightens this run's limits. Each positive value narrows the
+// configured `runtime.run_limits`; it never loosens or removes a limit.
+func WithRunLimits(limits planner.RunLimits) RunOption {
+	return func(c *runOnceConfig) { c.runLimits = limits }
 }
 
 // RunOnce drives goal through the assembled planner/run-loop under the
@@ -421,6 +429,8 @@ func (s *Stack) RunOnce(
 		MaxSteps:       s.Cfg.Planner.MaxSteps,
 		Compression:    s.Compression,
 		CompletionHook: completionHook,
+		Limits: planner.RunLimits{MaxDuration: s.Cfg.Runtime.RunLimits.MaxDuration, MaxTokens: s.Cfg.Runtime.RunLimits.MaxTokens}.
+			Stricter(cfg.runLimits),
 	}
 	if retained != nil {
 		spec.DispatchCheckpoint = retained
@@ -467,7 +477,7 @@ func (s *Stack) RunOnce(
 	if err != nil {
 		return planner.AnswerEnvelope{}, err
 	}
-	if fin.Reason == planner.FinishGoal {
+	if planner.FinishAnswersTurn(fin.Reason) {
 		// A successful embed RunOnce is a terminal boundary just like the
 		// task-driven serve path. Drain accepted async observability before
 		// memory writeback and returning the completed envelope. Legacy
@@ -479,7 +489,7 @@ func (s *Stack) RunOnce(
 	}
 
 	switch fin.Reason {
-	case planner.FinishGoal:
+	case planner.FinishGoal, planner.FinishLimitReached:
 		retainedStatus, retainedAnswer = "complete", env.Answer
 	case planner.FinishCancelled:
 		retainedStatus = "cancelled"

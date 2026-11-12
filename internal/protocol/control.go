@@ -614,6 +614,9 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		}
 	}
 
+	if err := runLimitsFromWire(sr.RunLimits).Validate(); err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %v", string(method), err)
+	}
 	settings := runSettingsFromWire(sr.LLMSettings)
 	if err := llm.ValidateRunSettings(settings, providerRouteFromWire(sr.ProviderRoute)); err != nil {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: %v", string(method), err)
@@ -644,6 +647,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		ExternalGrant:                append([]byte(nil), sr.ExternalGrant...),
 		ProviderRoute:                providerRouteFromWire(sr.ProviderRoute),
 		LLMSettings:                  settings,
+		RunLimits:                    runLimitsFromWire(sr.RunLimits),
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)
@@ -660,6 +664,13 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		ProtocolVersion:      types.ProtocolVersion,
 		ToolAllowlistApplied: applied,
 	}, nil
+}
+
+func runLimitsFromWire(r *types.RunLimitsRequest) *tasks.RunLimitsRequest {
+	if r == nil {
+		return nil
+	}
+	return &tasks.RunLimitsRequest{MaxDurationSeconds: r.MaxDurationSeconds, MaxTokens: r.MaxTokens}
 }
 
 func runSettingsFromWire(s *types.RunLLMSettings) *llm.RunSettings {

@@ -1198,6 +1198,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
 		ArtifactStore:            artStore,
 		TokenBudget:              cfg.Memory.BudgetTokens,
+		RunLimits:                planner.RunLimits{MaxDuration: cfg.Runtime.RunLimits.MaxDuration, MaxTokens: cfg.Runtime.RunLimits.MaxTokens},
 		Compression:              stack.Compression,
 		DispositionPolicy:        dispositionPolicy,
 		TenantOverrides:          tenantOverridePolicy,

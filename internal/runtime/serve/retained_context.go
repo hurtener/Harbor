@@ -50,7 +50,7 @@ func (d *RunLoopDriver) runWithRetainedContext(ctx context.Context, spec steerin
 	if errors.Is(err, context.Canceled) || fin.Reason == planner.FinishCancelled {
 		status = "cancelled"
 	}
-	if err == nil && fin.Reason == planner.FinishGoal {
+	if err == nil && planner.FinishAnswersTurn(fin.Reason) {
 		// An invalid final answer cannot become a successful retained turn.
 		// The same builder validates the outward TaskResult later in runOne.
 		envelope, envelopeErr := runctx.FinishAnswerEnvelope(fin, spec.Base.Trajectory, spec.Base.OutputSchema)

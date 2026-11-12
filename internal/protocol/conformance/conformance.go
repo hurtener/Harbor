@@ -2055,8 +2055,8 @@ func runVersionHandshake(t *testing.T) {
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.)
-	if len(caps) != 18 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 18 (including run-scoped tools) at Protocol 0.1.0", len(caps))
+	if len(caps) != 19 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 19 (including run limits) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
 		types.CapTaskControl:                   {},
@@ -2077,6 +2077,7 @@ func runVersionHandshake(t *testing.T) {
 		types.CapLLMProviderRouteModelProfile:  {},
 		types.CapTenantScopedBrokerCredentials: {},
 		types.CapRunScopedTools:                {},
+		types.CapRunLimits:                     {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {

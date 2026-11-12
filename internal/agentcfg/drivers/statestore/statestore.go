@@ -850,6 +850,7 @@ func (r *registry) Diff(ctx context.Context, id identity.Quadruple, agentID, fro
 		Hooks:          agentcfg.DiffHooks(from.Payload, to.Payload),
 		Naming:         agentcfg.DiffNaming(from.Payload, to.Payload),
 		Memory:         agentcfg.DiffMemory(from.Payload, to.Payload),
+		RunLimits:      agentcfg.DiffRunLimits(from.Payload, to.Payload),
 		// Order is render order for the additive prompt blocks, so a pure
 		// re-ordering is a real change and the diff reports it.
 		ExtraSystemBlocks: agentcfg.DiffExtraSystemBlocks(from.Payload, to.Payload),

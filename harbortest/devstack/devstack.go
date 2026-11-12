@@ -987,6 +987,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),
 				ArtifactStore:            stack.Artifacts,
 				TokenBudget:              cfg.Memory.BudgetTokens,
+				RunLimits:                planner.RunLimits{MaxDuration: cfg.Runtime.RunLimits.MaxDuration, MaxTokens: cfg.Runtime.RunLimits.MaxTokens},
 				Compression:              core.Compression,
 				DispositionPolicy:        dispositionPolicy,
 				TenantOverrides:          tenantPolicy,

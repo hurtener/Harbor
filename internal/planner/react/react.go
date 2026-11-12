@@ -128,6 +128,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -630,6 +631,11 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		}, nil
 	}
 
+	// Run limit reached: one bounded final answer, no tools.
+	if rc.Control.Finalize != nil {
+		return p.finalize(ctx, rc)
+	}
+
 	// Circuit breaker: the planner-side defence is subordinate to the
 	// runloop's bounded-tranche continuation. Count only successful
 	// tool-bearing invocations in the current tranche. Planner controls,
@@ -876,6 +882,65 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		rc.OnAssistantContent(resp.Content)
 	}
 
+	p.stepsTaken.Add(1)
+	return final, nil
+}
+
+// finalize answers a run that reached a configured limit: the ordinary
+// context (with the same compaction preparation) plus the runtime's final
+// instruction, no tool declarations, and a bounded output allowance. Tool
+// calls in the response are ignored; an empty answer is an invalid decision
+// the runtime replaces with a deterministic partial answer.
+func (p *ReActPlanner) finalize(ctx context.Context, rc planner.RunContext) (planner.Decision, error) {
+	rc.PendingToolCalls = nil
+	discovery := newDiscoverySnapshot(rc.Catalog)
+	projectedTools, _, _ := projectModelToolsListedFrom(rc, rc.DiscoveredTools, discovery)
+	req, err := p.buildContextRequest(rc, projectedTools, discovery)
+	if err != nil {
+		return nil, err
+	}
+	instruction := llm.ChatMessage{Role: llm.RoleUser, Content: textContent(rc.Control.Finalize.Instructions)}
+	req.Messages = append(req.Messages, instruction)
+	req.RebuildMessages = nil
+	if _, prepare := llm.ContextPreparationFrom(ctx); prepare {
+		rebuild := p.rebuildMessages(rc, projectedTools, discovery)
+		req.RebuildMessages = func() ([]llm.ChatMessage, error) {
+			messages, err := rebuild()
+			if err != nil {
+				return nil, err
+			}
+			return append(messages, instruction), nil
+		}
+	}
+	applyLLMOverrides(&req, rc.LLMOverrides)
+	if limit := rc.Control.Finalize.MaxOutputTokens; limit > 0 && (req.MaxTokens == nil || *req.MaxTokens > limit) {
+		req.MaxTokens = &limit
+	}
+	if len(rc.ExternalGrant) > 0 {
+		var grant llm.ExternalGrant
+		if err := json.Unmarshal(rc.ExternalGrant, &grant); err != nil {
+			return nil, fmt.Errorf("external grant carrier: %w", err)
+		}
+		req.ExternalGrant = &grant
+	}
+	req.Tools = nil
+	req.ParallelToolCalls = false
+	if rc.OnChunk != nil {
+		req.Stream = true
+		req.OnContent = func(delta string, done bool) {
+			rc.OnChunk(delta, done, planner.ChunkContent)
+		}
+	}
+	resp, err := p.client.Complete(llm.WithCallRole(ctx, llm.CallRolePlanner), req)
+	if err != nil {
+		return nil, err
+	}
+	answer := strings.TrimSpace(resp.Content)
+	if answer == "" {
+		return nil, fmt.Errorf("%w: empty final answer at run limit", planner.ErrInvalidDecision)
+	}
+	final := planner.Finish{Reason: planner.FinishLimitReached, Payload: answer}
+	p.emitDecision(rc, final, resp.Reasoning)
 	p.stepsTaken.Add(1)
 	return final, nil
 }

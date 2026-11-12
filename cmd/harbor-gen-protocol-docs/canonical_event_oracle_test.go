@@ -108,6 +108,7 @@ planner.repair_guidance_injected
 planner.tool_declaration_collision
 run.hook_dispatched
 run.hook_failed
+run.limit_reached
 runs.overrides_set
 runtime.error
 runtime.run_cancelled

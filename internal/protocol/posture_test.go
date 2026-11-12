@@ -782,6 +782,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		want := []types.Capability{
 			types.CapCallerMemory,
 			types.CapEventsSubscribe,
+			types.CapRunLimits,
 			types.CapRunLLMSettings,
 			types.CapRunScopedTools,
 			types.CapRuntimePosture,
@@ -804,6 +805,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		want := []types.Capability{
 			types.CapCallerMemory,
 			types.CapEventsSubscribe,
+			types.CapRunLimits,
 			types.CapRunLLMSettings,
 			types.CapRunScopedTools,
 			types.CapRuntimePosture,
@@ -835,6 +837,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 			types.CapAgentConfig,
 			types.CapCallerMemory,
 			types.CapEventsSubscribe,
+			types.CapRunLimits,
 			types.CapRunLLMSettings,
 			types.CapRunScopedTools,
 			types.CapRuntimePosture,
@@ -865,6 +868,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 		want := []types.Capability{
 			types.CapCallerMemory,
 			types.CapEventsSubscribe,
+			types.CapRunLimits,
 			types.CapRunLLMSettings,
 			types.CapRunScopedTools,
 			types.CapRuntimePosture,
@@ -884,6 +888,7 @@ func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
 			types.CapAgentConfig,
 			types.CapCallerMemory,
 			types.CapEventsSubscribe,
+			types.CapRunLimits,
 			types.CapRunLLMSettings,
 			types.CapRunScopedTools,
 			types.CapRuntimePosture,
@@ -922,6 +927,7 @@ func TestPostureSurface_Info_SkillPublicationsCapability(t *testing.T) {
 	want := []types.Capability{
 		types.CapCallerMemory,
 		types.CapEventsSubscribe,
+		types.CapRunLimits,
 		types.CapRunLLMSettings,
 		types.CapRunScopedTools,
 		types.CapRuntimePosture,
