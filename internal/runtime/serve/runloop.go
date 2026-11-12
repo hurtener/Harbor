@@ -2100,22 +2100,6 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		}
 		return
 	}
-	runLimits, limitsErr := projection.ActiveRunLimits(taskCtx, d.agentConfig, effectiveAgentID, q, d.runLimits)
-	if limitsErr != nil {
-		d.logger.ErrorContext(taskCtx, "RunLoopDriver: run-limit projection failed", slog.String("err", limitsErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(limitsErr, tasks.TaskError{
-			Code:    planner.TaskErrorCodeRunLoopError,
-			Message: "run-limit projection failed: " + limitsErr.Error(),
-		})); mErr != nil {
-			d.logger.Warn("RunLoopDriver: MarkFailed after run-limit projection failed", slog.String("err", mErr.Error()))
-		}
-		return
-	}
-	if req := task.RunLimits; req != nil {
-		runLimits = runLimits.Stricter(planner.RunLimits{
-			MaxDuration: time.Duration(req.MaxDurationSeconds) * time.Second, MaxTokens: req.MaxTokens,
-		})
-	}
 	if virtualProfile != nil {
 		profile := *virtualProfile
 		maxSteps = virtualagent.OverlayClampMaxSteps(maxSteps, profile.Overlay.MaxSteps)
@@ -2176,6 +2160,25 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 				slog.String("err", mErr.Error()))
 		}
 		return
+	}
+
+	// Resolve the effective run limits last among the run-start projections
+	// (agent-config over yaml); the task's own request can only tighten them.
+	runLimits, limitsErr := projection.ActiveRunLimits(taskCtx, d.agentConfig, effectiveAgentID, q, d.runLimits)
+	if limitsErr != nil {
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: run-limit projection failed", slog.String("err", limitsErr.Error()))
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(limitsErr, tasks.TaskError{
+			Code:    planner.TaskErrorCodeRunLoopError,
+			Message: "run-limit projection failed: " + limitsErr.Error(),
+		})); mErr != nil {
+			d.logger.Warn("RunLoopDriver: MarkFailed after run-limit projection failed", slog.String("err", mErr.Error()))
+		}
+		return
+	}
+	if req := task.RunLimits; req != nil {
+		runLimits = runLimits.Stricter(planner.RunLimits{
+			MaxDuration: time.Duration(req.MaxDurationSeconds) * time.Second, MaxTokens: req.MaxTokens,
+		})
 	}
 
 	spec := steering.RunSpec{

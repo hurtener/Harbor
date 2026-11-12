@@ -110,7 +110,7 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil || !found || cleared.Note != "" {
 			t.Fatalf("clearing the note: %+v %v", cleared, err)
 		}
-		if got, _, _ := s.GetRef(ctx, scopeA(), ref.ID); got == nil || got.Note != "" {
+		if got, _, getErr := s.GetRef(ctx, scopeA(), ref.ID); getErr != nil || got == nil || got.Note != "" {
 			t.Fatalf("cleared note persisted: %+v", got)
 		}
 	})
@@ -135,7 +135,7 @@ func Run(t *testing.T, factory Factory) {
 		if _, _, err := s.SetNote(ctx, artifacts.ArtifactScope{TenantID: "t"}, ref.ID, "x"); !errors.Is(err, artifacts.ErrIdentityRequired) {
 			t.Fatalf("missing identity: %v", err)
 		}
-		if got, _, _ := s.GetRef(ctx, scopeA(), ref.ID); got == nil || got.Note != "" {
+		if got, _, getErr := s.GetRef(ctx, scopeA(), ref.ID); getErr != nil || got == nil || got.Note != "" {
 			t.Fatalf("a refused note was stored: %+v", got)
 		}
 	})
@@ -151,7 +151,7 @@ func Run(t *testing.T, factory Factory) {
 		if got, found, err := s.SetNote(ctx, scopeB(), ref.ID, "written from B"); err != nil || found || got != nil {
 			t.Fatalf("cross-tenant SetNote reached the artifact: %+v %v %v", got, found, err)
 		}
-		if got, _, _ := s.GetRef(ctx, scopeA(), ref.ID); got == nil || got.Note != "" {
+		if got, _, getErr := s.GetRef(ctx, scopeA(), ref.ID); getErr != nil || got == nil || got.Note != "" {
 			t.Fatalf("cross-tenant note leaked: %+v", got)
 		}
 	})

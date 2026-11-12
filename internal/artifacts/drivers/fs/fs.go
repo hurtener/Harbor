@@ -399,7 +399,7 @@ func (d *driver) SetNote(_ context.Context, scope artifacts.ArtifactScope, id, n
 		if jerr != nil {
 			return nil, false, jerr
 		}
-		raw, rerr := os.ReadFile(metaPath) //nolint:gosec // path built by safeJoin under the store root
+		raw, rerr := os.ReadFile(metaPath)
 		if errors.Is(rerr, fs.ErrNotExist) {
 			continue
 		}

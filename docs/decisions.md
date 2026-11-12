@@ -16985,4 +16985,3 @@ its overflow line at `artifact_list`; heavy-result previews mention
 `artifact_search`.
 
 **Cross-references:** D-347, D-352.
-

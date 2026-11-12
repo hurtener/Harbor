@@ -30,8 +30,10 @@ func WithRunUsage(ctx context.Context) (context.Context, *RunUsage) {
 
 // RunUsageFrom returns the run usage accumulator on ctx, or nil.
 func RunUsageFrom(ctx context.Context) *RunUsage {
-	u, _ := ctx.Value(runUsageKey{}).(*RunUsage)
-	return u
+	if u, ok := ctx.Value(runUsageKey{}).(*RunUsage); ok {
+		return u
+	}
+	return nil
 }
 
 // Add records one completed call's usage.

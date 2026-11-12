@@ -305,11 +305,13 @@ func TestE2E_Phase111e_CompressionFires_PromptShrinks_RunCompletes(t *testing.T)
 	}
 }
 
-// TestE2E_Phase111e_SummariserFailure_FailsLoud — the failure mode:
-// the summariser's wire round-trip returns garbage; the run fails
-// loudly (compression_failed + task Failed), never a silent
-// fall-through to raw history.
-func TestE2E_Phase111e_SummariserFailure_FailsLoud(t *testing.T) {
+// TestE2E_Phase111e_SummariserFailure_KeepsCheckpoint — the failure mode:
+// the summariser's wire round-trip returns garbage. The failure is
+// observable (trajectory.compression_failed under the run identity), no
+// candidate is installed, and the run continues with its previous
+// checkpoint because the request still fits (D-501): a maintenance failure
+// never fails the run.
+func TestE2E_Phase111e_SummariserFailure_KeepsCheckpoint(t *testing.T) {
 	// NOT t.Parallel(): phase111eConfig calls t.Setenv.
 	blob := phase111eBlob()
 	server := newScriptedLLMServer(t,
@@ -318,6 +320,8 @@ func TestE2E_Phase111e_SummariserFailure_FailsLoud(t *testing.T) {
 		// The summariser call returns non-JSON garbage — the five-field
 		// parse fails and the error propagates per the runner's contract.
 		scriptedFinishResponse("this is not the five-field JSON object at all"),
+		// The run continues with its previous checkpoint and answers.
+		scriptedFinishResponse("The blob was echoed."),
 	)
 
 	cfg := phase111eConfig(t, server.URL(), 800)
@@ -345,15 +349,8 @@ func TestE2E_Phase111e_SummariserFailure_FailsLoud(t *testing.T) {
 	}
 
 	status := waitForTaskTerminal(t, stack, idCtx, h.ID, 15*time.Second)
-	if status != tasks.StatusFailed {
-		t.Fatalf("task terminal status = %s, want Failed (a summariser error fails the run loud)", status)
-	}
-	task, gErr := stack.Tasks.Get(idCtx, h.ID)
-	if gErr != nil {
-		t.Fatalf("Tasks.Get: %v", gErr)
-	}
-	if task.Error == nil || !strings.Contains(task.Error.Message, "compression") {
-		t.Errorf("task error = %+v, want the wrapped trajectory-compression failure", task.Error)
+	if status != tasks.StatusComplete {
+		t.Fatalf("task terminal status = %s, want Complete (a maintenance failure keeps the checkpoint and the run continues)", status)
 	}
 
 	// trajectory.compression_failed rode the bus under the run identity.

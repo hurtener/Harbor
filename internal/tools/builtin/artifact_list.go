@@ -103,7 +103,8 @@ func artifactList(ctx context.Context, store artifacts.ArtifactStore, args Artif
 	if args.Cursor != "" {
 		n, convErr := strconv.Atoi(args.Cursor)
 		if convErr != nil || n < 0 {
-			return ArtifactListOut{Error: "artifact_list: cursor is not a value returned as next_cursor"}, nil
+			return ArtifactListOut{Error: "artifact_list: cursor is not a value returned as next_cursor"}, nil //nolint:nilerr // soft error the model reads
+
 		}
 		offset = n
 	}
@@ -202,7 +203,7 @@ func artifactNote(ctx context.Context, store artifacts.ArtifactStore, bus events
 		return ArtifactNoteOut{Error: "artifact_note: ref field is empty"}, nil
 	}
 	if err := artifacts.ValidateNote(note); err != nil {
-		return ArtifactNoteOut{Ref: args.Ref, Error: fmt.Sprintf("artifact_note: the note is %d bytes; at most %d are allowed", len(note), artifacts.MaxNoteBytes)}, nil
+		return ArtifactNoteOut{Ref: args.Ref, Error: fmt.Sprintf("artifact_note: the note is %d bytes; at most %d are allowed", len(note), artifacts.MaxNoteBytes)}, nil //nolint:nilerr // soft error the model reads
 	}
 	scope := artifacts.ArtifactScope{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID}
 	ref, found, err := store.SetNote(ctx, scope, args.Ref, note)

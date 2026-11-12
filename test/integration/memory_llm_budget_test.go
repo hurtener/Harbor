@@ -18,7 +18,6 @@ import (
 	_ "github.com/hurtener/Harbor/internal/drivers/prod"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	"github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/state"
@@ -192,12 +191,14 @@ func TestE2E_Phase123_MemoryLLMBudget_TruncatedSummaryPreservesSources(t *testin
 		t.Fatal(err)
 	}
 	_, err = seam.stack.RunOnce(t.Context(), "next edit", id, assemble.WithRunID("summary-failure"))
-	if !errors.Is(err, summarizer.ErrTrajectorySummaryIncomplete) {
-		t.Fatalf("truncated summary: %v", err)
+	// A truncated (incomplete) summary is refused, and the run continues
+	// with the previous checkpoint instead of failing.
+	if err != nil {
+		t.Fatalf("truncated summary failed the run: %v", err)
 	}
 	after, err := seam.mem.Inspect(t.Context(), q)
 	if err != nil || len(after.Items) != len(before.Items)+1 || after.Summary != before.Summary {
-		t.Fatalf("failed summary must retain sources and append the interrupted turn: before=%d after=%d summary_changed=%t err=%v",
+		t.Fatalf("failed summary must retain sources and append the completed turn: before=%d after=%d summary_changed=%t err=%v",
 			len(before.Items), len(after.Items), after.Summary != before.Summary, err)
 	}
 	for i, item := range after.Items[:len(before.Items)] {
@@ -205,15 +206,17 @@ func TestE2E_Phase123_MemoryLLMBudget_TruncatedSummaryPreservesSources(t *testin
 			t.Fatalf("failed summary changed source %d", i)
 		}
 	}
-	var interrupted struct {
+	// The refused summary is not installed; the turn still answers and is
+	// retained as complete beside every earlier source (nothing evicted).
+	var retained struct {
 		Status string `json:"status"`
 		Query  string `json:"query"`
 	}
-	if err := json.Unmarshal(after.Items[len(before.Items)].Value, &interrupted); err != nil || interrupted.Status != "interrupted" || interrupted.Query != "next edit" {
-		t.Fatalf("failed attempt was not retained as interrupted: %+v, %v", interrupted, err)
+	if err := json.Unmarshal(after.Items[len(before.Items)].Value, &retained); err != nil || retained.Status != "complete" || retained.Query != "next edit" {
+		t.Fatalf("turn after a failed maintenance was not retained as complete: %+v, %v", retained, err)
 	}
-	if seam.driver.decision("summary-failure").body != "" {
-		t.Fatal("decision ran after failed required compaction")
+	if seam.driver.decision("summary-failure").body == "" {
+		t.Fatal("the decision did not run after a failed maintenance that still fits")
 	}
 	seam.driver.truncateSummary.Store(false)
 	recovered := budgetTurn(t, seam, id, "summary-recovered", "Continue editing")

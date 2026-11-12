@@ -124,13 +124,10 @@ const (
 // ArtifactSourceKind classifies an artifact's origin from its Source map:
 // an operator upload, a stored tool result, or anything else.
 func ArtifactSourceKind(src map[string]any) string {
-	if s, _ := src["source"].(string); s == ArtifactSourceUserUpload {
-		return ArtifactSourceUserUpload
+	if s, ok := src["source"].(string); ok && (s == ArtifactSourceUserUpload || s == ArtifactSourceTool) {
+		return s
 	}
-	if s, _ := src["source"].(string); s == ArtifactSourceTool {
-		return ArtifactSourceTool
-	}
-	if t, _ := src["tool"].(string); t != "" {
+	if t, ok := src["tool"].(string); ok && t != "" {
 		return ArtifactSourceTool
 	}
 	return ArtifactSourceOther
@@ -138,8 +135,10 @@ func ArtifactSourceKind(src map[string]any) string {
 
 // ArtifactProducingTool returns the producing tool's name, if recorded.
 func ArtifactProducingTool(src map[string]any) string {
-	t, _ := src["tool"].(string)
-	return t
+	if t, ok := src["tool"].(string); ok {
+		return t
+	}
+	return ""
 }
 
 // ArtifactCreatedAt returns the artifact's recorded creation time (zero when

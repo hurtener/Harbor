@@ -153,7 +153,7 @@ func artifactSearch(ctx context.Context, store artifacts.ArtifactStore, args Art
 	match, perr := searchMatcher(args)
 	if perr != nil {
 		out.Error = perr.Error()
-		return out, nil
+		return out, nil //nolint:nilerr // soft error the model reads
 	}
 	contextLines := searchDefaultContext
 	if args.ContextLines != nil {
@@ -199,7 +199,7 @@ func searchMatcher(args ArtifactSearchArgs) (func(string) bool, error) {
 		}
 		re, err := regexp.Compile(expr)
 		if err != nil {
-			return nil, fmt.Errorf("artifact_search: invalid RE2 pattern: %v", err)
+			return nil, fmt.Errorf("artifact_search: invalid RE2 pattern: %w", err)
 		}
 		return re.MatchString, nil
 	}

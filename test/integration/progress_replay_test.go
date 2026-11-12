@@ -161,11 +161,11 @@ func TestE2E_ProgressReplay_SQLiteRestartAndSSECursor(t *testing.T) {
 	for i := 1; i < len(requests); i++ {
 		var preambles []string
 		for _, msg := range requests[i].Messages {
-			if strings.Contains(msg.Content, "private-reasoning-") {
+			if strings.Contains(string(msg.Content), "private-reasoning-") {
 				t.Fatal("private reasoning leaked into ordinary model content")
 			}
 			if msg.Role == "assistant" && len(msg.ToolCalls) > 2 {
-				preambles = append(preambles, msg.Content)
+				preambles = append(preambles, string(msg.Content))
 			}
 		}
 		if !reflect.DeepEqual(preambles, updates[:i]) {

@@ -81,7 +81,7 @@ func (r *CompressionRunner) reduceStep(ctx context.Context, rc RunContext, index
 	if step.Historical != nil {
 		var err error
 		if view, err = ReadHistoricalStep(step); err != nil {
-			return Step{}, false, nil // unreadable history is left exactly as is
+			return Step{}, false, nil //nolint:nilerr // unreadable history is skipped, never rewritten
 		}
 	}
 	if ReplayStepFailed(view) {
@@ -96,7 +96,7 @@ func (r *CompressionRunner) reduceStep(ctx context.Context, rc RunContext, index
 	}
 	encoded, err := json.Marshal(observation)
 	if err != nil || len(encoded) < ReducibleObservationBytes {
-		return Step{}, false, nil
+		return Step{}, false, nil //nolint:nilerr // an unencodable or small observation is skipped, not reduced
 	}
 	tool := toolNameOf(view.Action)
 	small := map[string]any{
@@ -135,13 +135,13 @@ func (r *CompressionRunner) reduceStep(ctx context.Context, rc RunContext, index
 	}
 	body, err := rewriteHistoricalObservation(step.Historical.Body, small)
 	if err != nil {
-		return Step{}, false, nil
+		return Step{}, false, nil //nolint:nilerr // a body that cannot be rewritten is skipped, never altered
 	}
 	historical := *step.Historical
 	historical.Body = body
 	out := Step{Historical: &historical}
 	if _, err := ReadHistoricalStep(out); err != nil {
-		return Step{}, false, nil
+		return Step{}, false, nil //nolint:nilerr // an invalid rewrite is discarded; the original stays
 	}
 	return out, true, nil
 }
@@ -171,8 +171,8 @@ func isReducedObservation(observation any) bool {
 		return false
 	}
 	_, preview := m["preview"].(string)
-	truncated, _ := m["truncated"].(bool)
-	return preview && truncated
+	truncated, ok := m["truncated"].(bool)
+	return preview && ok && truncated
 }
 
 func toolNameOf(action any) string {
