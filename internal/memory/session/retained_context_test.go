@@ -168,9 +168,14 @@ func TestRetainedContext_WindowExpiryAndConcurrentSiblings(t *testing.T) {
 		t.Fatal("lost committed outcomes or invented complete execution")
 	}
 	// Reaching the detail bound is not permission to discard either sibling.
-	// Without a new checkpoint the terminal write must preserve both outcomes.
-	if err = third.Finish(t.Context(), c.Trajectory, "third", "THIRD-OUTCOME", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextCapacity) {
-		t.Fatalf("unsummarized history silently evicted: %v", err)
+	// Without a new checkpoint the settled turn still publishes (a maintenance
+	// failure never fails the run) and every earlier outcome is preserved.
+	if err = third.Finish(t.Context(), c.Trajectory, "third", "THIRD-OUTCOME", "complete"); err != nil {
+		t.Fatalf("settled turn without a checkpoint was refused: %v", err)
+	}
+	if record := string(loadHostRecord(t, store, identity.Quadruple{Identity: c.Quadruple.Identity}, retainedKind).Bytes); !strings.Contains(record, "FIRST-SAVE") ||
+		!strings.Contains(record, "SECOND-OUTCOME") || !strings.Contains(record, "THIRD-OUTCOME") {
+		t.Fatal("unsummarized history silently evicted")
 	}
 	now = now.Add(2 * time.Minute)
 	d := retainedBase("d", "s")

@@ -419,7 +419,8 @@ type RunSpec struct {
 	// Request-aware planners derive a zero TokenBudget from model capacity;
 	// standalone planners use a positive step-boundary target. Checkpoint
 	// publication shares TrajectoryMu with inspection, but generation does not
-	// hold that mutex. Compression errors stop the run explicitly.
+	// hold that mutex. A maintenance failure keeps the previous checkpoint and
+	// the run continues; cancellation and missing identity stay terminal.
 	Compression *planner.CompressionRunner
 
 	// CompactBeforeFirstDecision applies the same compactor to an admitted
@@ -1063,13 +1064,20 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 				compactionRC := rc
 				compactionRC.Budget.TokenBudget = preparation.InputTarget
 				if cerr := compressTrajectory(plannerCtx, spec, compactionRC); cerr != nil {
-					current := inbox.endAttempt(generation)
-					cancelAttempt()
-					if !current && runCtx.Err() == nil && onlyAttemptCancellation(cerr) {
-						carryInterruptedAttempt(&spec.Base, rc)
-						continue
+					if recoverableCompaction(plannerCtx, cerr) {
+						// The previous checkpoint is retained; the request edge
+						// still enforces the hard input limit on the decision.
+						rl.logger.WarnContext(runCtx, "steering: trajectory maintenance failed; continuing with the previous checkpoint",
+							slog.String("run_id", q.RunID), slog.Int("step", step))
+					} else {
+						current := inbox.endAttempt(generation)
+						cancelAttempt()
+						if !current && runCtx.Err() == nil && onlyAttemptCancellation(cerr) {
+							carryInterruptedAttempt(&spec.Base, rc)
+							continue
+						}
+						return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
 					}
-					return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
 				}
 			}
 		}

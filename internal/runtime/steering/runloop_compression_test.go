@@ -203,7 +203,9 @@ func TestRunLoop_Compression_FiresOverBudget_Repeatedly(t *testing.T) {
 	}
 }
 
-func TestRunLoop_Compression_SummariserError_FailsRunLoud(t *testing.T) {
+// A maintenance failure keeps the previous checkpoint and the run continues:
+// the failure is observable (trajectory.compression_failed) but not terminal.
+func TestRunLoop_Compression_SummariserError_KeepsCheckpointAndContinues(t *testing.T) {
 	rl, _, _ := newTestRunLoop(t)
 	rec := &emitRecorder{}
 	spec, _, tr := compressionSpec(2, rec)
@@ -213,9 +215,12 @@ func TestRunLoop_Compression_SummariserError_FailsRunLoud(t *testing.T) {
 		planner.WithTokenEstimator(overBudgetEstimator))
 	spec.Base.Budget = planner.Budget{TokenBudget: 10}
 
-	_, err := rl.Run(context.Background(), spec)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("Run err = %v, want the wrapped summariser error (fail-loud, no silent fall-through)", err)
+	fin, err := rl.Run(context.Background(), spec)
+	if err != nil || fin.Reason != planner.FinishGoal {
+		t.Fatalf("Run = %+v, %v; a maintenance failure must not fail the run", fin, err)
+	}
+	if summ.callCount() == 0 {
+		t.Fatal("summariser was never attempted")
 	}
 	if tr.Summary != nil {
 		t.Error("Summary stamped despite the summariser error")

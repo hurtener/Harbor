@@ -331,12 +331,15 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 		}
 		for len(window.Turns) > r.turns {
 			if err := discardCoveredTurn(&window); err != nil {
-				// An interrupted/cancelled run must be able to publish its known
-				// outcome even when compaction failed. Keep the unsummarized tail
-				// until the next successful compaction instead of leaving this
-				// settled admission active and poisoning future checkpoints.
-				// Pending dispatches were refused above; this never adopts them.
-				if status != "complete" && errors.Is(err, ErrRetainedContextCapacity) {
+				// A settled run must be able to publish its known outcome even
+				// when compaction failed: a maintenance failure never fails the
+				// run. Keep the unsummarized tail (nothing is evicted) until the
+				// next successful compaction instead of leaving this settled
+				// admission active and poisoning future checkpoints. The next
+				// admission sees the full window and compacts before its first
+				// decision. Pending dispatches were refused above; this never
+				// adopts them.
+				if errors.Is(err, ErrRetainedContextCapacity) {
 					break
 				}
 				return err

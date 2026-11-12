@@ -29,7 +29,7 @@ func TestTrajectoryHistorical_ContextReachesOrdinarySummarization(t *testing.T) 
 	if _, err := s.Summarise(context.Background(), trajRC("history"), tr); err != nil {
 		t.Fatal(err)
 	}
-	payload := *client.seenCalls()[0].req.Messages[1].Content.Text
+	payload := userPayload(client.seenCalls()[0].req)
 	if !strings.HasSuffix(payload, "\n") {
 		t.Fatal("historical exchange lost its chronological line boundary")
 	}

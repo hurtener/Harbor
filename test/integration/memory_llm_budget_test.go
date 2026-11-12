@@ -50,6 +50,9 @@ func (d *budgetDriver) Complete(ctx context.Context, req llm.CompleteRequest) (l
 		if msg.Content.Text != nil {
 			body.WriteString(*msg.Content.Text)
 		}
+		for _, part := range msg.Content.Parts {
+			body.WriteString(part.Text)
+		}
 	}
 	text := body.String()
 	d.mu.Lock()

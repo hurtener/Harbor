@@ -32,9 +32,7 @@ func (s *stubClient) Complete(ctx context.Context, req llm.CompleteRequest) (llm
 	defer s.mu.Unlock()
 	rc := recordedCall{id: id, req: req}
 	for _, m := range req.Messages {
-		if m.Content.Text != nil {
-			rc.content += *m.Content.Text + "\n"
-		}
+		rc.content += messageText(m) + "\n"
 	}
 	s.calls = append(s.calls, rc)
 	if s.err != nil {
@@ -57,4 +55,23 @@ func newStubClient() *stubClient {
 	return &stubClient{
 		response: llm.CompleteResponse{Content: goodSummaryJSON},
 	}
+}
+
+// messageText joins a message's text body and text parts.
+func messageText(m llm.ChatMessage) string {
+	out := ""
+	if m.Content.Text != nil {
+		out += *m.Content.Text
+	}
+	for _, p := range m.Content.Parts {
+		if p.Type == llm.PartText {
+			out += p.Text
+		}
+	}
+	return out
+}
+
+// userPayload is the maintenance request's user-side text.
+func userPayload(req llm.CompleteRequest) string {
+	return messageText(req.Messages[1])
 }

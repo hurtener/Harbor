@@ -104,7 +104,7 @@ func TestTrajectorySummariser_ConfiguredOutputHasNoFixedByteCeiling(t *testing.T
 		t.Fatalf("prior valid summary rejected by byte ceiling: %v", err)
 	}
 	calls = client.seenCalls()
-	if len(calls) != 2 || !strings.Contains(*calls[1].req.Messages[1].Content.Text, fact) {
+	if len(calls) != 2 || !strings.Contains(userPayload(calls[1].req), fact) {
 		t.Fatal("next maintenance request lost the complete prior summary")
 	}
 }
@@ -362,9 +362,7 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 		}
 		var payload string
 		for _, m := range req.Messages {
-			if m.Content.Text != nil {
-				payload += *m.Content.Text
-			}
+			payload += messageText(m)
 		}
 		marker := ""
 		for i := range n {
@@ -429,9 +427,7 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 	blockClient := &funcClient{fn: func(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
 		var payload string
 		for _, m := range req.Messages {
-			if m.Content.Text != nil {
-				payload += *m.Content.Text
-			}
+			payload += messageText(m)
 		}
 		if strings.Contains(payload, "[User query]\nblocker\n") {
 			select {
@@ -608,7 +604,7 @@ func assertChronologicalCalls(t *testing.T, calls []recordedCall, steps, thresho
 		if len(call.req.Messages) != 2 || len(call.req.Tools) != 0 || call.req.MaxTokens == nil || *call.req.MaxTokens <= 0 {
 			t.Fatalf("unbounded or tool-bearing summary request %d", i)
 		}
-		payload := *call.req.Messages[1].Content.Text
+		payload := userPayload(call.req)
 		if len(payload) >= threshold || strings.Contains(payload, "elided to fit") || strings.Contains(payload, "…[truncated]") {
 			t.Fatalf("request %d violates input bound or silently drops evidence", i)
 		}

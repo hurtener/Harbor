@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -43,13 +45,25 @@ var trajectorySummarySchemaV1 = json.RawMessage(`{
 	"required": ["goals", "facts", "pending", "last_output_digest", "note"]
 }`)
 
-// Byte bounds are independent of the model window, which the composed LLM
-// client checks. Keeping the request below the heavy-content ceiling must not
-// silently elide earlier steps or clip a result's exact trailing metadata.
+// Each request part (the header and every rendered exchange) stays below the
+// heavy-content ceiling. The WHOLE request is bounded by the summarizer
+// model's own input allowance when the composed client resolved one; only an
+// unresolved allowance falls back to the aggregate byte budget.
 const (
 	trajectoryPayloadHeadroom      = 4096
 	defaultTrajectoryPayloadBudget = llm.DefaultHeavyOutputThreshold - trajectoryPayloadHeadroom
 	defaultTrajectorySummaryTokens = 2048
+	// trajectoryClipPreviewBytes is the deterministic preview kept for an
+	// exchange too large for one request part; the exact exchange stays
+	// reachable by artifact reference. trajectoryMinClipPreviewBytes is the
+	// fallback when even that preview cannot join an otherwise empty request.
+	trajectoryClipPreviewBytes    = 8 * 1024
+	trajectoryMinClipPreviewBytes = 512
+	// trajectoryInputHeadroomDivisor keeps 2% of the resolved model input
+	// allowance (at least trajectoryMinInputHeadroom tokens) free for
+	// estimate error and provider framing.
+	trajectoryInputHeadroomDivisor = 50
+	trajectoryMinInputHeadroom     = 256
 )
 
 // ErrTrajectorySummaryCapacity means the selected evidence cannot be processed
@@ -74,6 +88,17 @@ type TrajectorySummariser struct {
 	providerRoute    *llm.ProviderRoute
 	routeConfig      llm.ProviderRouteConfig
 	routeReserve     float64
+	artifacts        artifacts.ArtifactStore
+}
+
+// WithTrajectoryArtifactStore lets maintenance retain the exact text of an
+// exchange too large for one request part. The summary then sees a clipped
+// preview plus a session-scoped reference instead of failing. Without a store
+// the preview states that the remainder was not retained.
+func WithTrajectoryArtifactStore(store artifacts.ArtifactStore) TrajectoryOption {
+	return func(s *TrajectorySummariser) {
+		s.artifacts = store
+	}
 }
 
 // WithTrajectoryProviderRoute selects independent, resolver-authorized
@@ -141,9 +166,9 @@ func WithTrajectoryMaxCalls(n int) TrajectoryOption {
 	}
 }
 
-// WithTrajectoryHeavyOutputThreshold keeps each payload below the operator's
-// byte ceiling. Tiny ceilings cannot be raised to make a request fit: they fail
-// explicitly rather than sending a clipped representation.
+// WithTrajectoryHeavyOutputThreshold keeps every request part below the
+// operator's byte ceiling. It also bounds the aggregate request when the
+// summarizer model's input allowance cannot be resolved.
 func WithTrajectoryHeavyOutputThreshold(threshold int) TrajectoryOption {
 	return func(s *TrajectorySummariser) {
 		if threshold <= 0 {
@@ -186,9 +211,12 @@ func NewTrajectorySummariser(client llm.LLMClient, opts ...TrajectoryOption) (*T
 }
 
 // Summarise produces one portable narrative for all selected steps. The runner
-// owns selection and coverage; this method never sets a coverage cursor. Large
-// individual exchanges must already be projected behind authorized references
-// or fail explicitly. Raw internal reasoning is not a summary input.
+// owns selection and coverage; this method never sets a coverage cursor. Each
+// step travels as its own request part below the heavy-content ceiling, and the
+// whole request is bounded by the summarizer model's resolved input allowance.
+// An exchange too large for one part is represented by a deterministic clipped
+// preview plus a retained session reference rather than failing maintenance.
+// Raw internal reasoning is not a summary input.
 func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunContext, tr *planner.Trajectory) (*planner.TrajectorySummary, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -229,6 +257,7 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 	}
 	previous := tr.Summary
 	position := 0
+	clips := map[int]string{} // step index -> retained reference, reused across attempts
 	for calls := range s.maxCalls {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -237,23 +266,24 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 		if err != nil {
 			return nil, err
 		}
-		var payload strings.Builder
-		payload.WriteString("Update the prior summary with these chronological steps.\n\n[User query]\n")
-		payload.WriteString(query)
-		payload.WriteString("\n\n[Current goal]\n")
-		payload.WriteString(goal)
-		payload.WriteString("\n\n[Previous summary]\n")
-		payload.WriteString(narrative)
-		payload.WriteString("\n\n[Steps]\n")
-		if payload.Len() > s.payloadBudget {
+		var header strings.Builder
+		header.WriteString("Update the prior summary with these chronological steps. Each following part is one step.\n\n[User query]\n")
+		header.WriteString(query)
+		header.WriteString("\n\n[Current goal]\n")
+		header.WriteString(goal)
+		header.WriteString("\n\n[Previous summary]\n")
+		header.WriteString(narrative)
+		header.WriteString("\n\n[Steps]\n")
+		if header.Len() > s.payloadBudget {
 			return nil, ErrTrajectorySummaryCapacity
 		}
-		userText, systemText, outputLimit := payload.String(), s.systemPrompt, s.maxSummaryTokens
+		systemText, outputLimit := s.systemPrompt, s.maxSummaryTokens
+		parts := []llm.ContentPart{{Type: llm.PartText, Text: header.String()}}
 		req := llm.CompleteRequest{
 			Model: model, MaxTokens: &outputLimit, ExternalGrant: grant,
 			Messages: []llm.ChatMessage{
 				{Role: llm.RoleSystem, Content: llm.Content{Text: &systemText}},
-				{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
+				{Role: llm.RoleUser, Content: llm.Content{Parts: parts}},
 			},
 			ResponseFormat: &llm.ResponseFormat{Kind: llm.FormatJSONSchema, JSONSchema: append(json.RawMessage(nil), trajectorySummarySchemaV1...)},
 		}
@@ -272,10 +302,32 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 		if err != nil {
 			return nil, err
 		}
-		fits := func() bool {
-			return capacity.InputLimit == 0 || llm.EstimateRequestTokens(req, capacity.Profile) < capacity.InputLimit
+		// The model's real input allowance bounds the whole request. Only an
+		// unresolved allowance falls back to the aggregate byte budget.
+		inputLimit := capacity.InputLimit
+		if inputLimit > 0 {
+			inputLimit -= max(inputLimit/trajectoryInputHeadroomDivisor, trajectoryMinInputHeadroom)
+			if inputLimit <= 0 {
+				return nil, fmt.Errorf("%w: model input allowance leaves no maintenance room", ErrTrajectorySummaryCapacity)
+			}
 		}
-		if !fits() {
+		aggregate := header.Len()
+		withParts := func(candidate []llm.ContentPart) bool {
+			if inputLimit <= 0 {
+				return true
+			}
+			req.Messages[1].Content.Parts = candidate
+			ok := llm.EstimateRequestTokens(req, capacity.Profile) < inputLimit
+			req.Messages[1].Content.Parts = parts
+			return ok
+		}
+		admit := func(block string) bool {
+			if inputLimit <= 0 && aggregate+len(block) > s.payloadBudget {
+				return false
+			}
+			return withParts(append(parts[:len(parts):len(parts)], llm.ContentPart{Type: llm.PartText, Text: block}))
+		}
+		if !withParts(parts) {
 			return nil, fmt.Errorf("%w: narrative and instructions exceed model input allowance", ErrTrajectorySummaryCapacity)
 		}
 		start := position
@@ -284,23 +336,35 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 			if err != nil {
 				return nil, err
 			}
-			if len(block) > s.payloadBudget-payload.Len() {
-				break
+			// A single exchange larger than one request part is represented
+			// deterministically by a preview plus its retained reference.
+			if len(block) >= s.payloadBudget {
+				if block, err = s.clipStep(ctx, rc, clips, position, tr.Steps[position], block, trajectoryClipPreviewBytes); err != nil {
+					return nil, err
+				}
 			}
-			// Count the whole request, including system instructions and response
-			// schema. Output headroom was reserved for this maintenance call,
-			// not copied from the planner's input target.
-			userText = payload.String() + block
-			if !fits() {
-				userText = payload.String()
-				break
+			if !admit(block) {
+				if position != start {
+					break // the next call carries it with a fresh request
+				}
+				// Alone in an otherwise empty request and still too large for
+				// the model allowance: shrink to the minimal preview.
+				full, renderErr := renderStepBlock(position+1, tr.Steps[position])
+				if renderErr != nil {
+					return nil, renderErr
+				}
+				if block, err = s.clipStep(ctx, rc, clips, position, tr.Steps[position], full, trajectoryMinClipPreviewBytes); err != nil {
+					return nil, err
+				}
+				if !admit(block) {
+					return nil, fmt.Errorf("%w: exchange %d does not fit beside the narrative even as a bounded reference", ErrTrajectorySummaryCapacity, position+1)
+				}
 			}
-			payload.WriteString(block)
+			parts = append(parts, llm.ContentPart{Type: llm.PartText, Text: block})
+			aggregate += len(block)
 			position++
 		}
-		if position == start && position < len(tr.Steps) {
-			return nil, fmt.Errorf("%w: exchange %d requires a bounded result reference", ErrTrajectorySummaryCapacity, position+1)
-		}
+		req.Messages[1].Content.Parts = parts
 		resp, err := s.client.Complete(llm.WithCallRole(callCtx, llm.CallRoleCompaction), req)
 		if err != nil {
 			return nil, fmt.Errorf("trajectory summariser: completion %d: %w", calls+1, err)
@@ -468,6 +532,103 @@ func renderStepBlock(n int, step planner.Step) (string, error) {
 		fmt.Fprintf(&b, "Step %d error: %s\n", n, data)
 	}
 	return b.String(), nil
+}
+
+// clipStep represents one oversized exchange by a deterministic head preview
+// plus a session-scoped reference to its exact rendered text. The reference is
+// content addressed, so repeated maintenance attempts retain one copy. A store
+// failure is returned rather than hidden; the caller keeps its checkpoint.
+func (s *TrajectorySummariser) clipStep(ctx context.Context, rc planner.RunContext, clips map[int]string, index int, step planner.Step, block string, previewBytes int) (string, error) {
+	ref, retained := clips[index]
+	if !retained {
+		var err error
+		ref, err = s.retainStep(ctx, rc, index, step, block)
+		if err != nil {
+			return "", err
+		}
+		clips[index] = ref
+	}
+	preview := ClipUTF8(block, previewBytes)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Step %d clipped for maintenance (rendered exchange: %d bytes; showing the first %d bytes).", index+1, len(block), len(preview))
+	if ref != "" {
+		fmt.Fprintf(&b, " Exact evidence is stored as ref=%q; read it with artifact_fetch or artifact_search.", ref)
+	} else {
+		b.WriteString(" The remainder was not retained: no artifact store is configured.")
+	}
+	b.WriteString("\n")
+	b.WriteString(preview)
+	b.WriteString("\n[end of clipped step preview]\n")
+	return b.String(), nil
+}
+
+// retainStep stores the exact rendered exchange under the run's isolation
+// triple. It returns "" without a configured store.
+func (s *TrajectorySummariser) retainStep(ctx context.Context, rc planner.RunContext, index int, step planner.Step, block string) (string, error) {
+	if s.artifacts == nil {
+		return "", nil
+	}
+	tool := stepToolName(step.Action)
+	source := map[string]any{
+		"source":     "tool",
+		"producer":   "trajectory-maintenance",
+		"run_id":     rc.Quadruple.RunID,
+		"step":       index + 1,
+		"created_at": time.Now().UTC(),
+	}
+	filename := fmt.Sprintf("step-%d.txt", index+1)
+	if tool != "" {
+		source["tool"] = tool
+		filename = fmt.Sprintf("step-%d-%s.txt", index+1, tool)
+	} else {
+		source["source"] = "trajectory"
+	}
+	ref, err := s.artifacts.PutText(ctx, artifacts.ArtifactScope{
+		TenantID: rc.Quadruple.TenantID, UserID: rc.Quadruple.UserID,
+		SessionID: rc.Quadruple.SessionID, TaskID: rc.Quadruple.RunID,
+	}, block, artifacts.PutOpts{
+		MimeType: "text/plain; charset=utf-8", Filename: filename,
+		Namespace: "trajectory", Source: source,
+	})
+	if err != nil {
+		return "", fmt.Errorf("%w: retain exchange %d: %w", ErrTrajectorySummaryCapacity, index+1, err)
+	}
+	return ref.ID, nil
+}
+
+// stepToolName extracts the dispatched tool name from a live or detached
+// action without trusting any other field.
+func stepToolName(action any) string {
+	switch a := action.(type) {
+	case planner.CallTool:
+		return a.Tool
+	case *planner.CallTool:
+		if a != nil {
+			return a.Tool
+		}
+	case map[string]any:
+		for _, key := range []string{"Tool", "tool"} {
+			if name, ok := a[key].(string); ok {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// ClipUTF8 returns at most limit bytes of s, cut back to a rune boundary.
+func ClipUTF8(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 var _ planner.Summariser = (*TrajectorySummariser)(nil)

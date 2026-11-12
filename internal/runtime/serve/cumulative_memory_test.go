@@ -44,6 +44,9 @@ func (c *servedCumulativeClient) Complete(ctx context.Context, req llm.CompleteR
 		if message.Content.Text != nil {
 			b.WriteString(*message.Content.Text)
 		}
+		for _, part := range message.Content.Parts {
+			b.WriteString(part.Text)
+		}
 	}
 	body := b.String()
 	c.mu.Lock()

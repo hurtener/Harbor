@@ -41,6 +41,9 @@ func (d *cumulativeMemoryDriver) Complete(ctx context.Context, req llm.CompleteR
 		if msg.Content.Text != nil {
 			content.WriteString(*msg.Content.Text)
 		}
+		for _, part := range msg.Content.Parts {
+			content.WriteString(part.Text)
+		}
 	}
 	body := content.String()
 	d.mu.Lock()
@@ -108,8 +111,16 @@ func TestRunOnce_CumulativeMemory_RecoversAfterCompactionFailure(t *testing.T) {
 			driver.mu.Lock()
 			driver.failSummaries = 1
 			driver.mu.Unlock()
-			if _, err := stack.RunOnce(t.Context(), "Inspect the same layout.", id, assemble.WithRunID("failed")); err == nil || !strings.Contains(err.Error(), "fixture compactor unavailable") {
-				t.Fatalf("compactor failure was not surfaced: %v", err)
+			// A maintenance failure keeps the previous checkpoint; the turn
+			// still completes because its request fits.
+			if _, err := stack.RunOnce(t.Context(), "Inspect the same layout.", id, assemble.WithRunID("failed")); err != nil {
+				t.Fatalf("compactor failure failed the run: %v", err)
+			}
+			driver.mu.Lock()
+			attempted := driver.summaries
+			driver.mu.Unlock()
+			if attempted == 0 {
+				t.Fatal("the failing compactor was never attempted")
 			}
 			if _, err := stack.RunOnce(t.Context(), "Recall the original constraint without tools.", id, assemble.WithRunID("recovered")); err != nil {
 				t.Fatalf("next turn remained poisoned: %v", err)
