@@ -66,6 +66,15 @@ receipt-consumer compatibility when using more than sixteen calls.
 The removed `truncation` strategy is rejected rather than silently dropping
 unsummarized context when a window fills.
 
+Maintenance requests are bounded by the summariser model's input allowance,
+with each step sent as its own part. An exchange too large for one part is
+summarised from a clipped preview whose exact text stays reachable by
+artifact reference. If maintenance fails, the run keeps its previous
+checkpoint and continues; when the request no longer fits, the oldest
+observations are reduced to previews with references until it does. A
+completed turn without a new checkpoint keeps its unsummarised history, and the
+next turn compacts before its first decision.
+
 ### Persistence
 
 | State driver | When to use                                                              |

@@ -535,6 +535,65 @@ func (d *driver) Delete(ctx context.Context, scope artifacts.ArtifactScope, id s
 	return true, nil
 }
 
+// SetNote implements artifacts.ArtifactStore. Every sibling meta object
+// under the triple is rewritten with the new note; blob objects are not
+// touched. S3 PUT replaces an object atomically.
+func (d *driver) SetNote(ctx context.Context, scope artifacts.ArtifactScope, id, note string) (*artifacts.ArtifactRef, bool, error) {
+	if d.closed.Load() {
+		return nil, false, artifacts.ErrStoreClosed
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, false, err
+	}
+	if err := artifacts.ValidateNote(note); err != nil {
+		return nil, false, err
+	}
+	if id == "" {
+		return nil, false, nil
+	}
+	namespace := namespaceFromID(id)
+	if namespace == "" {
+		return nil, false, nil
+	}
+	blobKeys, err := d.resolveBlobKeys(ctx, scope, namespace, id)
+	if err != nil {
+		return nil, false, err
+	}
+	var updated *artifacts.ArtifactRef
+	for _, blobKey := range blobKeys {
+		metaKey := blobKey + metaSuffix
+		ref, found, ferr := d.fetchRef(ctx, metaKey)
+		if ferr != nil {
+			return nil, false, ferr
+		}
+		if !found {
+			continue
+		}
+		ref.Note = note
+		metaBytes, merr := json.Marshal(ref)
+		if merr != nil {
+			return nil, false, fmt.Errorf("artifacts/s3: marshal meta: %w", merr)
+		}
+		if _, perr := d.client.PutObject(ctx, &awss3.PutObjectInput{
+			Bucket:      awsmw.String(d.bucket),
+			Key:         awsmw.String(metaKey),
+			Body:        bytes.NewReader(metaBytes),
+			ContentType: awsmw.String("application/json"),
+		}); perr != nil {
+			return nil, false, fmt.Errorf("artifacts/s3: PutObject meta %q: %w", metaKey, perr)
+		}
+		if updated == nil {
+			out := *ref
+			out.Source = cloneSource(ref.Source)
+			updated = &out
+		}
+	}
+	if updated == nil {
+		return nil, false, nil
+	}
+	return updated, true, nil
+}
+
 // List implements artifacts.ArtifactStore. `filter.TenantID` is
 // required; every other empty field is a wildcard within that tenant.
 // Iterates ListObjectsV2 pages under the derived prefix; ignores

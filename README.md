@@ -252,6 +252,10 @@ omit the additive fields; version and commit must be supplied together.
   or remove one by name.
 - Installed personal skill packages can be exported as portable ZIP artifacts through
   [`agent_config.user.skills.export`](docs/skills/configure-memory-and-skills/SKILL.md#personal-skill-export).
+- Runs can be bounded by duration and cumulative tokens with
+  [`runtime.run_limits` and the agent-config `run_limits` section](docs/skills/use-the-harbor-protocol/SKILL.md#run-limits);
+  the opt-in `artifact_search`, `artifact_list` and `artifact_note` built-ins
+  search, page and annotate a session's stored artifacts.
 - `harbor llm providers` — list provider-neutral technical descriptors without
   secrets; add `--validate` or `--discover` with `--config` and `--provider`
   for a bounded offline/configured-account Bifrost probe (`runtime_origin=false`).

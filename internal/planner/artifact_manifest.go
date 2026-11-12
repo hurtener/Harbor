@@ -51,6 +51,7 @@ func BuildArtifactManifest(refs []artifacts.ArtifactRef) []ArtifactManifestEntry
 			MIME:       ref.MimeType,
 			SizeBytes:  ref.SizeBytes,
 			Provenance: ResolveProvenance(ref.Source),
+			Note:       ref.Note,
 		})
 	}
 	return out
@@ -111,4 +112,38 @@ func artifactManifestCreatedAt(src map[string]any) time.Time {
 		return time.Unix(t, 0).UTC()
 	}
 	return time.Time{}
+}
+
+// Artifact source kinds used to filter a session's artifacts.
+const (
+	ArtifactSourceUserUpload = "user_upload"
+	ArtifactSourceTool       = "tool"
+	ArtifactSourceOther      = "other"
+)
+
+// ArtifactSourceKind classifies an artifact's origin from its Source map:
+// an operator upload, a stored tool result, or anything else.
+func ArtifactSourceKind(src map[string]any) string {
+	if s, _ := src["source"].(string); s == ArtifactSourceUserUpload {
+		return ArtifactSourceUserUpload
+	}
+	if s, _ := src["source"].(string); s == ArtifactSourceTool {
+		return ArtifactSourceTool
+	}
+	if t, _ := src["tool"].(string); t != "" {
+		return ArtifactSourceTool
+	}
+	return ArtifactSourceOther
+}
+
+// ArtifactProducingTool returns the producing tool's name, if recorded.
+func ArtifactProducingTool(src map[string]any) string {
+	t, _ := src["tool"].(string)
+	return t
+}
+
+// ArtifactCreatedAt returns the artifact's recorded creation time (zero when
+// unknown), the same stamp the manifest orders by.
+func ArtifactCreatedAt(src map[string]any) time.Time {
+	return artifactManifestCreatedAt(src)
 }

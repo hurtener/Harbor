@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 149 canonical event types a Harbor Runtime can publish, read from the live
+The 151 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -228,6 +228,16 @@ Payload `ArtifactDeletedPayload` — safe payload (delivered typed, verbatim).
 | Wire key | Go type | Notes |
 |---|---|---|
 | `artifact_id` | `string` |  |
+
+## `artifacts.note_set`
+
+Payload `ArtifactNoteSetPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `artifact_id` | `string` |  |
+| `note_bytes` | `int` |  |
+| `cleared` | `bool` |  |
 
 ## `artifacts.uploaded`
 
@@ -1260,6 +1270,19 @@ Payload `RunHookFailedPayload` — safe payload (delivered typed, verbatim).
 | `Tool` | `string` |  |
 | `Outcome` | `string` |  |
 | `ErrorClass` | `string` |  |
+
+## `run.limit_reached`
+
+Payload `RunLimitReachedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Limit` | `string` |  |
+| `MaxDurationMS` | `int64` |  |
+| `ElapsedMS` | `int64` |  |
+| `MaxTokens` | `int64` |  |
+| `TokensUsed` | `int64` |  |
+| `Steps` | `int` |  |
 
 ## `runs.overrides_set`
 

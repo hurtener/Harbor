@@ -810,9 +810,9 @@ RemoteTransport driver. Default: `loopback`. Validation:
 
 ## Runtime
 
-Runtime run-lifecycle configuration. Two populated bodies: the
-run-completion hook and the `runtime.naming` session auto-naming fleet
-default.
+Runtime run-lifecycle configuration: the run-completion hook, the
+`runtime.naming` session auto-naming fleet default, and the
+`runtime.run_limits` per-run limits.
 
 ### runtime.hooks.run_completion.tool
 
@@ -917,6 +917,26 @@ provider reasoning control while still suppressing model-profile inheritance;
 use it only for a naming provider that rejects or does not implement an
 explicit disable. A durable per-agent `naming` section replaces the whole yaml
 section, so an omitted `reasoning_mode` there resolves to the default `off`.
+
+### runtime.run_limits.max_duration
+
+Maximum active wall-clock time of one run (Go duration, e.g. `20m`). Time
+spent waiting on a pause (approval, OAuth) is not counted. Zero (the default)
+means no limit; the maximum is `720h`. Checked at each step boundary, so an
+in-flight model or tool call is never interrupted. On reaching it the run
+emits `run.limit_reached`, makes one bounded call without tools that states
+what was done and what remains, and completes with finish reason
+`limit_reached` — never a failure. A per-agent agent-config `run_limits`
+section replaces this default (an omitted field there means no limit), and
+`start.run_limits` can only tighten the effective value. Restart-required
+(D-502).
+
+### runtime.run_limits.max_tokens
+
+Maximum cumulative prompt plus completion tokens across every model call of
+one run, including context maintenance and the planner's decisions. Zero (the
+default) means no limit. Same graceful stop and precedence as
+`runtime.run_limits.max_duration`; either, both or neither may be set.
 
 ---
 
@@ -2282,6 +2302,18 @@ registered). Validation: each name MUST be in
 - `clock.now` — return current UTC time as RFC 3339 + epoch
   milliseconds.
 - `text.echo` — echo input text verbatim.
+- `artifact_fetch` — read a byte window of a stored session artifact.
+- `artifact_search` — grep inside a stored text artifact (literal or RE2,
+  case-insensitive, context lines, match cap; at most 16 MiB scanned per
+  call). Each match returns its line, byte offset and context (D-503).
+- `artifact_list` — newest-first, paginated listing of the session's
+  artifacts with `source` (`user_upload` / `tool` / `other`), producing-tool
+  and filename filters, including their notes (D-503).
+- `artifact_note` — add, replace or clear a note (at most 1024 bytes) on a
+  session artifact; publishes `artifacts.note_set` (D-503).
+
+See `internal/tools/builtin.KnownNames()` for the full set (discovery and
+skill meta-tools).
 
 ### tools.custom
 

@@ -2,7 +2,7 @@
 // the mandatory routing target for any output above the heavy-output
 // threshold (default 32 KB; RFC §6.10).
 //
-// The surface is a single mandatory `ArtifactStore` interface (eight
+// The surface is a single mandatory `ArtifactStore` interface (nine
 // methods including `Close`); there is NO `NoOp` fallback.
 // V1 ships two drivers — an in-memory floor for dev/embedded use and a
 // filesystem driver for single-binary production deployments. Harbor
@@ -61,6 +61,8 @@ package artifacts
 import (
 	"context"
 	"errors"
+	"fmt"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/config"
 )
@@ -163,6 +165,21 @@ type ArtifactRef struct {
 	Scope     ArtifactScope
 	Namespace string
 	Source    map[string]any
+	// Note is a short, mutable annotation on the artifact (at most
+	// MaxNoteBytes of UTF-8), set with SetNote. It never changes the bytes
+	// or the id. Empty means no note. A re-Put of identical bytes keeps it.
+	Note string
+}
+
+// MaxNoteBytes bounds an artifact note.
+const MaxNoteBytes = 1024
+
+// ValidateNote rejects a note longer than MaxNoteBytes or not valid UTF-8.
+func ValidateNote(note string) error {
+	if len(note) > MaxNoteBytes || !utf8.ValidString(note) {
+		return fmt.Errorf("%w: a note is at most %d bytes of UTF-8", ErrInvalidNote, MaxNoteBytes)
+	}
+	return nil
 }
 
 // PutOpts carries optional metadata for Put* calls.
@@ -187,7 +204,7 @@ type PutOpts struct {
 }
 
 // ArtifactStore is Harbor's mandatory content-addressed blob store.
-// All eight methods are required; there is no `Supports*` capability
+// All nine methods are required; there is no `Supports*` capability
 // ceremony (AGENTS.md §4.4). Implementations MUST be safe for N
 // concurrent goroutines on a single shared instance; the
 // conformance suite's `Concurrent_PutGet_NoRace` is the gate.
@@ -270,6 +287,14 @@ type ArtifactStore interface {
 	// returned slice themselves.
 	List(ctx context.Context, filter ArtifactScope) ([]ArtifactRef, error)
 
+	// SetNote replaces the note on `id` within `scope`'s isolation triple
+	// and returns the updated ref. An empty note clears it. The stored
+	// bytes, id and every other metadata field are unchanged, and every
+	// stored copy under the triple carries the same note. `scope.TaskID` is
+	// IGNORED. Found-false is not an error. A note failing ValidateNote
+	// returns wrapped ErrInvalidNote before touching storage.
+	SetNote(ctx context.Context, scope ArtifactScope, id, note string) (*ArtifactRef, bool, error)
+
 	// Close releases driver resources. Subsequent calls return
 	// wrapped `ErrStoreClosed`. Implementations MUST honour ctx
 	// during long teardowns (none of V1's drivers have any).
@@ -299,6 +324,9 @@ var (
 	ErrUnknownDriver = errors.New("artifacts: unknown driver")
 	// ErrStoreClosed — any method called after Close.
 	ErrStoreClosed = errors.New("artifacts: store is closed")
+	// ErrInvalidNote — SetNote was given a note that is too long or not
+	// valid UTF-8.
+	ErrInvalidNote = errors.New("artifacts: invalid note")
 )
 
 // Validate is the package-level helper that mirrors

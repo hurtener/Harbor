@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:174ffaa4ba62b9badd3099626044fe379a4ac79aae75d8b3adcc89c48f81b375";
+export const WIRE_SURFACE_DIGEST = "sha256:b220ace2fa5d74b7d39cf52bed8c6aa1039af3884d5b65cabd658d5a1e391a0d";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -244,6 +244,7 @@ export type HarborEventType =
   | "agent_config.retirement.progress"
   | "agent_config.retirement.started"
   | "artifacts.deleted"
+  | "artifacts.note_set"
   | "artifacts.uploaded"
   | "audit.admin_scope_used"
   | "audit.redaction_failed"
@@ -324,6 +325,7 @@ export type HarborEventType =
   | "planner.tool_declaration_collision"
   | "run.hook_dispatched"
   | "run.hook_failed"
+  | "run.limit_reached"
   | "runs.overrides_set"
   | "runtime.error"
   | "runtime.run_cancelled"
@@ -656,6 +658,7 @@ export interface AgentConfigDiff {
   hooks: AgentConfigHooksDiff;
   naming: AgentConfigNamingDiff;
   memory: AgentConfigMemoryDiff;
+  run_limits?: AgentConfigRunLimitsDiff;
   extra_system_blocks: AgentConfigExtraSystemBlocksDiff;
 }
 
@@ -859,6 +862,7 @@ export interface AgentConfigPayload {
   hooks?: AgentConfigHooks;
   naming?: AgentConfigNaming;
   memory?: AgentConfigMemory;
+  run_limits?: AgentConfigRunLimits;
   extra_system_blocks?: AgentConfigExtraSystemBlocks;
   agent_packs?: AgentConfigAgentPackItem[];
 }
@@ -991,6 +995,20 @@ export interface AgentConfigRollbackResponse {
 export interface AgentConfigRunCompletionHook {
   tool: string;
   timeout_ms?: number;
+}
+
+export interface AgentConfigRunLimits {
+  max_duration_seconds?: number;
+  max_tokens?: number;
+}
+
+export interface AgentConfigRunLimitsDiff {
+  max_duration_changed: boolean;
+  max_duration_from: string;
+  max_duration_to: string;
+  max_tokens_changed: boolean;
+  max_tokens_from: string;
+  max_tokens_to: string;
 }
 
 export interface AgentConfigSessionOverlay {
@@ -2865,6 +2883,11 @@ export interface RunLLMSettings {
   max_tokens?: number;
 }
 
+export interface RunLimitsRequest {
+  max_duration_seconds?: number;
+  max_tokens?: number;
+}
+
 export interface RunOverrides {
   session_id: string;
   reasoning_effort?: string;
@@ -3510,6 +3533,7 @@ export interface StartRequest {
   external_grant?: unknown;
   provider_route?: LLMProviderRouteSelector;
   llm_settings?: RunLLMSettings;
+  run_limits?: RunLimitsRequest;
   query?: string;
   description?: string;
   priority?: number;

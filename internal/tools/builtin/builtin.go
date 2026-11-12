@@ -130,6 +130,18 @@ var registry = map[string]registrar{
 		return registerArtifactFetch(rc.Catalog, rc.ArtifactStore,
 			resolveFetchBounds(rc.ArtifactFetchDefaultMaxBytes, rc.ArtifactFetchHardMaxBytes))
 	},
+	// Grep-like search inside one stored session artifact, so the model can
+	// locate text before reading around it with artifact_fetch.
+	"artifact_search": func(rc RegistryContext) error {
+		return registerArtifactSearch(rc.Catalog, rc.ArtifactStore)
+	},
+	// Paginated listing of the session's artifacts beyond the manifest rows.
+	"artifact_list": func(rc RegistryContext) error {
+		return registerArtifactList(rc.Catalog, rc.ArtifactStore)
+	},
+	// Short notes on a session artifact; requires the bus for the
+	// artifacts.note_set record.
+	"artifact_note": registerArtifactNote,
 }
 
 // KnownNames returns the sorted list of built-in tool names the

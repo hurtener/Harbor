@@ -2004,7 +2004,9 @@ func artifactFetchFooterFieldAware(ref, mime string, size int64) string {
 	var b strings.Builder
 	b.WriteString(`[Fields marked "[omitted: N bytes]" above were pruned to fit context — call artifact_fetch(ref="`)
 	b.WriteString(ref)
-	b.WriteString(`") to retrieve the full payload`)
+	b.WriteString(`") to retrieve the full payload, or artifact_search(ref="`)
+	b.WriteString(ref)
+	b.WriteString(`", pattern=...) to find text in it`)
 	if size > 0 {
 		fmt.Fprintf(&b, " (size: %d bytes", size)
 		if mime != "" {
@@ -2046,7 +2048,9 @@ func artifactFetchFooter(ref, mime string, size int64) string {
 	}
 	b.WriteString(` — call artifact_fetch(ref="`)
 	b.WriteString(ref)
-	b.WriteString(`") to retrieve it.]`)
+	b.WriteString(`") to retrieve it, or artifact_search(ref="`)
+	b.WriteString(ref)
+	b.WriteString(`", pattern=...) to find text in it.]`)
 	return b.String()
 }
 

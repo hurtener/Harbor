@@ -138,6 +138,19 @@ llm:
 #       tool: run_transcript_sink
 #       timeout: 10s
 #
+#   # Per-run limits — unset (or 0) means no limit; either or both may be set.
+#   # max_duration is active wall-clock time (time waiting on a pause is not
+#   # counted); max_tokens is cumulative prompt + completion tokens of every
+#   # model call in the run, including context maintenance. On reaching a
+#   # limit the run emits `run.limit_reached`, asks for one bounded final
+#   # answer without tools (what was done, what remains) and completes with
+#   # finish reason `limit_reached` — never a failure. A per-agent agent-config
+#   # `run_limits` section replaces this default; `start.run_limits` can only
+#   # tighten it for one run.
+#   run_limits:
+#     max_duration: 20m
+#     max_tokens: 0
+#
 #   # Session auto-naming — OPT-IN, default OFF. With this block absent (or
 #   # `auto: false`) the runtime writes no naming counters, makes no naming
 #   # LLM calls, and emits no naming events. When on, the runtime titles a
@@ -373,6 +386,16 @@ tools:
   #   built_in:
   #     # ...the discovery set...
   #     - skill_propose
+  #
+  # Session artifact helpers — let the LLM search inside, page through
+  # and annotate this session's stored artifacts (large tool results and
+  # uploads). Recommended next to artifact_fetch for long research runs:
+  #
+  #   built_in:
+  #     - artifact_fetch   # read a window of a stored result
+  #     - artifact_search  # grep inside a stored text result
+  #     - artifact_list    # page/filter the session's artifacts (source, tool, filename)
+  #     - artifact_note    # keep a short note on an artifact (emits artifacts.note_set)
   #
   # Optional escape-hatch (Phase 107c step 10 — D-167):
   #

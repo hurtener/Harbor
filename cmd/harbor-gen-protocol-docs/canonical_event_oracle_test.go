@@ -28,6 +28,7 @@ agent_config.retirement.completed
 agent_config.retirement.progress
 agent_config.retirement.started
 artifacts.deleted
+artifacts.note_set
 artifacts.uploaded
 audit.admin_scope_used
 audit.redaction_failed

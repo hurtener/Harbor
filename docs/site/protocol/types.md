@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 474 canonical Harbor Protocol wire types, generated from the single-source
+The 477 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -420,6 +420,7 @@ Declared in `internal/protocol/types`.
 | `hooks` | `types.AgentConfigHooksDiff` — see [`AgentConfigHooksDiff`](./types.md#agentconfighooksdiff) |  |
 | `naming` | `types.AgentConfigNamingDiff` — see [`AgentConfigNamingDiff`](./types.md#agentconfignamingdiff) |  |
 | `memory` | `types.AgentConfigMemoryDiff` — see [`AgentConfigMemoryDiff`](./types.md#agentconfigmemorydiff) |  |
+| `run_limits` | `*types.AgentConfigRunLimitsDiff` — see [`AgentConfigRunLimitsDiff`](./types.md#agentconfigrunlimitsdiff) | optional (`omitempty`) |
 | `extra_system_blocks` | `types.AgentConfigExtraSystemBlocksDiff` — see [`AgentConfigExtraSystemBlocksDiff`](./types.md#agentconfigextrasystemblocksdiff) |  |
 
 ## AgentConfigDiffRequest
@@ -723,6 +724,7 @@ Declared in `internal/protocol/types`.
 | `hooks` | `*types.AgentConfigHooks` — see [`AgentConfigHooks`](./types.md#agentconfighooks) | optional (`omitempty`) |
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
 | `memory` | `*types.AgentConfigMemory` — see [`AgentConfigMemory`](./types.md#agentconfigmemory) | optional (`omitempty`) |
+| `run_limits` | `*types.AgentConfigRunLimits` — see [`AgentConfigRunLimits`](./types.md#agentconfigrunlimits) | optional (`omitempty`) |
 | `extra_system_blocks` | `*types.AgentConfigExtraSystemBlocks` — see [`AgentConfigExtraSystemBlocks`](./types.md#agentconfigextrasystemblocks) | optional (`omitempty`) |
 | `agent_packs` | `[]types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) | optional (`omitempty`) |
 
@@ -927,6 +929,28 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `tool` | `string` |  |
 | `timeout_ms` | `int` | optional (`omitempty`) |
+
+## AgentConfigRunLimits
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `max_duration_seconds` | `*int64` | optional (`omitempty`) |
+| `max_tokens` | `*int64` | optional (`omitempty`) |
+
+## AgentConfigRunLimitsDiff
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `max_duration_changed` | `bool` |  |
+| `max_duration_from` | `string` |  |
+| `max_duration_to` | `string` |  |
+| `max_tokens_changed` | `bool` |  |
+| `max_tokens_from` | `string` |  |
+| `max_tokens_to` | `string` |  |
 
 ## AgentConfigSessionOverlay
 
@@ -3880,6 +3904,15 @@ Declared in `internal/protocol/types`.
 | `reasoning_effort` | `*string` | optional (`omitempty`) |
 | `max_tokens` | `*int` | optional (`omitempty`) |
 
+## RunLimitsRequest
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `max_duration_seconds` | `int64` | optional (`omitempty`) |
+| `max_tokens` | `int64` | optional (`omitempty`) |
+
 ## RunOverrides
 
 Declared in `internal/protocol/types`.
@@ -4830,6 +4863,7 @@ Declared in `internal/protocol/types`.
 | `external_grant` | `jsontext.Value` | optional (`omitempty`) |
 | `provider_route` | `*types.LLMProviderRouteSelector` — see [`LLMProviderRouteSelector`](./types.md#llmproviderrouteselector) | optional (`omitempty`) |
 | `llm_settings` | `*types.RunLLMSettings` — see [`RunLLMSettings`](./types.md#runllmsettings) | optional (`omitempty`) |
+| `run_limits` | `*types.RunLimitsRequest` — see [`RunLimitsRequest`](./types.md#runlimitsrequest) | optional (`omitempty`) |
 | `query` | `string` | optional (`omitempty`) |
 | `description` | `string` | optional (`omitempty`) |
 | `priority` | `int` | optional (`omitempty`) |

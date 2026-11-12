@@ -2715,6 +2715,9 @@ var allowedBuiltInTools = map[string]struct{}{
 	"skill_get":          {},
 	"declarative_action": {},
 	"artifact_fetch":     {},
+	"artifact_search":    {},
+	"artifact_list":      {},
+	"artifact_note":      {},
 	// the canonical skills surface. `skill_list`
 	// joins the discovery set; `skill_propose` (persistence-capable
 	// generator) is a deliberate operator opt-in, absent from every

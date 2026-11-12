@@ -525,6 +525,41 @@ func (d *driver) Delete(ctx context.Context, scope artifacts.ArtifactScope, id s
 	return n > 0, nil
 }
 
+// SetNote implements artifacts.ArtifactStore. One UPDATE on the triple-keyed
+// row changes only the note column; the bytes and every other field stay.
+func (d *driver) SetNote(ctx context.Context, scope artifacts.ArtifactScope, id, note string) (*artifacts.ArtifactRef, bool, error) {
+	if d.closed.Load() {
+		return nil, false, artifacts.ErrStoreClosed
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, false, err
+	}
+	if err := artifacts.ValidateNote(note); err != nil {
+		return nil, false, err
+	}
+	if id == "" {
+		return nil, false, nil
+	}
+	const upd = `
+		UPDATE artifacts_blobs SET note = ?
+        WHERE tenant = ? AND user = ? AND session = ? AND id = ?`
+	res, err := d.db.ExecContext(ctx, upd, note, scope.TenantID, scope.UserID, scope.SessionID, id)
+	if err != nil {
+		return nil, false, fmt.Errorf("artifacts/sqlite: set note: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err != nil {
+			return nil, false, fmt.Errorf("artifacts/sqlite: rows affected: %w", err)
+		}
+		return nil, false, nil
+	}
+	ref, found, err := selectRef(ctx, d.db, scope, id)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	return &ref, true, nil
+}
+
 // List implements artifacts.ArtifactStore. `filter.TenantID` is
 // required; every other empty field is a wildcard within that tenant.
 //
@@ -562,7 +597,7 @@ func (d *driver) List(ctx context.Context, filter artifacts.ArtifactScope) ([]ar
 
 	q := `
         SELECT tenant, user, session, task, namespace, id,
-               mime_type, size_bytes, filename, sha256, source_json
+               mime_type, size_bytes, filename, sha256, source_json, note
         FROM artifacts_blobs`
 	if len(conds) > 0 {
 		q += " WHERE " + strings.Join(conds, " AND ") //nolint:gosec // G202: conds are static column predicates ("col = ?"); every value is bound via args (parameterised), no user input is concatenated into SQL
@@ -617,10 +652,11 @@ func scanRefRow(s rowScanner) (artifacts.ArtifactRef, error) {
 		sha256Hex                     string
 		sizeBytes                     int64
 		sourceJSON                    []byte
+		note                          string
 	)
 	if err := s.Scan(
 		&tenant, &user, &session, &task, &namespace, &id,
-		&mime, &sizeBytes, &filename, &sha256Hex, &sourceJSON,
+		&mime, &sizeBytes, &filename, &sha256Hex, &sourceJSON, &note,
 	); err != nil {
 		return artifacts.ArtifactRef{}, fmt.Errorf("artifacts/sqlite: scan: %w", err)
 	}
@@ -642,6 +678,7 @@ func scanRefRow(s rowScanner) (artifacts.ArtifactRef, error) {
 		},
 		Namespace: namespace,
 		Source:    source,
+		Note:      note,
 	}, nil
 }
 
@@ -651,7 +688,7 @@ func scanRefRow(s rowScanner) (artifacts.ArtifactRef, error) {
 func selectRef(ctx context.Context, db *sql.DB, scope artifacts.ArtifactScope, id string) (artifacts.ArtifactRef, bool, error) {
 	const sel = `
         SELECT tenant, user, session, task, namespace, id,
-               mime_type, size_bytes, filename, sha256, source_json
+               mime_type, size_bytes, filename, sha256, source_json, note
         FROM artifacts_blobs
         WHERE tenant = ? AND user = ? AND session = ? AND id = ?
         LIMIT 1`
@@ -679,7 +716,7 @@ func selectRef(ctx context.Context, db *sql.DB, scope artifacts.ArtifactScope, i
 func selectRefTx(ctx context.Context, tx *sql.Tx, scope artifacts.ArtifactScope, id string) (artifacts.ArtifactRef, bool, error) {
 	const sel = `
         SELECT tenant, user, session, task, namespace, id,
-               mime_type, size_bytes, filename, sha256, source_json
+               mime_type, size_bytes, filename, sha256, source_json, note
         FROM artifacts_blobs
         WHERE tenant = ? AND user = ? AND session = ? AND id = ?
         LIMIT 1`

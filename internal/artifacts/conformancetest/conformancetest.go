@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -66,8 +67,94 @@ type Factory func() (artifacts.ArtifactStore, func())
 //   - Scoped_AutoStamps_Scope
 //   - Scoped_PanicsOnInvalidScope
 //   - Scoped_ImmutableScope
+//   - SetNote_RoundTrip_BytesUnchanged
+//   - SetNote_NotFound_And_Invalid
+//   - SetNote_CrossTenant_Isolation
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
+
+	t.Run("SetNote_RoundTrip_BytesUnchanged", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		ref, err := s.PutText(ctx, scopeA(), "quarterly report body", artifacts.PutOpts{Filename: "report.txt", Namespace: "tool.read"})
+		if err != nil {
+			t.Fatalf("PutText: %v", err)
+		}
+		// The note is set through a sibling task stamp: the read key is the triple.
+		sibling := scopeA()
+		sibling.TaskID = "task-other"
+		const note = "Q3 numbers; the margin table is near the end"
+		updated, found, err := s.SetNote(ctx, sibling, ref.ID, note)
+		if err != nil || !found || updated == nil || updated.Note != note || updated.ID != ref.ID || updated.SHA256 != ref.SHA256 {
+			t.Fatalf("SetNote = %+v found=%v err=%v", updated, found, err)
+		}
+		got, found, err := s.GetRef(ctx, scopeA(), ref.ID)
+		if err != nil || !found || got.Note != note || got.Filename != "report.txt" || got.SizeBytes != ref.SizeBytes {
+			t.Fatalf("GetRef after SetNote = %+v found=%v err=%v", got, found, err)
+		}
+		listed := mustList(t, s, ctx, artifacts.ArtifactScope{TenantID: scopeA().TenantID, UserID: scopeA().UserID, SessionID: scopeA().SessionID})
+		if len(listed) != 1 || listed[0].Note != note {
+			t.Fatalf("List after SetNote = %+v", listed)
+		}
+		body, found, err := s.Get(ctx, scopeA(), ref.ID)
+		if err != nil || !found || string(body) != "quarterly report body" {
+			t.Fatalf("bytes changed by SetNote: %q", body)
+		}
+		// A re-Put of identical bytes keeps the note (first-writer metadata).
+		again, err := s.PutText(ctx, scopeA(), "quarterly report body", artifacts.PutOpts{Filename: "report.txt", Namespace: "tool.read"})
+		if err != nil || again.ID != ref.ID || again.Note != note {
+			t.Fatalf("re-Put lost the note: %+v %v", again, err)
+		}
+		cleared, found, err := s.SetNote(ctx, scopeA(), ref.ID, "")
+		if err != nil || !found || cleared.Note != "" {
+			t.Fatalf("clearing the note: %+v %v", cleared, err)
+		}
+		if got, _, _ := s.GetRef(ctx, scopeA(), ref.ID); got == nil || got.Note != "" {
+			t.Fatalf("cleared note persisted: %+v", got)
+		}
+	})
+
+	t.Run("SetNote_NotFound_And_Invalid", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		if ref, found, err := s.SetNote(ctx, scopeA(), "tool.read_000000000000", "x"); err != nil || found || ref != nil {
+			t.Fatalf("missing id: %+v %v %v", ref, found, err)
+		}
+		ref, err := s.PutText(ctx, scopeA(), "body", artifacts.PutOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.SetNote(ctx, scopeA(), ref.ID, strings.Repeat("n", artifacts.MaxNoteBytes+1)); !errors.Is(err, artifacts.ErrInvalidNote) {
+			t.Fatalf("oversized note: %v", err)
+		}
+		if _, _, err := s.SetNote(ctx, scopeA(), ref.ID, string([]byte{0xff, 0xfe})); !errors.Is(err, artifacts.ErrInvalidNote) {
+			t.Fatalf("invalid UTF-8 note: %v", err)
+		}
+		if _, _, err := s.SetNote(ctx, artifacts.ArtifactScope{TenantID: "t"}, ref.ID, "x"); !errors.Is(err, artifacts.ErrIdentityRequired) {
+			t.Fatalf("missing identity: %v", err)
+		}
+		if got, _, _ := s.GetRef(ctx, scopeA(), ref.ID); got == nil || got.Note != "" {
+			t.Fatalf("a refused note was stored: %+v", got)
+		}
+	})
+
+	t.Run("SetNote_CrossTenant_Isolation", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		ref, err := s.PutText(ctx, scopeA(), "tenant A secret", artifacts.PutOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, found, err := s.SetNote(ctx, scopeB(), ref.ID, "written from B"); err != nil || found || got != nil {
+			t.Fatalf("cross-tenant SetNote reached the artifact: %+v %v %v", got, found, err)
+		}
+		if got, _, _ := s.GetRef(ctx, scopeA(), ref.ID); got == nil || got.Note != "" {
+			t.Fatalf("cross-tenant note leaked: %+v", got)
+		}
+	})
 
 	t.Run("Put_Get_RoundTrip", func(t *testing.T) {
 		s, cleanup := factory()

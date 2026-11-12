@@ -829,6 +829,8 @@ type ArtifactManifestEntry struct {
 	// by the run loop from the artifact's `Source` map (canonical
 	// `source` key else the tool/producer/flow name else "unknown").
 	Provenance string
+	// Note is the artifact's short, untrusted annotation (empty for none).
+	Note string
 }
 
 // PlanningNudges are caller-provided nudges the planner MAY honour.
