@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.49.0] — 2026-11-13
+
 ### Fixed
 
 - **`agent_packs.copy` carries package-backed items (D-506).** A copied item
