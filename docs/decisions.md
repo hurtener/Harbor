@@ -17137,10 +17137,18 @@ The run loop seats it on the run context and derives a configuration
 quadruple with the writer as user. **Storage stays keyed by the partition**:
 events, transcript, retained context, artifacts, the run-bound skill snapshot.
 **User-keyed resolution acts as the writer**: the token-exchange subject (and
-its cache family) with `session_owner` added for the broker, MCP credential
-injection and `_meta` identity stamps, MCP server visibility, user-scope
-signed capability reconcile and use (a participant may use only a capability
-bound to itself), user prompt layer, LLM and limit overrides. The interactive
+its cache family) with `session_owner` added for the broker; the
+provider-route resolver request (select and resolve, `session_owner` on the
+wire and in the selection cache key), so a participant's turn uses and bills
+the participant's own provider connection; external inference grants and
+usage receipts (the grant must name the writer, the receipt bills the
+writer); governance tiers, budgets and rate limits (keyed on the writer,
+events published to the partition); MCP credential injection, `_meta`
+identity stamps, connect/reconnect preparation, server visibility and the
+console source authorizer; A2A `user` metadata and forwarded identity
+headers; user-scope signed capability reconcile and use (a participant may
+use only a capability bound to itself); user prompt layer, LLM and limit
+overrides. The interactive
 OAuth driver refuses user-bound sources in a participant run
 (`ErrParticipantUnsupported`) instead of using the owner's stored token.
 
@@ -17150,12 +17158,15 @@ keys fold the participant in, so another writer reusing a key conflicts.
 
 The writer appears as `participant {user_id, speaker}` on session turn rows,
 as `ParticipantUserID` on `task.spawned` (the audit record of who wrote the
-turn), and in the model context: "Message from: <speaker>" before the user
-goal, and `speaker` on the current and retained historical requests.
+turn), and in the model context: a quoted writer label before the user
+goal (rendered as a quoted display-name label, never as an instruction), and
+`speaker` on the current and retained historical requests.
 
-**Known limits.** The run-bound skill snapshot and session-scoped personal
-skills still resolve for the partition (they are bound to the exact run
-quadruple). Revocation is the issuer's: a participant bearer stays valid until
+**Known limits.** Skills still resolve for the partition: the run-bound
+skill snapshot, the owner's user-layer personal skills and the session's
+personal skills are visible to the model on a participant's turn (they are
+bound to the exact run quadruple). An issuer that must keep personal skills
+private should not share sessions that carry them. Revocation is the issuer's: a participant bearer stays valid until
 it expires, and a cached participant credential until its exchange TTL. A
 retained window written by this version carries `speaker`; an older binary
 reading it rejects the unknown field (no migration, but no clean rollback of

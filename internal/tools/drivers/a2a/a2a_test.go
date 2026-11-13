@@ -375,3 +375,33 @@ func TestProvider_ConcurrentReuse_D025(t *testing.T) {
 		t.Fatalf("invokes=%d fails=%d, want all %d to succeed", invokes.Load(), fails.Load(), N)
 	}
 }
+
+// A session participant's call stamps the writer, never the partition owner.
+func TestProvider_Invoke_ParticipantStampsWriter(t *testing.T) {
+	mock := newFakeMockServer(minimalAgentCard(""))
+	defer mock.Close()
+	mock.card = minimalAgentCard(mock.URL())
+	transport, peerURL := buildWireDriver(t, mock)
+	defer func() { _ = transport.Close(context.Background()) }()
+	prov, _ := toolsa2a.New(peerURL, transport)
+	ctx := ctxWithIdentity(context.Background(), "t-a", "owner", "s-a")
+	if err := prov.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	desc, err := prov.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	ctx, err = identity.WithParticipant(ctx, identity.Participant{UserID: "writer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{"text": "hello"})
+	if _, err := desc[0].Invoke(ctx, args); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	msg, _ := mock.lastMsg.Load().(a2atypes.Message)
+	if msg.Metadata["user"] != "writer" {
+		t.Fatalf("stamped user = %v, want the writer", msg.Metadata["user"])
+	}
+}

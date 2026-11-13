@@ -27,14 +27,18 @@ Two versions move independently in Harbor (RFC §5.3):
   partition; each turn records its writer (`Task.Participant`, the
   `participant` field on session turn rows, `ParticipantUserID` on
   `task.spawned`) and every user-keyed outbound call acts as the writer:
-  token-exchange subjects (with `session_owner` for the broker), MCP
-  credential injection, `_meta` identity stamps, MCP server visibility,
-  user-scope signed capabilities and user-layer configuration. A participant
+  token-exchange subjects (with `session_owner` for the broker), provider-route
+  select/resolve requests (`session_owner` on the wire), external inference
+  grants and usage receipts, governance budgets and rate limits, MCP
+  credential injection, connect preparation, `_meta` identity stamps and
+  server visibility, A2A identity, user-scope signed capabilities and
+  user-layer configuration. Skills still resolve for the session partition
+  (known limit). A participant
   bearer may call only `start` (existing sessions only), steering of its own
   runs, `events`, `sessions.turns.list/get` and `artifacts.get/put`. Only the
   writer of a run (or an admin) can steer it. The planner names the writer of
-  each request ("Message from: <speaker>") and of each retained historical
-  request. No schema migration.
+  each request as a quoted display-name label and on each retained
+  historical request. No schema migration.
 
 ## [1.50.0] — 2026-11-13
 

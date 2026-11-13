@@ -63,6 +63,14 @@ func preparationBase(ctx context.Context) context.Context {
 			base = withID
 		}
 	}
+	// A session participant's connect authenticates as that participant:
+	// carry the seated writer so an initialize never falls back to the
+	// partition owner's credential.
+	if p, ok := identity.ParticipantFrom(ctx); ok {
+		if withP, err := identity.WithParticipant(base, p); err == nil {
+			base = withP
+		}
+	}
 	if agent, ok := tools.InvokingAgentFrom(ctx); ok {
 		base = tools.WithInvokingAgent(base, agent)
 	}

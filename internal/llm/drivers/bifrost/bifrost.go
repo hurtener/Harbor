@@ -211,8 +211,9 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 			return llm.CompleteResponse{}, err
 		}
 		routeStarted := time.Now()
+		routeUser, routeSessionOwner := llm.ProviderRouteActingUser(ctx, id.Identity)
 		resolved, err := llm.ResolveProviderRoute(ctx, d.providerRoute, llm.ProviderRouteRequest{
-			TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LogicalRunID: id.RunID,
+			TenantID: id.TenantID, UserID: routeUser, SessionOwner: routeSessionOwner, SessionID: id.SessionID, LogicalRunID: id.RunID,
 			EffectiveAgentID: trusted.EffectiveAgentID, TaskID: trusted.TaskID,
 			LogicalCallID: scope.LogicalCallID, RouteID: trusted.Route.RouteID,
 			RouteGeneration: trusted.Route.RouteGeneration, ProviderConnectionID: trusted.Route.ProviderConnectionID,

@@ -69,6 +69,17 @@ func (c *providerRouteClient) Complete(ctx context.Context, req CompleteRequest)
 
 func (c *providerRouteClient) Close(ctx context.Context) error { return c.inner.Close(ctx) }
 
+// ProviderRouteActingUser returns the user a provider-route request acts
+// as for partition: the seated session participant when it writes inside
+// another user's session (with that partition owner as sessionOwner), else
+// the partition user and "".
+func ProviderRouteActingUser(ctx context.Context, partition identity.Identity) (user, sessionOwner string) {
+	if p, has := identity.ParticipantFrom(ctx); has && p.IsGuest(partition) {
+		return p.UserID, partition.UserID
+	}
+	return partition.UserID, ""
+}
+
 func prepareProviderRouteRequest(ctx context.Context, cfg ProviderRouteConfig, trusted TrustedProviderRouteContext) (context.Context, ProviderRouteRequest, error) {
 	if cfg.Resolver == nil {
 		return ctx, ProviderRouteRequest{}, ErrProviderRouteResolverUnavailable
@@ -89,12 +100,17 @@ func prepareProviderRouteRequest(ctx context.Context, cfg ProviderRouteConfig, t
 	if err := identity.Validate(q.Identity); err != nil || q.RunID == "" {
 		return ctx, ProviderRouteRequest{}, ErrIdentityMissing
 	}
+	// The resolver authorizes and bills the ACTING user: a session
+	// participant's turn selects the participant's own provider connection,
+	// never the partition owner's; session_owner lets the resolver authorize
+	// the participant for that session.
+	user, sessionOwner := ProviderRouteActingUser(ctx, q.Identity)
 	requestCtx, scope, err := EnsureAttemptScope(ctx)
 	if err != nil {
 		return ctx, ProviderRouteRequest{}, err
 	}
 	return requestCtx, ProviderRouteRequest{
-		TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID, LogicalRunID: q.RunID,
+		TenantID: q.TenantID, UserID: user, SessionOwner: sessionOwner, SessionID: q.SessionID, LogicalRunID: q.RunID,
 		EffectiveAgentID: trusted.EffectiveAgentID, TaskID: trusted.TaskID,
 		LogicalCallID: scope.LogicalCallID, RouteID: trusted.Route.RouteID,
 		RouteGeneration: trusted.Route.RouteGeneration, ProviderConnectionID: trusted.Route.ProviderConnectionID,

@@ -63,10 +63,10 @@ func (e *MaxTokensEnforcer) PreCall(ctx context.Context, req llm.CompleteRequest
 	now := e.clock.Now()
 	_ = e.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit; bus failure doesn't change the rejection
 		Type:       EventTypeMaxTokensExceeded,
-		Identity:   quad,
+		Identity:   eventQuad(ctx, quad),
 		OccurredAt: now,
 		Payload: MaxTokensExceededPayload{
-			Identity:   quad,
+			Identity:   eventQuad(ctx, quad),
 			Tier:       tierName,
 			Model:      req.Model,
 			Requested:  *req.MaxTokens,

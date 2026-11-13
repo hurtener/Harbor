@@ -257,8 +257,9 @@ func (c *ProviderCatalog) resolveCatalogRoute(ctx context.Context) (context.Cont
 	if err != nil {
 		return ctx, "", observation, err
 	}
+	routeUser, routeSessionOwner := llm.ProviderRouteActingUser(ctx, id)
 	resolved, err := llm.ResolveProviderRoute(callCtx, c.route, llm.ProviderRouteRequest{
-		TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID,
+		TenantID: id.TenantID, UserID: routeUser, SessionOwner: routeSessionOwner, SessionID: id.SessionID,
 		LogicalRunID: logicalRunID, EffectiveAgentID: trusted.EffectiveAgentID,
 		TaskID: trusted.TaskID, LogicalCallID: scope.LogicalCallID,
 		RouteID: trusted.Route.RouteID, RouteGeneration: trusted.Route.RouteGeneration,

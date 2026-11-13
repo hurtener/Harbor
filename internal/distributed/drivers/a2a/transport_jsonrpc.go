@@ -188,7 +188,9 @@ func (c *jsonRPCClient) buildRequestBody(method string, params any) ([]byte, err
 // side concern (the wire driver does not gate calls on identity; the
 // runtime above does — see the contract).
 func applyIdentityHeader(ctx context.Context, req *http.Request) {
-	id, ok := identity.From(ctx)
+	// The forwarded user is the ACTING user (a session participant writing
+	// in another user's session), consistent with the MCP identity stamp.
+	id, _, ok := identity.ActingFrom(ctx)
 	if !ok {
 		return
 	}

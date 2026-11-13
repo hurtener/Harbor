@@ -213,7 +213,9 @@ func (v *Verifier) verify(ctx context.Context, grant llm.ExternalGrant, req llm.
 	if !ok {
 		return fmt.Errorf("%w: request has no verified identity", llm.ErrExternalGrantInvalid)
 	}
-	working, ok := identity.From(ctx)
+	// A grant binds the ACTING identity: a session participant's turn must
+	// carry a grant issued to the participant, never the partition owner's.
+	working, _, ok := identity.ActingFrom(ctx)
 	if !ok {
 		return fmt.Errorf("%w: request has no working identity", llm.ErrExternalGrantInvalid)
 	}
@@ -368,7 +370,7 @@ func (s *BindingStore) Resolve(ctx context.Context, grant llm.ExternalGrant) (ll
 	if !ok || verified.TenantID != grant.TenantID {
 		return llm.ResolvedCredential{}, fmt.Errorf("%w: verified tenant mismatch", llm.ErrExternalGrantRevoked)
 	}
-	working, ok := identity.From(ctx)
+	working, _, ok := identity.ActingFrom(ctx)
 	if !ok || working.TenantID != grant.TenantID || working.UserID != grant.UserID || working.SessionID != grant.SessionID {
 		return llm.ResolvedCredential{}, fmt.Errorf("%w: working identity mismatch", llm.ErrExternalGrantRevoked)
 	}
