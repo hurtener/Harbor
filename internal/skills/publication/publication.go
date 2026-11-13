@@ -211,15 +211,17 @@ type Store interface {
 	// Revisions lists one publication's immutable revisions, oldest first,
 	// as content-free metadata (admin-only through AuthorizedStore).
 	Revisions(ctx context.Context, caller identity.Quadruple, publicationID string) ([]Metadata, error)
-	// FenceCandidate resumes the exact live fence token (presented != 0) or
-	// allocates a new one, max(live, revoked)+1, for a new acceptance
-	// (presented == 0). A revoked or superseded token is ErrCandidateFenced;
-	// a different live acceptance is ErrConflict.
-	FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, presented uint64) (uint64, error)
+	// FenceCandidate installs or resumes token (the acceptance's claim
+	// sequence number) as the candidate's live fence. A token at or below the
+	// revoked one, or below the live one, is ErrCandidateFenced; a newer token
+	// revokes the older live fence in the same write.
+	FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, token uint64) error
 	// ResolveCandidate atomically reports the revision the candidate's
-	// publish produced, or, if none, revokes the live fence so no publish
-	// under it can land. Any error means "unknown": do not release the claim.
-	ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID string) (CandidateResolution, error)
+	// publish produced, or, if none, revokes the fence of the acceptance the
+	// caller saw (expected) and anything older. A live fence newer than
+	// expected is ErrConflict (re-read). Any error means "unknown": do not
+	// release the claim.
+	ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, expected uint64) (CandidateResolution, error)
 	Close(ctx context.Context) error
 }
 

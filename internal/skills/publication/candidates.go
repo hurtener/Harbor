@@ -107,11 +107,9 @@ type AcceptClaim struct {
 	// orders or identifies claims.
 	ClaimedAt time.Time `json:"claimed_at,omitempty"`
 	// Seq identifies this claim (per-candidate, monotonic): a release names
-	// it, so a release never clears a newer claim.
+	// it, so a release never clears a newer claim, and it is the claim's
+	// publication fence token.
 	Seq uint64 `json:"seq,omitempty"`
-	// FenceToken is the publication-store fence allocated for this claim
-	// (0 until recorded). A resume presents exactly this token.
-	FenceToken uint64 `json:"fence_token,omitempty"`
 }
 
 // SameTarget reports whether two acceptances publish to the same place.
@@ -253,10 +251,6 @@ type CandidateStore interface {
 	// candidate can be accepted differently, rejected or withdrawn. It is a
 	// no-op when that claim is no longer the recorded one.
 	ReleaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, claimSeq uint64) error
-	// RecordClaimFence stores the fence token allocated for the claim
-	// numbered claimSeq. It fails with ErrConflict when that claim is no
-	// longer the recorded one or already holds a different token.
-	RecordClaimFence(ctx context.Context, caller identity.Quadruple, candidateID string, claimSeq, token uint64) error
 	// FinalizeAccept marks a claimed candidate accepted with the result.
 	FinalizeAccept(ctx context.Context, caller identity.Quadruple, candidateID string, result AcceptResult) (CandidateMetadata, error)
 	// Decide applies a reject (privileged) or withdraw (submitter) transition.
@@ -349,10 +343,19 @@ func NewMemoryCandidateStoreWithClock(runtimeID string, clock func() time.Time) 
 // NewStateStoreCandidateStore returns a durable CandidateStore over the
 // shared StateStore.
 func NewStateStoreCandidateStore(st state.StateStore, runtimeID string) (CandidateStore, error) {
+	return NewStateStoreCandidateStoreWithClock(st, runtimeID, time.Now)
+}
+
+// NewStateStoreCandidateStoreWithClock is NewStateStoreCandidateStore with an
+// injected clock (claim age only), for deterministic tests.
+func NewStateStoreCandidateStoreWithClock(st state.StateStore, runtimeID string, clock func() time.Time) (CandidateStore, error) {
 	if st == nil {
 		return nil, ErrStoreClosed
 	}
-	return &candidateStore{backend: &stateCandidateBackend{state: st}, runtime: strings.TrimSpace(runtimeID), clock: time.Now}, nil
+	if clock == nil {
+		clock = time.Now
+	}
+	return &candidateStore{backend: &stateCandidateBackend{state: st}, runtime: strings.TrimSpace(runtimeID), clock: clock}, nil
 }
 
 type memoryCandidateBackend struct {
@@ -648,7 +651,18 @@ func (s *candidateStore) Claim(ctx context.Context, caller identity.Quadruple, c
 	}
 	if c.Claim != nil && c.Claim.SameTarget(claim) && ((c.State == CandidatePending && c.Generation == expectedGeneration) || (c.State == CandidateAccepted && c.Generation == expectedGeneration+1)) {
 		// Resume an outstanding claim with its original predicates, or
-		// replay a finalized acceptance.
+		// replay a finalized acceptance. A resumed pending claim is in flight
+		// again: refresh its age (never its sequence) so it does not look
+		// stale to a concurrent decision.
+		if c.State == CandidatePending {
+			resumed := *c.Claim
+			resumed.ClaimedAt = claim.ClaimedAt
+			c.Claim = &resumed
+			a.Candidates[i] = c
+			if err := s.backend.save(ctx, caller.TenantID, token, a); err != nil {
+				return Candidate{}, err
+			}
+		}
 		return cloneCandidate(c), nil
 	}
 	if c.State == CandidatePending && c.Generation == expectedGeneration && c.Claim != nil {
@@ -658,7 +672,7 @@ func (s *candidateStore) Claim(ctx context.Context, caller identity.Quadruple, c
 		return Candidate{}, ErrConflict
 	}
 	c.ClaimSeq++
-	claim.Seq, claim.FenceToken = c.ClaimSeq, 0
+	claim.Seq = c.ClaimSeq
 	c.Claim = &claim
 	a.Candidates[i] = c
 	if err := s.backend.save(ctx, caller.TenantID, token, a); err != nil {
@@ -691,41 +705,6 @@ func (s *candidateStore) ReleaseClaim(ctx context.Context, caller identity.Quadr
 	c.UpdatedAt = s.clock().UTC()
 	a.Candidates[i] = c
 	return s.backend.save(ctx, caller.TenantID, token, a)
-}
-
-// RecordClaimFence implements CandidateStore.
-func (s *candidateStore) RecordClaimFence(ctx context.Context, caller identity.Quadruple, candidateID string, claimSeq, token uint64) error {
-	if token == 0 {
-		return fmt.Errorf("%w: fence token is required", ErrInvalidRequest)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.open(ctx, caller); err != nil {
-		return err
-	}
-	a, st, err := s.backend.load(ctx, caller.TenantID)
-	if err != nil {
-		return err
-	}
-	i, ok := findCandidate(a, strings.TrimSpace(candidateID))
-	if !ok {
-		return ErrCandidateNotFound
-	}
-	c := a.Candidates[i]
-	if c.State != CandidatePending || c.Claim == nil || c.Claim.Seq != claimSeq {
-		return ErrConflict
-	}
-	if c.Claim.FenceToken == token {
-		return nil
-	}
-	if c.Claim.FenceToken != 0 {
-		return ErrConflict
-	}
-	claim := *c.Claim
-	claim.FenceToken = token
-	c.Claim = &claim
-	a.Candidates[i] = c
-	return s.backend.save(ctx, caller.TenantID, st, a)
 }
 
 // FinalizeAccept implements CandidateStore.

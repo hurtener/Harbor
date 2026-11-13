@@ -17153,14 +17153,23 @@ differently, rejected or withdrawn. A claim left unfinalized for two minutes
 is resolved before another decision: finalized if its publish applied,
 released otherwise; a younger claim with a different target conflicts. The
 publish step also runs under a 60-second deadline, shorter than that window.
-Each claim fences its publish with an integer token allocated by the
-publication store from a per-candidate counter in the same per-tenant record,
-under the same compare-and-set that installs it: a new acceptance gets
-max(live, revoked)+1, a resume must present the exact live token (recorded on
-the claim), and a revoked token is permanent. Claims carry a per-candidate
-sequence number that identifies them; their timestamp only measures age for
-the stale window and never orders anything. A fence string from an interim
-unreleased build is ignored (revoked and resolvable). The accept also
+Each claim fences its publish with an integer token: the claim's own
+sequence number, allocated per candidate under the candidate compare-and-set,
+so the caller always knows exactly which token it holds. In the publication
+record the fence only moves forward: a token at or below the revoked one, or
+below the live one, never installs, and installing a newer token revokes the
+older live one in the same write. Resolving an acceptance names the claim the
+caller saw: it revokes that token (even if it never fenced) and anything
+older, but a live fence newer than it belongs to a fresher acceptance and is a
+conflict — the caller re-reads, nothing is revoked or released. A claim
+whose fence was revoked but which was not yet released is released
+(idempotently, by sequence, with retries) and replaced by a fresh claim when a
+same-target accept meets it; a resumed claim refreshes its age. Claim
+timestamps only measure the stale window and never order anything. A fence
+string from an interim unreleased build is ignored (revoked and resolvable).
+Known limitation: a v1.50 runtime writing the same publication record during
+a rolling deploy or after a downgrade drops the fence map; candidates are only
+used once every runtime runs v1.51 or later. The accept also
 re-checks that its claim is still the recorded one, and the publish
 commits only while that token is still the fence, in the same
 compare-and-set; only the candidate-marker Extra key is reserved

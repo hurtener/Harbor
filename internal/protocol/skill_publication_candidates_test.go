@@ -513,11 +513,11 @@ type unknownResolution struct {
 	fail bool
 }
 
-func (u *unknownResolution) ResolveCandidate(ctx context.Context, caller identity.Quadruple, id string) (publication.CandidateResolution, error) {
+func (u *unknownResolution) ResolveCandidate(ctx context.Context, caller identity.Quadruple, id string, expected uint64) (publication.CandidateResolution, error) {
 	if u.fail {
 		return publication.CandidateResolution{}, errors.New("simulated catalog read failure")
 	}
-	return u.Store.ResolveCandidate(ctx, caller, id)
+	return u.Store.ResolveCandidate(ctx, caller, id, expected)
 }
 
 // A stale claim whose publish applied is never released on an unknown
@@ -601,11 +601,8 @@ func TestCandidates_RevokedStaleClaimCannotLandLater(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	staleToken, err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := candidates.RecordClaimFence(admin, publicationTestIdentity("admin"), id, claimed.Claim.Seq, staleToken); err != nil {
+	staleToken := claimed.Claim.Seq
+	if err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, staleToken); err != nil {
 		t.Fatal(err)
 	}
 	// Another admin accepts under another name: the stale claim is resolved.
@@ -653,11 +650,8 @@ func TestCandidates_PausedAcceptCannotFenceAfterReject(t *testing.T) {
 		t.Fatal(err)
 	}
 	// It had allocated and recorded its fence just before pausing.
-	token, err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := candidates.RecordClaimFence(admin, publicationTestIdentity("admin"), id, claimed.Claim.Seq, token); err != nil {
+	token := claimed.Claim.Seq
+	if err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, token); err != nil {
 		t.Fatal(err)
 	}
 	// Meanwhile a rejection resolves the stale claim and rejects.
@@ -665,7 +659,7 @@ func TestCandidates_PausedAcceptCannotFenceAfterReject(t *testing.T) {
 		t.Fatalf("reject: %v", err)
 	}
 	// The accept resumes: its fence is refused and its publish never lands.
-	if _, err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, token); !errors.Is(err, publication.ErrCandidateFenced) {
+	if err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, token); !errors.Is(err, publication.ErrCandidateFenced) {
 		t.Fatalf("resumed fence err=%v", err)
 	}
 	sk := skills.Skill{Name: "triage", Trigger: "when", Steps: []string{"v1"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser, Extra: map[string]any{publication.CandidateMarkerKey: id}}

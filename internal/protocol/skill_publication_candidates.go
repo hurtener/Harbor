@@ -171,79 +171,78 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		ExpectedPublicationGeneration: r.ExpectedPublicationGeneration, ExpectedPublicationContentHash: r.ExpectedPublicationContentHash,
 		DecisionNote: r.DecisionNote,
 	}
-	c, err := s.candidates.Claim(ctx, caller, r.CandidateID, r.ExpectedGeneration, want)
-	if stderrors.Is(err, publication.ErrClaimOutstanding) {
-		// A different acceptance is recorded. If it is stale (its attempt
-		// died mid-flight) and published nothing, release it and claim again.
-		if cerr := s.clearStaleClaim(ctx, caller, r.CandidateID, true); cerr != nil {
-			return nil, mapPublicationError(method, cerr)
-		}
+	var (
+		c     publication.Candidate
+		claim publication.AcceptClaim
+	)
+	// At most two rounds: a claim whose fence was revoked but which was
+	// never released (a crash or CAS conflict between resolve and release)
+	// is released and replaced by a fresh claim once.
+	for round := 0; ; round++ {
+		var err error
 		c, err = s.candidates.Claim(ctx, caller, r.CandidateID, r.ExpectedGeneration, want)
-	}
-	if err != nil {
-		return nil, mapPublicationError(method, err)
-	}
-	if c.State == publication.CandidateAccepted {
-		meta, gerr := s.store.Get(ctx, caller, c.PublicationID)
-		if gerr != nil {
-			return nil, mapPublicationError(method, gerr)
+		if stderrors.Is(err, publication.ErrClaimOutstanding) {
+			// A different acceptance is recorded. If it is stale (its attempt
+			// died mid-flight) and published nothing, release it and claim again.
+			if cerr := s.clearStaleClaim(ctx, caller, r.CandidateID, true); cerr != nil {
+				return nil, mapPublicationError(method, cerr)
+			}
+			c, err = s.candidates.Claim(ctx, caller, r.CandidateID, r.ExpectedGeneration, want)
 		}
-		receipt := publication.Receipt{}
-		if c.AcceptReceipt != nil {
-			receipt = *c.AcceptReceipt
-		}
-		return &types.SkillPublicationCandidateAcceptResponse{Candidate: candidateToWire(candidateMeta(c)), Publication: metadataToWire(meta), Receipt: receiptToWire(receipt), ProtocolVersion: types.ProtocolVersion}, nil
-	}
-	claim := *c.Claim
-	// Fence the publish with this claim: the publication store commits it
-	// only while this claim's integer token is the candidate's live fence, in
-	// the same compare-and-set as the publish, and returns the revision the
-	// candidate already produced (any admin, any session, any generation)
-	// instead of writing again. A resume presents its recorded token; a new
-	// claim is allocated max(live, revoked)+1 by the store.
-	token, err := s.store.FenceCandidate(ctx, caller, c.CandidateID, claim.FenceToken)
-	if err != nil && claim.FenceToken == 0 && stderrors.Is(err, publication.ErrConflict) && !stderrors.Is(err, publication.ErrCandidateFenced) && time.Since(claim.ClaimedAt) >= staleClaimAfter {
-		// This claim allocated a fence but crashed before recording it (or a
-		// leftover fence remains): once stale, resolve it and allocate anew.
-		if res, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID); rerr != nil {
-			return nil, mapPublicationError(method, fmt.Errorf("%w: %w", errStaleResolutionUnknown, rerr))
-		} else if res.Applied {
-			return s.finalizeResolved(ctx, method, caller, c.CandidateID, res)
-		}
-		token, err = s.store.FenceCandidate(ctx, caller, c.CandidateID, 0)
-	}
-	if err != nil {
-		if stderrors.Is(err, publication.ErrCandidateFenced) {
-			// This acceptance was resolved (revoked) while it paused: it can
-			// never publish. Its claim was already released by that resolution.
+		if err != nil {
 			return nil, mapPublicationError(method, err)
 		}
-		if stderrors.Is(err, publication.ErrConflict) {
-			return nil, mapPublicationError(method, publication.ErrClaimOutstanding)
-		}
-		return nil, mapPublicationError(method, err)
-	}
-	if claim.FenceToken == 0 {
-		if rerr := s.candidates.RecordClaimFence(ctx, caller, c.CandidateID, claim.Seq, token); rerr != nil {
-			// The claim changed while fencing: revoke what was installed.
-			if _, xerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID); xerr != nil {
-				return nil, mapPublicationError(method, xerr)
+		if c.State == publication.CandidateAccepted {
+			meta, gerr := s.store.Get(ctx, caller, c.PublicationID)
+			if gerr != nil {
+				return nil, mapPublicationError(method, gerr)
 			}
-			return nil, mapPublicationError(method, publication.ErrCandidateFenced)
+			receipt := publication.Receipt{}
+			if c.AcceptReceipt != nil {
+				receipt = *c.AcceptReceipt
+			}
+			return &types.SkillPublicationCandidateAcceptResponse{Candidate: candidateToWire(candidateMeta(c)), Publication: metadataToWire(meta), Receipt: receiptToWire(receipt), ProtocolVersion: types.ProtocolVersion}, nil
 		}
-		claim.FenceToken = token
+		claim = *c.Claim
+		// Fence the publish with this claim: its token is the claim's
+		// sequence number. The publication store commits the publish only
+		// while that token is the live fence, in the same compare-and-set as
+		// the publish, and returns the revision the candidate already produced
+		// (any admin, any session, any generation) instead of writing again.
+		err = s.store.FenceCandidate(ctx, caller, c.CandidateID, claim.Seq)
+		if stderrors.Is(err, publication.ErrCandidateFenced) && round == 0 {
+			// This claim was resolved (its fence revoked) but is still
+			// recorded: it can never publish. Release it — idempotently, by
+			// its sequence number — and take a fresh claim.
+			if rerr := s.releaseClaim(ctx, caller, c.CandidateID, claim.Seq); rerr != nil {
+				return nil, mapPublicationError(method, rerr)
+			}
+			continue
+		}
+		if err != nil {
+			if stderrors.Is(err, publication.ErrCandidateFenced) {
+				return nil, mapPublicationError(method, err)
+			}
+			if stderrors.Is(err, publication.ErrConflict) {
+				return nil, mapPublicationError(method, publication.ErrClaimOutstanding)
+			}
+			return nil, mapPublicationError(method, err)
+		}
+		break
 	}
 	// The fence must belong to the claim that is still recorded: if a
 	// rejection, withdrawal or another acceptance resolved this claim while it
-	// paused, revoke what was just installed and stop.
+	// paused, revoke this claim's fence (and only it) and stop.
 	if current, rerr := s.candidates.Read(ctx, caller, c.CandidateID, true); rerr != nil {
 		return nil, mapPublicationError(method, rerr)
 	} else if current.State != publication.CandidatePending || current.Claim == nil || current.Claim.Seq != claim.Seq {
-		if _, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID); rerr != nil {
+		if _, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID, claim.Seq); rerr != nil && !stderrors.Is(rerr, publication.ErrConflict) {
 			return nil, mapPublicationError(method, rerr)
 		}
 		return nil, mapPublicationError(method, publication.ErrCandidateFenced)
 	}
+	token := claim.Seq
+	var err error
 	skill := markCandidate(c.Skill, c.CandidateID)
 	key := publication.CandidateAcceptKey(c.CandidateID)
 	fence := &publication.CandidateFence{CandidateID: c.CandidateID, Token: token}
@@ -280,13 +279,13 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		if definitivePublishFailure(err) {
 			// Release only once the store has PROVEN nothing applied (and
 			// revoked this claim's fence); otherwise keep the claim.
-			res, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID)
+			res, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID, claim.Seq)
 			if rerr != nil {
 				return nil, mapPublicationError(method, err)
 			}
 			if res.Applied {
 				meta, prior, receipt, err = res.Publication, res.PriorContentHash, res.Receipt, nil
-			} else if rerr := s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.Seq); rerr != nil {
+			} else if rerr := s.releaseClaim(ctx, caller, c.CandidateID, claim.Seq); rerr != nil {
 				return nil, mapPublicationError(method, rerr)
 			}
 		}
@@ -365,7 +364,9 @@ func (s *SkillPublicationsSurface) clearStaleClaim(ctx context.Context, caller i
 	}
 	// Atomically: the revision the claim produced, or a revoked fence so its
 	// publish can never land. Any error is "unknown": keep the claim.
-	res, err := s.store.ResolveCandidate(ctx, caller, c.CandidateID)
+	// Resolve exactly the claim read above: if a fresher acceptance fenced
+	// meanwhile, this is a conflict and nothing is revoked or released.
+	res, err := s.store.ResolveCandidate(ctx, caller, c.CandidateID, claim.Seq)
 	if err != nil {
 		return fmt.Errorf("%w: resolving a stale acceptance: %w", errStaleResolutionUnknown, err)
 	}
@@ -377,7 +378,20 @@ func (s *SkillPublicationsSurface) clearStaleClaim(ctx context.Context, caller i
 		}
 		return publication.ErrConflict
 	}
-	return s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.Seq)
+	return s.releaseClaim(ctx, caller, c.CandidateID, claim.Seq)
+}
+
+// releaseClaim releases the claim numbered seq after its fence was resolved.
+// It is idempotent (a release of a claim that is no longer recorded is a
+// no-op) and retried a few times on transient store conflicts.
+func (s *SkillPublicationsSurface) releaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, seq uint64) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = s.candidates.ReleaseClaim(ctx, caller, candidateID, seq); err == nil || ctx.Err() != nil {
+			return err
+		}
+	}
+	return err
 }
 
 func markCandidate(skill skills.Skill, candidateID string) skills.Skill {

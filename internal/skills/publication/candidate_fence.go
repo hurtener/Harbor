@@ -48,11 +48,13 @@ type CandidateFence struct {
 	Token       uint64
 }
 
-// fenceState is one candidate's fence in the publication aggregate. Tokens
-// are integers allocated here, under the same compare-and-set that installs
-// them: a new acceptance gets max(Live, Revoked)+1, a resume must present
-// exactly Live, and a revoked token is permanent. Wall clocks never order
-// them.
+// fenceState is one candidate's fence in the publication aggregate. The
+// token of an acceptance is its claim's sequence number (per candidate,
+// monotonic, allocated under the candidate CAS), so the caller always knows
+// exactly which token it holds. A fence never moves backwards: a token at or
+// below Revoked, or below Live, can never be installed; installing a newer
+// token revokes the older live one in the same write. Wall clocks never
+// order tokens.
 type fenceState struct {
 	Live    uint64 `json:"live,omitempty"`
 	Revoked uint64 `json:"revoked,omitempty"`
@@ -104,63 +106,66 @@ func checkFence(fences map[string]fenceState, f *CandidateFence) error {
 	return nil
 }
 
-// installFence resumes the exact live token, or allocates a new one for a
-// new acceptance (presented == 0).
-func installFence(fences map[string]fenceState, candidateID string, presented uint64) (uint64, bool, error) {
-	if strings.TrimSpace(candidateID) == "" {
-		return 0, false, fmt.Errorf("%w: candidate fence is incomplete", ErrInvalidRequest)
+// installFence installs (or resumes) token as the candidate's live fence.
+func installFence(fences map[string]fenceState, candidateID string, token uint64) (bool, error) {
+	if strings.TrimSpace(candidateID) == "" || token == 0 {
+		return false, fmt.Errorf("%w: candidate fence is incomplete", ErrInvalidRequest)
 	}
 	st := fences[candidateID]
-	if presented != 0 {
-		if st.Live == presented {
-			return presented, false, nil
-		}
-		// Revoked, superseded or never installed here: never re-installable.
-		return 0, false, ErrCandidateFenced
+	switch {
+	case st.Live == token:
+		return false, nil
+	case token <= st.Revoked || token < st.Live:
+		// Revoked or superseded: never re-installable.
+		return false, ErrCandidateFenced
 	}
-	if st.Live != 0 {
-		// Another acceptance holds the live fence; it must be resolved first.
-		return 0, false, ErrConflict
-	}
-	st.Live = max(st.Live, st.Revoked) + 1
+	// A newer acceptance: the older live fence (whose claim was already
+	// released) is revoked in this same write.
+	st.Revoked, st.Live = max(st.Revoked, st.Live), token
 	fences[candidateID] = st
-	return st.Live, true, nil
+	return true, nil
 }
 
 // resolveFence reports the revision the candidate produced, or revokes the
-// live fence (whatever acceptance holds it) so that publish can never land.
-func resolveFence(pubs []Publication, fences map[string]fenceState, candidateID string) (CandidateResolution, bool) {
+// fence of the acceptance the caller saw (expected) — and anything older —
+// so no publish under it can ever land, even one that has not fenced yet. A
+// live fence NEWER than expected belongs to a fresher acceptance the caller
+// did not see: ErrConflict, and the caller must re-read.
+func resolveFence(pubs []Publication, fences map[string]fenceState, candidateID string, expected uint64) (CandidateResolution, bool, error) {
 	if res, ok := candidateRevision(pubs, candidateID); ok {
-		return res, false
+		return res, false, nil
 	}
 	st := fences[candidateID]
-	if st.Live == 0 {
-		return CandidateResolution{}, false
+	if st.Live > expected {
+		return CandidateResolution{}, false, ErrConflict
 	}
-	st.Revoked, st.Live = max(st.Revoked, st.Live), 0
-	fences[candidateID] = st
-	return CandidateResolution{}, true
+	next := fenceState{Revoked: max(st.Revoked, st.Live, expected)}
+	if next == st {
+		return CandidateResolution{}, false, nil
+	}
+	fences[candidateID] = next
+	return CandidateResolution{}, true, nil
 }
 
 // FenceCandidate implements Store.FenceCandidate.
-func (m *MemoryStore) FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, presented uint64) (uint64, error) {
+func (m *MemoryStore) FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, token uint64) error {
 	if err := validateCaller(caller); err != nil {
-		return 0, err
+		return err
 	}
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return 0, ErrStoreClosed
+		return ErrStoreClosed
 	}
-	token, _, err := installFence(m.fencesFor(caller.TenantID), candidateID, presented)
-	return token, err
+	_, err := installFence(m.fencesFor(caller.TenantID), candidateID, token)
+	return err
 }
 
 // ResolveCandidate implements Store.ResolveCandidate.
-func (m *MemoryStore) ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID string) (CandidateResolution, error) {
+func (m *MemoryStore) ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, expected uint64) (CandidateResolution, error) {
 	if err := validateCaller(caller); err != nil {
 		return CandidateResolution{}, err
 	}
@@ -172,8 +177,8 @@ func (m *MemoryStore) ResolveCandidate(ctx context.Context, caller identity.Quad
 	if m.closed {
 		return CandidateResolution{}, ErrStoreClosed
 	}
-	res, _ := resolveFence(m.pubs[caller.TenantID], m.fencesFor(caller.TenantID), candidateID)
-	return res, nil
+	res, _, err := resolveFence(m.pubs[caller.TenantID], m.fencesFor(caller.TenantID), candidateID, expected)
+	return res, err
 }
 
 func (m *MemoryStore) fencesFor(tenant string) map[string]fenceState {
@@ -196,34 +201,34 @@ func (a *durableAggregate) fences() map[string]fenceState {
 }
 
 // FenceCandidate implements Store.FenceCandidate.
-func (d *StateStoreStore) FenceCandidate(ctx context.Context, c identity.Quadruple, candidateID string, presented uint64) (uint64, error) {
+func (d *StateStoreStore) FenceCandidate(ctx context.Context, c identity.Quadruple, candidateID string, token uint64) error {
 	if err := validateCaller(c); err != nil {
-		return 0, err
+		return err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if err := d.checkOpen(ctx); err != nil {
-		return 0, err
+		return err
 	}
 	a, old, present, err := d.loadAggregate(ctx, c.TenantID)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	token, changed, err := installFence(a.fences(), candidateID, presented)
+	changed, err := installFence(a.fences(), candidateID, token)
 	if err != nil || !changed {
-		return token, err
+		return err
 	}
 	if err := d.saveAggregate(ctx, c.TenantID, old, present, a); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
-			return 0, ErrConflict
+			return ErrConflict
 		}
-		return 0, err
+		return err
 	}
-	return token, nil
+	return nil
 }
 
 // ResolveCandidate implements Store.ResolveCandidate.
-func (d *StateStoreStore) ResolveCandidate(ctx context.Context, c identity.Quadruple, candidateID string) (CandidateResolution, error) {
+func (d *StateStoreStore) ResolveCandidate(ctx context.Context, c identity.Quadruple, candidateID string, expected uint64) (CandidateResolution, error) {
 	if err := validateCaller(c); err != nil {
 		return CandidateResolution{}, err
 	}
@@ -236,9 +241,9 @@ func (d *StateStoreStore) ResolveCandidate(ctx context.Context, c identity.Quadr
 	if err != nil {
 		return CandidateResolution{}, err
 	}
-	res, changed := resolveFence(a.Publications, a.fences(), candidateID)
-	if res.Applied || !changed {
-		return res, nil
+	res, changed, err := resolveFence(a.Publications, a.fences(), candidateID, expected)
+	if err != nil || res.Applied || !changed {
+		return res, err
 	}
 	if err := d.saveAggregate(ctx, c.TenantID, old, present, a); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
@@ -251,17 +256,17 @@ func (d *StateStoreStore) ResolveCandidate(ctx context.Context, c identity.Quadr
 }
 
 // FenceCandidate gates a candidate acceptance; admin-only.
-func (s *AuthorizedStore) FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, presented uint64) (uint64, error) {
+func (s *AuthorizedStore) FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, token uint64) error {
 	if err := s.adminCaller(ctx, caller); err != nil {
-		return 0, err
+		return err
 	}
-	return s.store.FenceCandidate(ctx, caller, candidateID, presented)
+	return s.store.FenceCandidate(ctx, caller, candidateID, token)
 }
 
 // ResolveCandidate resolves a candidate acceptance; admin-only.
-func (s *AuthorizedStore) ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID string) (CandidateResolution, error) {
+func (s *AuthorizedStore) ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, expected uint64) (CandidateResolution, error) {
 	if err := s.adminCaller(ctx, caller); err != nil {
 		return CandidateResolution{}, err
 	}
-	return s.store.ResolveCandidate(ctx, caller, candidateID)
+	return s.store.ResolveCandidate(ctx, caller, candidateID, expected)
 }

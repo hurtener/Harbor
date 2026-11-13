@@ -339,20 +339,20 @@ func TestCandidateFenceRejectsARevokedPublish(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			admin := publicationIdentity("tenant-a", "admin", "s-admin")
-			t1, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
-			if err != nil || t1 != 1 {
-				t.Fatalf("first fence=%d err=%v", t1, err)
+			const t1, t2 = uint64(1), uint64(2)
+			if err := store.FenceCandidate(ctx, admin, "cand-1", t1); err != nil {
+				t.Fatalf("first fence err=%v", err)
 			}
-			if _, err := store.FenceCandidate(ctx, admin, "cand-1", 0); !errors.Is(err, ErrConflict) {
-				t.Fatalf("second live fence err=%v", err)
+			// A resolution that saw an older acceptance never revokes a newer one.
+			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", 0); !errors.Is(err, ErrConflict) {
+				t.Fatalf("resolve of an older acceptance err=%v", err)
 			}
-			res, err := store.ResolveCandidate(ctx, admin, "cand-1")
+			res, err := store.ResolveCandidate(ctx, admin, "cand-1", t1)
 			if err != nil || res.Applied {
 				t.Fatalf("resolve=%+v err=%v", res, err)
 			}
-			t2, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
-			if err != nil || t2 != 2 {
-				t.Fatalf("new fence after revoke=%d err=%v", t2, err)
+			if err := store.FenceCandidate(ctx, admin, "cand-1", t2); err != nil {
+				t.Fatalf("new fence after revoke err=%v", err)
 			}
 			sk := publicationSkill("triage", "v1")
 			sk.Extra = map[string]any{CandidateMarkerKey: "cand-1"}
@@ -375,7 +375,7 @@ func TestCandidateFenceRejectsARevokedPublish(t *testing.T) {
 				t.Fatalf("repeat=%+v err=%v", again, err)
 			}
 			// Once applied, resolution reports it and never revokes.
-			res, err = store.ResolveCandidate(ctx, admin, "cand-1")
+			res, err = store.ResolveCandidate(ctx, admin, "cand-1", t2)
 			if err != nil || !res.Applied || res.Publication.PublicationID != first.PublicationID {
 				t.Fatalf("applied resolve=%+v err=%v", res, err)
 			}
@@ -425,49 +425,57 @@ func TestPublishRefusesReservedMarker(t *testing.T) {
 				t.Fatalf("planted marker on successor err=%v", err)
 			}
 			// A candidate publish naming another candidate is refused too.
-			tok, err := store.FenceCandidate(ctx, admin, "cand-2", 0)
-			if err != nil {
+			const tok = uint64(1)
+			if err := store.FenceCandidate(ctx, admin, "cand-2", tok); err != nil {
 				t.Fatal(err)
 			}
 			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "c", Name: "other", Skill: withName(planted, "other"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-2", Token: tok}}); !errors.Is(err, ErrInvalidRequest) {
 				t.Fatalf("foreign marker on candidate publish err=%v", err)
 			}
 			// Nothing planted means nothing to adopt.
-			if res, err := store.ResolveCandidate(ctx, admin, "cand-1"); err != nil || res.Applied {
+			if res, err := store.ResolveCandidate(ctx, admin, "cand-1", 1); err != nil || res.Applied {
 				t.Fatalf("resolve=%+v err=%v", res, err)
 			}
 		})
 	}
 }
 
-// Paused-accept regression at the store: integer tokens; a revoked token is
-// permanent, a resume must present the exact live token, and a new
-// acceptance gets max(live, revoked)+1 (memory and durable stores).
+// Paused-accept regression at the store: a token is the claim sequence; a
+// revoked token is permanent, an older token never installs over a newer
+// one, and resolution revokes only what the caller saw (memory and durable).
 func TestCandidateFenceRevokedTokenIsPermanent(t *testing.T) {
 	for name, store := range fenceStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			admin := publicationIdentity("tenant-a", "admin", "s-admin")
-			t1, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
-			if err != nil || t1 != 1 {
-				t.Fatalf("t1=%d err=%v", t1, err)
+			if err := store.FenceCandidate(ctx, admin, "cand-1", 1); err != nil {
+				t.Fatal(err)
 			}
-			if again, err := store.FenceCandidate(ctx, admin, "cand-1", t1); err != nil || again != t1 {
-				t.Fatalf("resume=%d err=%v", again, err)
+			if err := store.FenceCandidate(ctx, admin, "cand-1", 1); err != nil {
+				t.Fatalf("resume err=%v", err)
 			}
-			// A rejection resolves it before the paused accept resumes.
-			if res, err := store.ResolveCandidate(ctx, admin, "cand-1"); err != nil || res.Applied {
+			// A rejection resolves claim 1 before the paused accept resumes.
+			if res, err := store.ResolveCandidate(ctx, admin, "cand-1", 1); err != nil || res.Applied {
 				t.Fatalf("resolve=%+v err=%v", res, err)
 			}
-			if _, err := store.FenceCandidate(ctx, admin, "cand-1", t1); !errors.Is(err, ErrCandidateFenced) {
+			if err := store.FenceCandidate(ctx, admin, "cand-1", 1); !errors.Is(err, ErrCandidateFenced) {
 				t.Fatalf("revoked token resumed: %v", err)
 			}
-			t2, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
-			if err != nil || t2 != t1+1 {
-				t.Fatalf("t2=%d err=%v", t2, err)
+			// Resolving a claim that never fenced revokes its token too.
+			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", 2); err != nil {
+				t.Fatal(err)
 			}
-			if _, err := store.FenceCandidate(ctx, admin, "cand-1", t1); !errors.Is(err, ErrCandidateFenced) {
+			if err := store.FenceCandidate(ctx, admin, "cand-1", 2); !errors.Is(err, ErrCandidateFenced) {
+				t.Fatalf("revoked unfenced token installed: %v", err)
+			}
+			if err := store.FenceCandidate(ctx, admin, "cand-1", 3); err != nil {
+				t.Fatalf("newer token: %v", err)
+			}
+			if err := store.FenceCandidate(ctx, admin, "cand-1", 2); !errors.Is(err, ErrCandidateFenced) {
 				t.Fatalf("older token after newer: %v", err)
+			}
+			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", 2); !errors.Is(err, ErrConflict) {
+				t.Fatalf("stale resolution revoked a newer fence: %v", err)
 			}
 		})
 	}
@@ -536,8 +544,8 @@ func TestPublicationUpgradeFromLegacyRecord(t *testing.T) {
 		t.Fatalf("successor on legacy record=%+v err=%v", succ, err)
 	}
 	// A candidate whose snapshot carries the legacy key publishes too.
-	tok, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
-	if err != nil {
+	const tok = uint64(1)
+	if err := store.FenceCandidate(ctx, admin, "cand-1", tok); err != nil {
 		t.Fatal(err)
 	}
 	cand := publicationSkill("weekly", "v3")
@@ -565,22 +573,22 @@ func TestCandidateFenceSurvivesSQLiteReopen(t *testing.T) {
 		return st, func() { _ = sq.Close(ctx) }
 	}
 	first, closeFirst := open()
-	tok, err := first.FenceCandidate(ctx, admin, "cand-1", 0)
-	if err != nil {
+	const tok = uint64(1)
+	if err := first.FenceCandidate(ctx, admin, "cand-1", tok); err != nil {
 		t.Fatal(err)
 	}
 	closeFirst()
 	second, closeSecond := open()
 	defer closeSecond()
-	if again, err := second.FenceCandidate(ctx, admin, "cand-1", tok); err != nil || again != tok {
-		t.Fatalf("resume after reopen=%d err=%v", again, err)
+	if err := second.FenceCandidate(ctx, admin, "cand-1", tok); err != nil {
+		t.Fatalf("resume after reopen err=%v", err)
 	}
 	sk := publicationSkill("triage", "v1")
 	sk.Extra = map[string]any{CandidateMarkerKey: "cand-1"}
 	if _, _, err := second.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p", Name: "triage", Skill: sk, ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: tok}}); err != nil {
 		t.Fatalf("publish after reopen: %v", err)
 	}
-	if res, err := second.ResolveCandidate(ctx, admin, "cand-1"); err != nil || !res.Applied {
+	if res, err := second.ResolveCandidate(ctx, admin, "cand-1", tok); err != nil || !res.Applied {
 		t.Fatalf("resolve after reopen=%+v err=%v", res, err)
 	}
 }
@@ -606,10 +614,10 @@ func TestCandidateFenceLegacyStringFenceIsResolvable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res, err := store.ResolveCandidate(ctx, admin, "cand-1"); err != nil || res.Applied {
+	if res, err := store.ResolveCandidate(ctx, admin, "cand-1", 1); err != nil || res.Applied {
 		t.Fatalf("legacy resolve=%+v err=%v", res, err)
 	}
-	if tok, err := store.FenceCandidate(ctx, admin, "cand-1", 0); err != nil || tok == 0 {
-		t.Fatalf("fence after legacy=%d err=%v", tok, err)
+	if err := store.FenceCandidate(ctx, admin, "cand-1", 2); err != nil {
+		t.Fatalf("fence after legacy err=%v", err)
 	}
 }
