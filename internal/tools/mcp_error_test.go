@@ -50,3 +50,79 @@ func TestMCPResultErrorClassification_DoesNotParseText(t *testing.T) {
 		t.Fatal("malformed metadata or text produced a classification")
 	}
 }
+
+func TestMCPResultErrorClassification_DeterministicStructuredCodes(t *testing.T) {
+	for _, tc := range []struct {
+		code  string
+		class MCPToolErrorClass
+	}{
+		{"invalid_argument", MCPToolErrorInvalidArgument},
+		{"validation_failed", MCPToolErrorValidation},
+		{"forbidden_scope", MCPToolErrorAuthorization},
+		{"scope_blocked", MCPToolErrorAuthorization},
+		{"scope_mismatch", MCPToolErrorAuthorization},
+		{"not_found", MCPToolErrorNotFound},
+		{"document_too_large", MCPToolErrorToolDomain},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			for _, retryable := range []any{nil, false} {
+				structured := map[string]any{"code": tc.code, "message": "ignored provider prose"}
+				if retryable != nil {
+					structured["retryable"] = retryable
+				}
+				class, message, ok := MCPResultErrorClassification(nil, structured)
+				if !ok || class != tc.class || !strings.HasPrefix(message, tc.code) || strings.Contains(message, "ignored") {
+					t.Fatalf("classification = %q, %q, %v", class, message, ok)
+				}
+				if ClassifyError(NewMCPToolResultError(class, message), false) != ErrClassPermanent {
+					t.Fatal("deterministic code must be permanent")
+				}
+				if tc.code == "document_too_large" && (!strings.Contains(message, "outline/section selectors") || !strings.Contains(message, "max_chars/max_tokens") || !strings.Contains(message, "do not repeat")) {
+					t.Fatalf("oversize guidance missing: %q", message)
+				}
+			}
+		})
+	}
+}
+
+func TestMCPResultErrorClassification_StructuredCodeFallbackRemainsConservative(t *testing.T) {
+	for _, structured := range []any{
+		map[string]any{"code": "not_found", "retryable": true},
+		map[string]any{"code": "not_found", "retryable": "false"},
+		map[string]any{"code": "provider_unavailable"},
+		map[string]any{"code": "internal"},
+		map[string]any{"code": "future_code"},
+		map[string]any{"code": "not_found later"},
+		map[string]any{"code": 404},
+		map[string]any{"error": map[string]any{"code": "not_found"}},
+		map[string]any{"message": "not_found"},
+		map[string]any{"code": "not_found", MCPResultErrorNamespace: "malformed"},
+		`{"code":"not_found"}`,
+	} {
+		class, message, ok := MCPResultErrorClassification(nil, structured)
+		if ok || class != MCPToolErrorTransient || message != "" {
+			t.Fatalf("%#v classification = %q, %q, %v, want unrecognized transient", structured, class, message, ok)
+		}
+	}
+	class, _, ok := MCPResultErrorClassification(map[string]any{MCPResultErrorNamespace: "malformed"}, map[string]any{"code": "not_found"})
+	if ok || class != MCPToolErrorTransient {
+		t.Fatalf("malformed contract classification = %q, %v", class, ok)
+	}
+}
+
+func TestMCPResultErrorClassification_ExplicitContractWinsOverStructuredCode(t *testing.T) {
+	contract := map[string]any{"error": map[string]any{"class": "provider_unavailable", "message": "temporarily unavailable"}}
+	for _, metadata := range []bool{false, true} {
+		structured := map[string]any{"code": "not_found"}
+		var meta map[string]any
+		if metadata {
+			meta = map[string]any{MCPResultErrorNamespace: contract}
+		} else {
+			structured[MCPResultErrorNamespace] = contract
+		}
+		class, message, ok := MCPResultErrorClassification(meta, structured)
+		if !ok || class != MCPToolErrorProviderUnavailable || message != "temporarily unavailable" {
+			t.Fatalf("explicit contract classification = %q, %q, %v", class, message, ok)
+		}
+	}
+}

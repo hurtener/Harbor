@@ -43,8 +43,8 @@ const (
 )
 
 const (
-	// MCPResultErrorNamespace is the only provider-authored namespace Harbor
-	// interprets in standard MCP result metadata or structured content.
+	// MCPResultErrorNamespace carries Harbor's explicit provider-authored
+	// classification in standard MCP result metadata or structured content.
 	MCPResultErrorNamespace  = "harbor"
 	MCPToolErrorMessageLimit = 512
 )
@@ -59,7 +59,7 @@ type MCPToolResultError struct {
 	// lowering. It lets callers retain planner/App projections while the
 	// policy consumes the error.
 	Result ToolResult
-	// Recognized records whether the provider supplied a valid namespaced
+	// Recognized records whether the provider supplied a recognized structural
 	// classification. Policy may still retry an unrecognized result as the
 	// legacy transient case, but lifecycle projection reports it honestly.
 	Recognized bool
@@ -111,8 +111,9 @@ func boundMCPErrorMessage(message string) string {
 	return message
 }
 
-// MCPResultErrorClassification extracts only the explicitly namespaced,
-// structural classification. It never searches human-readable text.
+// MCPResultErrorClassification prefers the explicitly namespaced classification,
+// then accepts a closed set of deterministic top-level structured error codes.
+// It never searches human-readable text or nested domain payloads.
 func MCPResultErrorClassification(metadata map[string]any, structured any) (MCPToolErrorClass, string, bool) {
 	if class, message, ok := mcpResultErrorObject(metadata[MCPResultErrorNamespace]); ok {
 		return class, message, true
@@ -121,8 +122,44 @@ func MCPResultErrorClassification(metadata map[string]any, structured any) (MCPT
 		if class, message, found := mcpResultErrorObject(object[MCPResultErrorNamespace]); found {
 			return class, message, true
 		}
+		// An explicitly supplied but invalid Harbor contract must not acquire
+		// a different meaning from the compatibility fallback.
+		_, metadataContract := metadata[MCPResultErrorNamespace]
+		_, structuredContract := object[MCPResultErrorNamespace]
+		if !metadataContract && !structuredContract {
+			return mcpStructuredErrorCode(object)
+		}
 	}
 	return MCPToolErrorTransient, "", false
+}
+
+// mcpStructuredErrorCode handles providers that publish a typed code without
+// the Harbor extension. Unknown codes and explicit retryability retain the
+// legacy fallback; no prose, HTTP status, or successful result is interpreted.
+func mcpStructuredErrorCode(object map[string]any) (MCPToolErrorClass, string, bool) {
+	if raw, exists := object["retryable"]; exists {
+		retryable, ok := raw.(bool)
+		if !ok || retryable {
+			return MCPToolErrorTransient, "", false
+		}
+	}
+	code, _ := object["code"].(string)
+	var class MCPToolErrorClass
+	switch code {
+	case "invalid_argument":
+		class = MCPToolErrorInvalidArgument
+	case "validation_failed":
+		class = MCPToolErrorValidation
+	case "forbidden_scope", "scope_blocked", "scope_mismatch":
+		class = MCPToolErrorAuthorization
+	case "not_found":
+		class = MCPToolErrorNotFound
+	case "document_too_large":
+		return MCPToolErrorToolDomain, "document_too_large: read a smaller section using the provider's outline/section selectors or reduce max_chars/max_tokens; do not repeat the same full-document read", true
+	default:
+		return MCPToolErrorTransient, "", false
+	}
+	return class, code, true
 }
 
 func mcpResultErrorObject(raw any) (MCPToolErrorClass, string, bool) {
