@@ -20,7 +20,9 @@ const RELEASED_HEADING = /^## \[(\d+)\.(\d+)\.(\d+)\]\s+—\s+(\d{4}-\d{2}-\d{2}
 function plain(text) {
   return text
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/[`*_]/g, "")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\*\*?([^*]+)\*\*?/g, "$1")
+    .replace(/(^|[\s(])_([^_\s][^_]*)_(?=$|[\s).,;:])/g, "$1$2")
     .replace(/\s*\((?:D-\d+(?:[,;/ ]+)?)+\)/g, "")
     .replace(/\s+/g, " ")
     .replace(/[.:;,\s]+$/, "")

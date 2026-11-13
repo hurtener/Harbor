@@ -34,15 +34,15 @@ test("summary joins bold lead phrases and strips markdown", () => {
       "",
       "- **`foo.bar` keeps state across",
       "  restarts (D-12).** Details.",
-      "- **Faster [rollups](x.md).** More.",
+      "- **Faster [rollups](x.md) for _all_ `agent_packs.copy`.** More.",
       "",
       "## [2.3.3] — 2030-01-01",
       "- **Older.** ignored",
     ].join("\n"),
   );
   assert.equal(r.version, "2.3.4");
-  assert.equal(r.summary, "foo.bar keeps state across restarts; faster rollups");
-  assert.equal(r.announcement, "v2.3.4 just shipped — foo.bar keeps state across restarts; faster rollups");
+  assert.equal(r.summary, "foo.bar keeps state across restarts; faster rollups for all agent_packs.copy");
+  assert.equal(r.announcement, "v2.3.4 just shipped — foo.bar keeps state across restarts; faster rollups for all agent_packs.copy");
 });
 
 test("falls back when no lead phrase exists", () => {
