@@ -13,6 +13,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
+	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 )
@@ -169,5 +170,76 @@ func TestAgentPackCopy_PackageBackedSourceWithoutPackageIsRefused(t *testing.T) 
 	target, err := fx.admin.InspectEffective(ctx, copyTargetAgentID)
 	if err != nil || len(target.RevisionItems) != 1 {
 		t.Fatalf("refused copy published items: %+v err=%v", target.RevisionItems, err)
+	}
+}
+
+// afterTargetPublish runs a hook once, right after the copy publishes a
+// target revision and before the package install.
+type afterTargetPublish struct {
+	agentcfg.Registry
+	hook func()
+	done bool
+}
+
+func (a *afterTargetPublish) SetRevision(ctx context.Context, id identity.Quadruple, agentID string, scope agentcfg.ConfigScope, payload agentcfg.ConfigPayload, opts agentcfg.SetOptions) (agentcfg.Revision, error) {
+	rev, err := a.Registry.SetRevision(ctx, id, agentID, scope, payload, opts)
+	if err == nil && agentID == copyTargetAgentID && !a.done && a.hook != nil && opts.TargetRevisionID != "" {
+		a.done = true
+		a.hook()
+	}
+	return rev, err
+}
+
+func newHookedCopyFixture(t *testing.T) (*packImportFixture, *afterTargetPublish) {
+	t.Helper()
+	hooked := &afterTargetPublish{}
+	fx := newPackImportFixtureWrapped(t, func(r agentcfg.Registry) agentcfg.Registry { hooked.Registry = r; return hooked })
+	v1 := fx.validate(t, importUserA, packEntries("guide v1"))
+	if _, err := fx.admin.AgentPacksImportCommit(importCtx(importUserA, testAgentID), packCommitReq(importUserA, testAgentID, v1, false)); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	fx.seedCopyTarget(t)
+	return fx, hooked
+}
+
+// The source package is pinned before publication: replacing or removing it
+// on the source afterwards cannot leave the copied reference dangling.
+func TestAgentPackCopy_SourceChangeAfterPublicationKeepsThePinnedPackage(t *testing.T) {
+	fx, hooked := newHookedCopyFixture(t)
+	src, _ := fx.installed(t)
+	q, _ := agentcfg.AgentScope("t", testAgentID)
+	hooked.hook = func() {
+		if _, err := fx.store.DeleteInstalledPackage(context.Background(), q, testAgentID, "shared-guide", skills.InstalledPackageReceipt{
+			TenantID: q.TenantID, UserID: q.UserID, AgentID: testAgentID, Name: "shared-guide", WrittenHash: src.PackageHash, WrittenVersion: src.Package.Version,
+		}); err != nil {
+			t.Errorf("delete source package: %v", err)
+		}
+	}
+	if _, err := fx.copyPacks(t, "copy-pin", []string{"shared-guide"}); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if pkg, ok := fx.targetPackage(t); !ok || pkg.PackageHash != src.PackageHash {
+		t.Fatalf("target package = %+v, want the pinned source package", pkg)
+	}
+}
+
+// A target edit that lands after the copy published but before its install
+// wins: the install re-reads the active reference under the agent lock and
+// never installs (or keeps) a package nothing references.
+func TestAgentPackCopy_TargetEditBeforeInstallWins(t *testing.T) {
+	fx, hooked := newHookedCopyFixture(t)
+	hooked.hook = func() {
+		if _, err := fx.admin.AgentPacksRemove(context.Background(), prototypes.AgentConfigAgentPacksRemoveRequest{
+			Identity: wireScope(importUserA), AgentID: copyTargetAgentID, Name: "shared-guide",
+		}); err != nil {
+			t.Errorf("target edit: %v", err)
+		}
+	}
+	// The copy reports the moved target; either way nothing stale remains.
+	if _, err := fx.copyPacks(t, "copy-race", []string{"shared-guide"}); err != nil && !errors.Is(err, agentcfgprotocol.ErrAgentPackCopyReplay) {
+		t.Fatalf("copy: %v", err)
+	}
+	if _, ok := fx.targetPackage(t); ok {
+		t.Fatal("a stale install left a package the target no longer references")
 	}
 }
