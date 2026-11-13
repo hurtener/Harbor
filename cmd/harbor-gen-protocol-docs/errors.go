@@ -138,6 +138,14 @@ var errorTable = map[protoerrors.Code]errorEntry{
 		When:  "An HA-68 idempotency key was reused with a different mutation request.",
 		Retry: "No — use the original request for replay or choose a new idempotency key for a distinct mutation.",
 	},
+	protoerrors.CodeCandidatePendingExists: {
+		When:  "A `skills.publications.candidates.submit` was refused because the caller already has a pending candidate for the same skill name.",
+		Retry: "No — withdraw the pending candidate or wait for an admin decision, then submit again.",
+	},
+	protoerrors.CodeCandidateSupportFilesUnsupported: {
+		When:  "A `skills.publications.candidates.submit` was refused because the personal skill carries support files, which organization publications cannot carry.",
+		Retry: "No — submit a skill without support files.",
+	},
 	protoerrors.CodeSessionRunning: {
 		When:  "A `sessions.delete` erasure was refused because the target session has a RUNNING task, mirroring the GC never-reap-running invariant. No store is touched on refusal — a session with in-flight work is durable execution state, not a cache entry.",
 		Retry: "Yes — re-issue after the session's task finishes (or cancel it first).",

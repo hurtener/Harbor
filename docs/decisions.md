@@ -17110,3 +17110,96 @@ also count as completions in observability rollups.
 number is not the gateway's report, and must never call an incomplete total
 exact. "Exact" means "as reported by the model gateway for every call", not a
 provider invoice.
+
+## D-508 — Skill body reads and reviewed publication candidates
+
+**Date:** 2026-11-13
+
+**Decision.** Two additive body reads and a reviewed submission path join the
+skill surfaces.
+
+`agent_config.user.skills.read` has export's authority (verified caller, signed
+reach to an active Agent, no admin or `agent_config:user` scope) and reads only
+the caller's own user-rung skill. It returns the logical skill, the canonical
+`SKILL.md` document export would place at the archive root, the support
+manifest and the package hash; a named `support_path` adds that file's UTF-8
+text up to 256 KiB (`truncated`) or marks it `binary`. A legacy upsert-only
+skill is rendered from its stored body. It writes nothing.
+
+`skills.publications.read` returns one revision's body and rendering. With the
+verified admin scope any revision of any publication in the tenant is
+readable; any other verified caller reads only an active publication's current
+revision, the catalog `.available` already exposes and `.install` already
+admits. Everything else is not found, so existence never leaks.
+
+`skills.publications.candidates.*` lets a person freeze one of their own
+personal skills, read under the same authority as the personal read, as an
+immutable pending candidate in a per-tenant StateStore aggregate. Projections
+carry listing text only; the frozen body is read by the submitter or an admin.
+One pending candidate per person and name; idempotent submission per person
+and key. Skills with support files are refused at submission because
+publications carry no support files. Admins accept a candidate as a new
+publication or a successor revision, or reject it with a note; the submitter
+can withdraw. The candidate keeps the resulting publication and revision ids
+and, for a successor, the content hash it replaced.
+
+Acceptance spans two aggregates, so it is claim, publish, finalize: the claim
+records the acceptance on the pending candidate; a request naming the same
+target (mode, name, publication) from any admin resumes it with the claim's
+original compare-and-set predicates, even if the caller re-read an already
+advanced target. A publish that definitively did not apply (name clash,
+stale or missing target) releases the claim, so the candidate can be accepted
+differently, rejected or withdrawn. A claim left unfinalized for two minutes
+is resolved before another decision: finalized if its publish applied,
+released otherwise; a younger claim with a different target conflicts. The
+publish step also runs under a 60-second deadline, shorter than that window.
+Each claim fences its publish with an integer token: the claim's own
+sequence number, allocated per candidate under the candidate compare-and-set,
+so the caller always knows exactly which token it holds. In the publication
+record the fence only moves forward: a token at or below the revoked one, or
+below the live one, never installs, and installing a newer token revokes the
+older live one in the same write. Resolving an acceptance names the claim the
+caller saw: it revokes that token (even if it never fenced) and anything
+older, but a live fence newer than it belongs to a fresher acceptance and is a
+conflict — the caller re-reads, nothing is revoked or released. A claim
+whose fence was revoked but which was not yet released is released
+(idempotently, by sequence, with retries) and replaced by a fresh claim when a
+same-target accept meets it; a resumed claim refreshes its age. Claim
+timestamps only measure the stale window and never order anything. A fence
+string from an interim unreleased build is ignored (revoked and resolvable).
+Known limitation: a v1.50 runtime writing the same publication record during
+a rolling deploy or after a downgrade drops the fence map; candidates are only
+used once every runtime runs v1.51 or later. The accept also
+re-checks that its claim is still the recorded one, and the publish
+commits only while that token is still the fence, in the same
+compare-and-set; only the candidate-marker Extra key is reserved
+(other underscore keys accepted by earlier releases keep working); a publish
+the candidate already produced (the marker in any
+revision, any generation, any admin or session) is returned instead of
+written again. Resolving a stale or failed claim is one atomic store step
+that either reports the revision it produced or revokes its fence, so a
+publish still in flight can never land afterwards; the claim is released
+only after that step proves nothing applied, and any lookup or store error
+is "unknown" — the claim is kept and the reject, withdraw or accept is
+refused retryably. Only
+pending candidates count toward the tenant queue bound (1,024), each person
+may hold at most 64 pending, and decided candidates beyond 1,024 are pruned
+oldest first; candidate ids are numbered monotonically so pruning never
+reuses one. The
+published body carries a runtime-private candidate marker (never projected on
+the wire), which is the proof a resumed acceptance uses to adopt a publish
+that already applied instead of publishing again; the publication store's own
+name uniqueness and generation/hash compare-and-set keep a second publication
+from ever being created.
+
+**Why.** A reviewer and a person choosing a skill need to read it before
+deciding; until now bodies left the runtime only through composition or a ZIP
+export. A person who wrote a useful skill had no way to offer it to the
+organization except handing the file to an admin. The body stays in the
+runtime throughout, and publication semantics are unchanged.
+
+**Not covered.** Publishing skills with support files (publications would need
+package-backed revisions) and narrowing who may install a publication.
+
+**Cross-references:** D-430, D-500.
+

@@ -420,6 +420,19 @@ const (
 	MethodSkillsPublicationsUpdate         Method = "skills.publications.update"
 	MethodSkillsPublicationsRemove         Method = "skills.publications.remove"
 	MethodSkillsPublicationsReferencesList Method = "skills.publications.references.list"
+	// MethodSkillsPublicationsRead returns one publication revision's body.
+	// Admin callers may read any revision; any other verified caller only an
+	// active publication's current revision.
+	MethodSkillsPublicationsRead Method = "skills.publications.read"
+	// Reviewed submission path. submit/list/read/withdraw use the caller's
+	// verified identity (submit additionally requires signed reach to the
+	// source Agent); accept and reject require the verified admin scope.
+	MethodSkillsPublicationsCandidatesSubmit   Method = "skills.publications.candidates.submit"
+	MethodSkillsPublicationsCandidatesList     Method = "skills.publications.candidates.list"
+	MethodSkillsPublicationsCandidatesRead     Method = "skills.publications.candidates.read"
+	MethodSkillsPublicationsCandidatesAccept   Method = "skills.publications.candidates.accept"
+	MethodSkillsPublicationsCandidatesReject   Method = "skills.publications.candidates.reject"
+	MethodSkillsPublicationsCandidatesWithdraw Method = "skills.publications.candidates.withdraw"
 	// MethodAgentConfigSetToolExposure — admin verb: sets the agent's
 	// MCP-exposure / per-tool policy (paused servers + disabled tools) as a
 	// desired-state replace of the tool-exposure section and records the
@@ -657,6 +670,10 @@ const (
 	// as a portable ZIP artifact. CLAIM-FREE, with the same signed agent reach
 	// and lifecycle requirements as list.
 	MethodAgentConfigUserSkillsExport Method = "agent_config.user.skills.export"
+	// MethodAgentConfigUserSkillsRead reads one caller-owned personal skill:
+	// its canonical SKILL.md document, support manifest and, optionally, one
+	// support file's bounded text. CLAIM-FREE, same authority as export.
+	MethodAgentConfigUserSkillsRead Method = "agent_config.user.skills.read"
 	// MethodAgentConfigUserSkillsUpsert — durable-per-user skills verb:
 	// upserts a DURABLE personal skill at user scope (persists across ALL of
 	// the caller's conversations, keyed (tenant, user)). CLAIM-FREE, forced to
@@ -1319,6 +1336,13 @@ var canonicalMethods = map[Method]struct{}{
 	MethodSkillsPublicationsUpdate:                  {},
 	MethodSkillsPublicationsRemove:                  {},
 	MethodSkillsPublicationsReferencesList:          {},
+	MethodSkillsPublicationsRead:                    {},
+	MethodSkillsPublicationsCandidatesSubmit:        {},
+	MethodSkillsPublicationsCandidatesList:          {},
+	MethodSkillsPublicationsCandidatesRead:          {},
+	MethodSkillsPublicationsCandidatesAccept:        {},
+	MethodSkillsPublicationsCandidatesReject:        {},
+	MethodSkillsPublicationsCandidatesWithdraw:      {},
 	MethodAgentConfigSetToolExposure:                {},
 	MethodAgentConfigSetPromptLayers:                {},
 	MethodAgentConfigSetExtraSystemBlocks:           {},
@@ -1346,6 +1370,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentConfigUserReconcileLiveProfile:       {},
 	MethodAgentConfigUserSkillsList:                 {},
 	MethodAgentConfigUserSkillsExport:               {},
+	MethodAgentConfigUserSkillsRead:                 {},
 	MethodAgentConfigUserSkillsUpsert:               {},
 	MethodAgentConfigUserSkillsDelete:               {},
 	MethodAgentConfigUserSkillsImportValidate:       {},
@@ -1664,6 +1689,7 @@ var canonicalAgentConfigMethods = map[Method]struct{}{
 	// skill cannot widen capability, so it needs only a valid identity).
 	MethodAgentConfigUserSkillsList:   {},
 	MethodAgentConfigUserSkillsExport: {},
+	MethodAgentConfigUserSkillsRead:   {},
 	MethodAgentConfigUserSkillsUpsert: {},
 	MethodAgentConfigUserSkillsDelete: {},
 	// Two-phase verified-caller skill-package import (CLAIM-FREE, same
@@ -1735,6 +1761,7 @@ var canonicalAgentConfigSessionMethods = map[Method]struct{}{
 	// `auth.ScopeAgentConfigUser` claim.
 	MethodAgentConfigUserSkillsList:   {},
 	MethodAgentConfigUserSkillsExport: {},
+	MethodAgentConfigUserSkillsRead:   {},
 	MethodAgentConfigUserSkillsUpsert: {},
 	MethodAgentConfigUserSkillsDelete: {},
 	// The two-phase skill-package import verbs are CLAIM-FREE on the same
@@ -1821,32 +1848,46 @@ func IsAgentConfigSessionMethod(m Method) bool {
 }
 
 var canonicalSkillPublicationMethods = map[Method]struct{}{
-	MethodSkillsPublicationsPublish:        {},
-	MethodSkillsPublicationsList:           {},
-	MethodSkillsPublicationsGet:            {},
-	MethodSkillsPublicationsSuccessor:      {},
-	MethodSkillsPublicationsRetire:         {},
-	MethodSkillsPublicationsAvailable:      {},
-	MethodSkillsPublicationsInstall:        {},
-	MethodSkillsPublicationsUpdate:         {},
-	MethodSkillsPublicationsRemove:         {},
-	MethodSkillsPublicationsReferencesList: {},
+	MethodSkillsPublicationsRead:               {},
+	MethodSkillsPublicationsCandidatesSubmit:   {},
+	MethodSkillsPublicationsCandidatesList:     {},
+	MethodSkillsPublicationsCandidatesRead:     {},
+	MethodSkillsPublicationsCandidatesAccept:   {},
+	MethodSkillsPublicationsCandidatesReject:   {},
+	MethodSkillsPublicationsCandidatesWithdraw: {},
+	MethodSkillsPublicationsPublish:            {},
+	MethodSkillsPublicationsList:               {},
+	MethodSkillsPublicationsGet:                {},
+	MethodSkillsPublicationsSuccessor:          {},
+	MethodSkillsPublicationsRetire:             {},
+	MethodSkillsPublicationsAvailable:          {},
+	MethodSkillsPublicationsInstall:            {},
+	MethodSkillsPublicationsUpdate:             {},
+	MethodSkillsPublicationsRemove:             {},
+	MethodSkillsPublicationsReferencesList:     {},
 }
 
 var canonicalSkillPublicationAdminMethods = map[Method]struct{}{
-	MethodSkillsPublicationsPublish:   {},
-	MethodSkillsPublicationsList:      {},
-	MethodSkillsPublicationsGet:       {},
-	MethodSkillsPublicationsSuccessor: {},
-	MethodSkillsPublicationsRetire:    {},
+	MethodSkillsPublicationsPublish:          {},
+	MethodSkillsPublicationsList:             {},
+	MethodSkillsPublicationsGet:              {},
+	MethodSkillsPublicationsSuccessor:        {},
+	MethodSkillsPublicationsRetire:           {},
+	MethodSkillsPublicationsCandidatesAccept: {},
+	MethodSkillsPublicationsCandidatesReject: {},
 }
 
 var canonicalSkillPublicationUserMethods = map[Method]struct{}{
-	MethodSkillsPublicationsAvailable:      {},
-	MethodSkillsPublicationsInstall:        {},
-	MethodSkillsPublicationsUpdate:         {},
-	MethodSkillsPublicationsRemove:         {},
-	MethodSkillsPublicationsReferencesList: {},
+	MethodSkillsPublicationsRead:               {},
+	MethodSkillsPublicationsCandidatesSubmit:   {},
+	MethodSkillsPublicationsCandidatesList:     {},
+	MethodSkillsPublicationsCandidatesRead:     {},
+	MethodSkillsPublicationsCandidatesWithdraw: {},
+	MethodSkillsPublicationsAvailable:          {},
+	MethodSkillsPublicationsInstall:            {},
+	MethodSkillsPublicationsUpdate:             {},
+	MethodSkillsPublicationsRemove:             {},
+	MethodSkillsPublicationsReferencesList:     {},
 }
 
 // IsSkillPublicationMethod reports whether m belongs to HA-68's

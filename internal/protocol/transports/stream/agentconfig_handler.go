@@ -327,6 +327,8 @@ func (h *AgentConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveUserReconcileLiveProfile(w, r, body, wireID)
 	case "user/skills/export":
 		h.serveUserSkillsExport(w, r, body, wireID)
+	case "user/skills/read":
+		h.serveUserSkillsRead(w, r, body, wireID)
 	case "user/skills/list":
 		h.serveUserSkillsList(w, r, body, wireID)
 	case "user/skills/upsert":
@@ -365,6 +367,7 @@ var agentConfigSessionSafeRoutes = map[string]bool{
 	// live in this safe-subset set, NOT agentConfigUserRoutes.
 	"user/skills/list":   true,
 	"user/skills/export": true,
+	"user/skills/read":   true,
 	"user/skills/upsert": true,
 	"user/skills/delete": true,
 	// The two-phase skill-package import verbs are CLAIM-FREE on the same
@@ -1268,6 +1271,30 @@ func (h *AgentConfigHandler) serveUserSkillsExport(w http.ResponseWriter, r *htt
 	writeAgentConfigJSON(w, r, resp, h.logger)
 }
 
+func (h *AgentConfigHandler) serveUserSkillsRead(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
+	var req prototypes.AgentConfigUserSkillsReadRequest
+	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsRead) {
+		return
+	}
+	if !h.assertIdentity(w, r, &req.Identity) {
+		return
+	}
+	req.Identity = wireID
+	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserSkillsRead) {
+		return
+	}
+	if h.importService == nil {
+		writeAgentConfigError(w, protoerrors.CodeUnknownMethod, http.StatusNotImplemented, "agent_config.user.skills.read: user skill reads are not wired on this runtime")
+		return
+	}
+	resp, err := h.importService.Read(r.Context(), req)
+	if err != nil {
+		h.writeServiceError(w, r, methods.MethodAgentConfigUserSkillsRead, err)
+		return
+	}
+	writeAgentConfigJSON(w, r, resp, h.logger)
+}
+
 func (h *AgentConfigHandler) serveUserSkillsUpsert(w http.ResponseWriter, r *http.Request, body []byte, wireID prototypes.IdentityScope) {
 	var req prototypes.AgentConfigUserSkillsUpsertRequest
 	if !h.decode(w, body, &req, methods.MethodAgentConfigUserSkillsUpsert) {
@@ -1803,7 +1830,7 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 		return protoerrors.CodeRequestTooLarge, http.StatusRequestEntityTooLarge,
 			m + ": session-personal skill result exceeds the response limit"
 	case errors.Is(err, agentcfg.ErrRevisionNotFound), errors.Is(err, skills.ErrSkillNotFound),
-		errors.Is(err, skills.ErrInstalledPackageNotFound):
+		errors.Is(err, skills.ErrInstalledPackageNotFound), errors.Is(err, agentcfgprotocol.ErrUserSkillSupportFileNotFound):
 		return protoerrors.CodeNotFound, http.StatusNotFound,
 			m + ": " + err.Error()
 	case errors.Is(err, skills.ErrPackOverwriteRefused):

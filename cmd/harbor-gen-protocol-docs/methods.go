@@ -719,6 +719,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Request: "AgentConfigUserSkillsListRequest", Response: "AgentConfigUserSkillsListResponse",
 			Auth: sessionSafeNote,
 		},
+		methods.MethodAgentConfigUserSkillsRead: {
+			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserSkillsRead),
+			Mutates: false,
+			Request: "AgentConfigUserSkillsReadRequest", Response: "AgentConfigUserSkillsReadResponse",
+			Auth: sessionSafeNote + "; signed reach to the target agent is required; reads only the caller's own skill",
+		},
 		methods.MethodAgentConfigUserSkillsExport: {
 			Route:   subtreeRoute(stream.AgentConfigRoutePattern, "agent_config.", methods.MethodAgentConfigUserSkillsExport),
 			Mutates: true,
@@ -826,6 +832,34 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodSkillsPublicationsReferencesList: {
 			Route: controlRoute(methods.MethodSkillsPublicationsReferencesList), Mutates: false,
 			Request: "SkillPublicationReferencesListRequest", Response: "SkillPublicationReferencesListResponse", Auth: publicationCallerNote,
+		},
+		methods.MethodSkillsPublicationsRead: {
+			Route: controlRoute(methods.MethodSkillsPublicationsRead), Mutates: false,
+			Request: "SkillPublicationReadRequest", Response: "SkillPublicationReadResponse", Auth: "requires a verified caller identity; admin callers read any revision, other callers only an active publication's current revision",
+		},
+		methods.MethodSkillsPublicationsCandidatesSubmit: {
+			Route: controlRoute(methods.MethodSkillsPublicationsCandidatesSubmit), Mutates: true,
+			Request: "SkillPublicationCandidateSubmitRequest", Response: "SkillPublicationCandidateSubmitResponse", Auth: "requires a verified caller identity and signed reach to the source agent; freezes only the caller's own personal skill",
+		},
+		methods.MethodSkillsPublicationsCandidatesList: {
+			Route: controlRoute(methods.MethodSkillsPublicationsCandidatesList), Mutates: false,
+			Request: "SkillPublicationCandidateListRequest", Response: "SkillPublicationCandidateListResponse", Auth: "requires a verified caller identity; admin callers see every candidate in the tenant, other callers only their own",
+		},
+		methods.MethodSkillsPublicationsCandidatesRead: {
+			Route: controlRoute(methods.MethodSkillsPublicationsCandidatesRead), Mutates: false,
+			Request: "SkillPublicationCandidateReadRequest", Response: "SkillPublicationCandidateReadResponse", Auth: "requires a verified caller identity; admin or the submitter only",
+		},
+		methods.MethodSkillsPublicationsCandidatesAccept: {
+			Route: controlRoute(methods.MethodSkillsPublicationsCandidatesAccept), Mutates: true,
+			Request: "SkillPublicationCandidateAcceptRequest", Response: "SkillPublicationCandidateAcceptResponse", Auth: adminNote,
+		},
+		methods.MethodSkillsPublicationsCandidatesReject: {
+			Route: controlRoute(methods.MethodSkillsPublicationsCandidatesReject), Mutates: true,
+			Request: "SkillPublicationCandidateRejectRequest", Response: "SkillPublicationCandidateRejectResponse", Auth: adminNote,
+		},
+		methods.MethodSkillsPublicationsCandidatesWithdraw: {
+			Route: controlRoute(methods.MethodSkillsPublicationsCandidatesWithdraw), Mutates: true,
+			Request: "SkillPublicationCandidateWithdrawRequest", Response: "SkillPublicationCandidateWithdrawResponse", Auth: "requires a verified caller identity; the submitter only",
 		},
 	}
 	for m, entry := range publicationEntries {

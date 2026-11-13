@@ -1432,6 +1432,43 @@ export interface AgentConfigUserSkillsExportResponse {
 	protocol_version: string;
 }
 
+/** `agent_config.user.skills.read` request — reads the caller's own skill. */
+export interface AgentConfigUserSkillsReadRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+	support_path?: string;
+}
+
+/** One support-manifest entry (no bytes). */
+export interface SkillSupportFileInfo {
+	path: string;
+	mime: string;
+	size_bytes: number;
+}
+
+/** One support file's bounded UTF-8 text, or `binary` for non-text media. */
+export interface SkillSupportFileContent {
+	path: string;
+	mime: string;
+	size_bytes: number;
+	text?: string;
+	truncated: boolean;
+	binary: boolean;
+}
+
+/** Logical skill, canonical SKILL.md document and support manifest. */
+export interface AgentConfigUserSkillsReadResponse {
+	name: string;
+	package_hash?: string;
+	skill: AgentConfigAgentPackItem;
+	document: string;
+	support_files?: SkillSupportFileInfo[];
+	support_file?: SkillSupportFileContent;
+	updated_at?: string;
+	protocol_version: string;
+}
+
 /** `agent_config.user.skills.upsert` request — CLAIM-FREE. Upserts a durable
  * personal skill (scope forced to `user` server-side). */
 export interface AgentConfigUserSkillsUpsertRequest {

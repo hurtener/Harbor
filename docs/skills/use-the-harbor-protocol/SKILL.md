@@ -164,6 +164,32 @@ advertises the complete surface; a client must follow capability discovery and
 must not claim the route is live until the transport/composition integration
 gate is present. See the Phase 250 plan for the exact acceptance matrix.
 
+### Publication reads and candidates (D-508)
+
+Runtimes that advertise `skill_reads` serve two body reads. `skills.publications.read`
+(`publication_id`, optional `revision_id`) returns the revision's structured
+`skill` and its canonical `SKILL.md` text as `document`: an admin reads any
+revision of any publication in the tenant; any other verified caller reads only
+an active publication's current revision (exactly what `.available` lists), and
+anything else is `skill_publication_not_found`.
+
+Runtimes that advertise `skill_publication_candidates` serve a reviewed
+submission path. `skills.publications.candidates.submit` (`agent_id`, `name`,
+optional `target_publication_id` and `note`, `idempotency_key`) freezes the
+caller's own personal skill on an Agent in signed reach into a pending
+candidate; a skill with support files is refused with
+`candidate_support_files_unsupported` (publications carry no support files), and
+a second pending candidate for the same name with `candidate_pending_exists`.
+`.list` shows an admin every candidate in the tenant and anyone else only their
+own; `.read` returns the frozen body to an admin or the submitter (otherwise
+`not_found`); `.withdraw` lets the submitter drop a pending one. Admins
+`.accept` with `mode` `new` (optional `name`) or `successor` (`publication_id`
+plus the publication's expected generation and content hash), or `.reject` with
+a `decision_note`; both take the candidate's `expected_generation`. Acceptance
+goes through the ordinary publication store, records the resulting publication,
+revision and replaced content hash on the candidate, and is safe to retry: a
+retry, by the same or another admin, never publishes twice.
+
 The admin-scoped `agent_config.agent_packs.list|upsert|remove|propose|commit`
 methods manage a per-agent skill pack. Direct writes use the dedicated verbs;
 `agent_config.set_revision` rejects the pack section. Governed authoring requires
@@ -190,6 +216,18 @@ package hash identifies package content; the artifact SHA256 identifies the
 ZIP bytes. Export writes only the caller-owned artifact, with no skill,
 membership, or revision change. Missing installed packages, including legacy upsert-only rows, return
 `not_found`.
+
+### Personal skill read
+
+`agent_config.user.skills.read` (`POST /v1/agent_config/user/skills/read`)
+takes the same `identity`, `agent_id` and `name` as export and the same
+authority. It returns the logical `skill`, its canonical `SKILL.md` text as
+`document` (the bytes export puts at the archive root), the `support_files`
+manifest (`path`, `mime`, `size_bytes`) and `package_hash`. Set `support_path`
+to one manifest path to also get `support_file`: UTF-8 `text` for text-like
+media, cut at 256 KiB with `truncated: true`, or `binary: true` otherwise. A
+legacy upsert-only skill reads as a rendered document with no support files.
+The read changes nothing.
 
 To install a complete `SKILL.md` package (with support files) into ONE Agent's
 shared pack, upload it with `artifacts.put`, then call the admin-scoped

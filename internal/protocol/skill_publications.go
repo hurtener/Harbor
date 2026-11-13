@@ -26,9 +26,26 @@ import (
 // and the wire request, so one instance is safe for concurrent reuse.
 type SkillPublicationsSurface struct {
 	store      publication.Store
+	candidates publication.CandidateStore
+	snapshots  PersonalSkillSnapshotter
 	adminScope ScopeChecker
 	reach      auth.AgentReachAuthorizer
 	runtimeID  string
+}
+
+// PersonalSkillSnapshotter freezes the verified caller's own personal skill
+// on an Agent in signed reach. It reports how many support files the skill
+// carries so the surface can refuse a skill publications cannot hold.
+type PersonalSkillSnapshotter interface {
+	SnapshotPersonalSkill(ctx context.Context, agentID, name string) (skills.Skill, string, int, error)
+}
+
+// PersonalSkillSnapshotFunc adapts a function to PersonalSkillSnapshotter.
+type PersonalSkillSnapshotFunc func(ctx context.Context, agentID, name string) (skills.Skill, string, int, error)
+
+// SnapshotPersonalSkill implements PersonalSkillSnapshotter.
+func (f PersonalSkillSnapshotFunc) SnapshotPersonalSkill(ctx context.Context, agentID, name string) (skills.Skill, string, int, error) {
+	return f(ctx, agentID, name)
 }
 
 // SkillPublicationsDeps are the runtime seams required by HA-68.
@@ -44,6 +61,11 @@ type SkillPublicationsDeps struct {
 	// RuntimeID binds resolution to one Harbor runtime/deployment. An empty
 	// value leaves the store's construction-time binding authoritative.
 	RuntimeID string
+	// Candidates is the reviewed-submission store. Optional: when nil (or
+	// Snapshots is nil) the candidate verbs answer unknown_method.
+	Candidates publication.CandidateStore
+	// Snapshots freezes a caller's own personal skill for submission.
+	Snapshots PersonalSkillSnapshotter
 }
 
 // ErrSkillPublicationsMisconfigured reports a missing mandatory dependency.
@@ -64,13 +86,21 @@ func NewSkillPublicationsSurface(deps SkillPublicationsDeps) (*SkillPublications
 	}
 	return &SkillPublicationsSurface{
 		store:      deps.Store,
+		candidates: deps.Candidates,
+		snapshots:  deps.Snapshots,
 		adminScope: adminScope,
 		reach:      reach,
 		runtimeID:  strings.TrimSpace(deps.RuntimeID),
 	}, nil
 }
 
-// Dispatch handles one of the ten canonical skills.publications.* methods.
+// CandidatesAvailable reports whether the reviewed-submission verbs are
+// wired; runtime.info advertises CapSkillPublicationCandidates only then.
+func (s *SkillPublicationsSurface) CandidatesAvailable() bool {
+	return s != nil && s.candidates != nil && s.snapshots != nil
+}
+
+// Dispatch handles one of the canonical skills.publications.* methods.
 // It returns the corresponding Protocol response or a typed Protocol error.
 func (s *SkillPublicationsSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
 	if !methods.IsSkillPublicationMethod(method) {
@@ -252,6 +282,23 @@ func (s *SkillPublicationsSurface) Dispatch(ctx context.Context, method methods.
 			out = append(out, referenceToWire(ref))
 		}
 		return &types.SkillPublicationReferencesListResponse{References: out, ProtocolVersion: types.ProtocolVersion}, nil
+	case methods.MethodSkillsPublicationsRead:
+		r, ok := req.(*types.SkillPublicationReadRequest)
+		if !ok || r == nil {
+			return nil, invalidPublicationRequest(method, "SkillPublicationReadRequest")
+		}
+		return s.read(ctx, method, caller, r)
+	case methods.MethodSkillsPublicationsCandidatesSubmit,
+		methods.MethodSkillsPublicationsCandidatesList,
+		methods.MethodSkillsPublicationsCandidatesRead,
+		methods.MethodSkillsPublicationsCandidatesAccept,
+		methods.MethodSkillsPublicationsCandidatesReject,
+		methods.MethodSkillsPublicationsCandidatesWithdraw:
+		if !s.CandidatesAvailable() {
+			return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
+				"method %q: publication candidates are not configured on this Runtime", string(method))
+		}
+		return s.dispatchCandidate(ctx, method, caller, req)
 	default:
 		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: skill-publication dispatch table is incomplete", string(method))
@@ -331,6 +378,34 @@ func publicationScope(req any) (types.IdentityScope, *protoerrors.Error) {
 		if r != nil {
 			return r.Identity, nil
 		}
+	case *types.SkillPublicationReadRequest:
+		if r != nil {
+			return r.Identity, nil
+		}
+	case *types.SkillPublicationCandidateSubmitRequest:
+		if r != nil {
+			return r.Identity, nil
+		}
+	case *types.SkillPublicationCandidateListRequest:
+		if r != nil {
+			return r.Identity, nil
+		}
+	case *types.SkillPublicationCandidateReadRequest:
+		if r != nil {
+			return r.Identity, nil
+		}
+	case *types.SkillPublicationCandidateAcceptRequest:
+		if r != nil {
+			return r.Identity, nil
+		}
+	case *types.SkillPublicationCandidateRejectRequest:
+		if r != nil {
+			return r.Identity, nil
+		}
+	case *types.SkillPublicationCandidateWithdrawRequest:
+		if r != nil {
+			return r.Identity, nil
+		}
 	}
 	return types.IdentityScope{}, protoerrors.New(protoerrors.CodeInvalidRequest, "skill-publication request is nil or has the wrong wire type")
 }
@@ -404,6 +479,16 @@ func mapPublicationError(method methods.Method, err error) *protoerrors.Error {
 		return protoerrors.Newf(protoerrors.CodeSkillPublicationRuntimeMismatch, "method %q: publication belongs to another runtime", string(method))
 	case stderrors.Is(err, publication.ErrContentHashMismatch):
 		return protoerrors.Newf(protoerrors.CodeSkillPublicationConflict, "method %q: pinned content hash no longer matches", string(method))
+	case stderrors.Is(err, publication.ErrCandidateNotFound):
+		return protoerrors.Newf(protoerrors.CodeNotFound, "method %q: candidate not found", string(method))
+	case stderrors.Is(err, publication.ErrCandidatePendingExists):
+		return protoerrors.Newf(protoerrors.CodeCandidatePendingExists, "method %q: a pending candidate already exists for this skill", string(method))
+	case stderrors.Is(err, publication.ErrCandidateSupportFilesUnsupported):
+		return protoerrors.Newf(protoerrors.CodeCandidateSupportFilesUnsupported, "method %q: skills with support files cannot become publications", string(method))
+	case stderrors.Is(err, publication.ErrAdminRequired):
+		return protoerrors.Newf(protoerrors.CodeIdentityScopeRequired, "method %q: organization skill-publication admin scope required", string(method))
+	case stderrors.Is(err, publication.ErrVerifiedIdentityRequired):
+		return protoerrors.Newf(protoerrors.CodeIdentityRequired, "method %q: verified identity required", string(method))
 	case stderrors.Is(err, publication.ErrStoreClosed):
 		return protoerrors.Newf(protoerrors.CodeRuntimeError, "method %q: publication store is closed", string(method))
 	default:

@@ -246,6 +246,13 @@ type PostureDeps struct {
 	// transport. It is derived from the same construction condition as the
 	// transport option; an unattached publication store must not be advertised.
 	SkillPublicationsAvailable bool
+	// SkillReadsAvailable indicates both body reads are wired: the
+	// personal-skill read on the agent-config transport and the
+	// publication read on the publication surface.
+	SkillReadsAvailable bool
+	// SkillPublicationCandidatesAvailable indicates the publication surface
+	// was built with a candidate store and a personal-skill snapshotter.
+	SkillPublicationCandidatesAvailable bool
 	// ProviderCatalogAvailable must be set from the same construction
 	// condition that wires ProviderCatalog, so capability advertisement is
 	// never a claim about an unmounted operation.
@@ -320,8 +327,22 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		displayName:            deps.DisplayName,
 		instanceID:             deps.InstanceID,
 		externalGrant:          deps.ExternalGrant,
-		wiredCaps:              wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteAvailable, deps.ToolsConfigurationViewAvailable, deps.MemoryBudgetAvailable),
+		wiredCaps:              withSkillReviewCapabilities(wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteAvailable, deps.ToolsConfigurationViewAvailable, deps.MemoryBudgetAvailable), deps.SkillPublicationsAvailable && deps.SkillReadsAvailable, deps.SkillPublicationsAvailable && deps.SkillPublicationCandidatesAvailable),
 	}, nil
+}
+
+// withSkillReviewCapabilities adds the skill body-read and reviewed
+// submission capabilities when their surfaces are wired, keeping the list
+// sorted.
+func withSkillReviewCapabilities(caps []types.Capability, reads, candidates bool) []types.Capability {
+	if reads {
+		caps = append(caps, types.CapSkillReads)
+	}
+	if candidates {
+		caps = append(caps, types.CapSkillPublicationCandidates)
+	}
+	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
+	return caps
 }
 
 // wiredCapabilitiesFor returns the lexicographically-sorted subset of
