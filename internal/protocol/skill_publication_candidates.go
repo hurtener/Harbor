@@ -204,6 +204,11 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 	// A publish this candidate already produced (any admin, any session,
 	// whatever the publication's current generation) is adopted from the
 	// durable marker instead of being published again.
+	// The publish runs under a deadline shorter than staleClaimAfter, so a
+	// claim old enough to be resolved by another decision can no longer have
+	// a publish in flight.
+	publishCtx, cancelPublish := context.WithTimeout(ctx, AcceptPublishDeadline)
+	defer cancelPublish()
 	if found, foundPrior, ok := s.findCandidateRevision(ctx, caller, c.CandidateID, claim); ok {
 		meta, prior = found, foundPrior
 		receipt = adoptedReceipt(claim, found, prior)
@@ -211,7 +216,7 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		switch claim.Mode {
 		case publication.AcceptModeNew:
 			skill.Name = claim.Name
-			meta, receipt, err = s.store.Publish(ctx, caller, publication.PublishRequest{IdempotencyKey: key, Name: claim.Name, Skill: skill, ExpectedAbsent: true})
+			meta, receipt, err = s.store.Publish(publishCtx, caller, publication.PublishRequest{IdempotencyKey: key, Name: claim.Name, Skill: skill, ExpectedAbsent: true})
 		case publication.AcceptModeSuccessor:
 			current, gerr := s.store.Get(ctx, caller, claim.PublicationID)
 			if gerr != nil {
@@ -220,7 +225,7 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 			}
 			skill.Name = current.Name
 			prior = claim.ExpectedPublicationContentHash
-			meta, receipt, err = s.store.PublishSuccessor(ctx, caller, publication.SuccessorRequest{
+			meta, receipt, err = s.store.PublishSuccessor(publishCtx, caller, publication.SuccessorRequest{
 				IdempotencyKey: key, PublicationID: claim.PublicationID, ExpectedGeneration: claim.ExpectedPublicationGeneration,
 				ExpectedContentHash: claim.ExpectedPublicationContentHash, Skill: skill,
 			})
@@ -260,7 +265,15 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 // staleClaimAfter is how long a recorded acceptance may stay unfinalized
 // before another acceptance, a rejection or a withdrawal may resolve it. An
 // in-flight publish finishes well within it.
-const staleClaimAfter = 2 * time.Minute
+const staleClaimAfter = StaleClaimAfter
+
+// StaleClaimAfter is how long a recorded acceptance may stay unfinalized
+// before another decision may resolve it.
+const StaleClaimAfter = 2 * time.Minute
+
+// AcceptPublishDeadline bounds the publish step of an acceptance. It must stay
+// shorter than StaleClaimAfter so a stale claim never has a publish in flight.
+const AcceptPublishDeadline = 60 * time.Second
 
 // definitivePublishFailure reports whether a publish error proves the
 // publication store did not apply the claimed publish.

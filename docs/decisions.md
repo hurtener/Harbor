@@ -17151,7 +17151,9 @@ advanced target. A publish that definitively did not apply (name clash,
 stale or missing target) releases the claim, so the candidate can be accepted
 differently, rejected or withdrawn. A claim left unfinalized for two minutes
 is resolved before another decision: finalized if its publish applied,
-released otherwise; a younger claim with a different target conflicts.
+released otherwise; a younger claim with a different target conflicts. The
+publish step runs under a 60-second deadline, shorter than that window, so a
+claim old enough to be resolved never has a publish in flight.
 Whether a claim already published is decided only from durable state — the
 candidate marker in a publication revision, found at any generation by any
 admin or session — never from a caller-scoped idempotency receipt. Only

@@ -493,3 +493,11 @@ func TestCandidates_RecoveryAcrossAdminsAfterPublicationAdvanced(t *testing.T) {
 		t.Fatalf("revisions=%d want 3 (no republish)", len(revs))
 	}
 }
+
+// A claim is only resolved as stale after any publish it started must have
+// ended: the publish deadline is shorter than the stale window.
+func TestCandidates_PublishDeadlineIsShorterThanStaleWindow(t *testing.T) {
+	if protocol.AcceptPublishDeadline <= 0 || protocol.AcceptPublishDeadline >= protocol.StaleClaimAfter {
+		t.Fatalf("publish deadline %v must be positive and shorter than the stale window %v", protocol.AcceptPublishDeadline, protocol.StaleClaimAfter)
+	}
+}
