@@ -3,7 +3,8 @@ import { ref, onMounted } from "vue";
 import { withBase } from "vitepress";
 import { announcement } from "../landingSpec";
 
-const KEY = "hb-ann-v1.6.0";
+// Keyed by release so a dismissed bar reappears for the next version.
+const KEY = `hb-ann-v${__HARBOR_RELEASE__.version}`;
 const show = ref(false);
 onMounted(() => {
   try {

@@ -19,7 +19,8 @@ export const GITHUB = "https://github.com/hurtener/Harbor";
 export const LICENSE_URL = `${GITHUB}/blob/main/LICENSE`;
 
 export const hero = {
-  eyebrow: "Go-native agent runtime · v1.28",
+  // Derived from CHANGELOG.md at build time (.vitepress/changelog.mjs).
+  eyebrow: __HARBOR_RELEASE__.eyebrow,
   name: "Harbor",
   tagline: "Durable, steerable, event-driven AI agents in Go.",
   lead:
@@ -44,7 +45,8 @@ export const hero = {
 };
 
 export const announcement = {
-  text: "v1.28 just shipped — governed skill import, drafting, and boot packs; lifecycle and durable turn projections; observability rollups; and fresh MCP App render admission",
+  // Derived from CHANGELOG.md at build time (.vitepress/changelog.mjs).
+  text: __HARBOR_RELEASE__.announcement,
   link: "/reference/changelog",
 };
 
