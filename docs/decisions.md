@@ -17005,4 +17005,3 @@ Artifact helper hints appear only when the run can call that helper. The
 limit-stop final call keeps tool declarations with tool choice `none`.
 
 **Cross-references:** D-501, D-502, D-503.
-
