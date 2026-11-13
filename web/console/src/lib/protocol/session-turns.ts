@@ -129,6 +129,12 @@ export interface SessionTurnQuery {
 	complete?: string;
 }
 
+/** The writer of a turn in a session several people take part in. */
+export interface SessionTurnParticipant {
+	user_id: string;
+	speaker?: string;
+}
+
 /** The metadata-only reference to a heavy answer (bytes via artifacts). */
 export interface SessionTurnAnswerRef {
 	id: string;
@@ -292,6 +298,7 @@ export interface SessionTurnRow {
 	error_message?: string;
 	agent: SessionTurnAgent;
 	query: SessionTurnQuery;
+	participant?: SessionTurnParticipant;
 	answer: SessionTurnAnswer;
 	pause: SessionTurnPause;
 	inputs?: SessionTurnAttachment[];

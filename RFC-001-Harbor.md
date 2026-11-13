@@ -273,6 +273,16 @@ the same strict shape lets `sessions.turns.list` and `sessions.turns.get`
 serve rows of the agents it names; it never authorizes selecting them, and a
 non-empty value requires a non-empty `session_reach`.
 
+**Session participants (D-509).** A session keeps one owner partition
+`(tenant, owner, session)`. An optional signed `session_owner` claim lets a
+bearer for another user of the same tenant act inside that partition for
+exactly one signed session, limited to exact-session methods; the verified
+user becomes the turn's *participant*. Storage stays keyed by the partition;
+user-keyed outbound resolution (credential exchange subject, MCP credential
+and identity stamp, user-scope configuration) acts as the participant. Only a
+run's writer (or an admin) may steer it. An optional `speaker` claim labels
+the writer in the model context and on turn rows.
+
 **Agent reach is signed resource authority, not isolation (D-397).** Every
 bearer used on an agent-addressed data-plane operation carries a bounded,
 non-empty `agent_reach` claim naming the registration IDs it may address. The

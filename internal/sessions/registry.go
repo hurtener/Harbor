@@ -373,6 +373,19 @@ func (r *Registry) Get(ctx context.Context, id string) (*Session, error) {
 	return r.loadSession(ctx, ident)
 }
 
+// RequireExisting reports ErrSessionNotFound unless a lifecycle record
+// exists for the exact triple (open or closed). It creates nothing.
+func (r *Registry) RequireExisting(ctx context.Context, ident identity.Identity) error {
+	if r.closed.Load() {
+		return ErrRegistryClosed
+	}
+	if err := identity.Validate(ident); err != nil {
+		return err
+	}
+	_, err := r.loadSession(ctx, ident)
+	return err
+}
+
 // Touch updates LastSeen and re-saves. Identity-mandatory; ctx
 // Identity is compared against the stored Identity, mismatch returns
 // ErrIdentityMismatch. Touch on a Closed session returns ErrSessionClosed

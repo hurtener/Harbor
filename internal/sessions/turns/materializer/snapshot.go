@@ -143,6 +143,10 @@ type TaskSnapshot struct {
 	AgentName          string
 	AgentBindingSource turns.AgentBindingSource
 
+	// Participant is the turn's writer in a multi-participant session
+	// (nil for ordinary records).
+	Participant *turns.Participant
+
 	// InputsPresent reports whether the record carries input
 	// attachment metadata (never bytes). When true, Inputs seed the
 	// turn's input list at spawn; when false the turn starts with the

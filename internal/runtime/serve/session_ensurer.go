@@ -40,7 +40,19 @@ func NewSessionEnsurerAdapter(reg *sessions.Registry) *SessionEnsurerAdapter {
 // ControlSurface's mapSessionEnsureError reaches a stable Protocol code.
 // An unclassified error is wrapped (not swallowed) so the surface's
 // catch-all maps it to CodeRuntimeError (CLAUDE.md §5 — fail loud).
+//
+// A session participant acting inside another user's partition never
+// creates a session: the session must already exist (open or closed) in
+// that partition, otherwise ErrSessionParticipantNoSession.
 func (a *SessionEnsurerAdapter) EnsureSession(ctx context.Context, ident identity.Identity) error {
+	if p, ok := identity.ParticipantFrom(ctx); ok && p.IsGuest(ident) {
+		if err := a.reg.RequireExisting(ctx, ident); err != nil {
+			if errors.Is(err, sessions.ErrSessionNotFound) {
+				return fmt.Errorf("%w: %w", protocol.ErrSessionParticipantNoSession, err)
+			}
+			return fmt.Errorf("session ensure: %w", err)
+		}
+	}
 	_, err := a.reg.EnsureOpen(ctx, ident)
 	switch {
 	case err == nil:

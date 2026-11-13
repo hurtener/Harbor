@@ -84,7 +84,7 @@ func (r *Registry) ValidateAppBinding(ctx context.Context, serverID, token, reso
 	if err := requireIdentity(ctx); err != nil {
 		return false
 	}
-	id, _ := identity.From(ctx)
+	id, _ := actingIdentity(ctx)
 	r.mu.RLock()
 	entry := r.servers[serverID]
 	visible := entry != nil && entryVisibleToIdentity(entry, id)
@@ -1346,7 +1346,7 @@ func (r *Registry) ResolveAppToolForIdentity(ctx context.Context, serverID, tool
 	}
 	r.mu.RLock()
 	e, ok := r.servers[serverID]
-	id, _ := identity.From(ctx)
+	id, _ := actingIdentity(ctx)
 	if !ok || !entryVisibleToIdentity(e, id) {
 		r.mu.RUnlock()
 		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: %q", ErrServerNotFound, serverID)
@@ -1413,7 +1413,7 @@ func (r *Registry) ResolveAppToolAtGenerationForIdentity(ctx context.Context, se
 	}
 	r.mu.RLock()
 	e, ok := r.servers[serverID]
-	id, _ := identity.From(ctx)
+	id, _ := actingIdentity(ctx)
 	if !ok || !entryVisibleToIdentity(e, id) {
 		r.mu.RUnlock()
 		return tools.ToolDescriptor{}, false, fmt.Errorf("%w: %q", ErrServerNotFound, serverID)
@@ -1465,7 +1465,7 @@ func (r *Registry) CurrentGenerationForIdentity(ctx context.Context, serverID st
 	if err := requireIdentity(ctx); err != nil {
 		return "", false, err
 	}
-	id, _ := identity.From(ctx)
+	id, _ := actingIdentity(ctx)
 	r.mu.RLock()
 	e, ok := r.servers[serverID]
 	if !ok || !entryVisibleToIdentity(e, id) || e.currentGeneration == "" {
@@ -2137,7 +2137,7 @@ func (r *Registry) SourceAccess(ctx context.Context, source tools.ToolSourceID) 
 	if err := requireIdentity(ctx); err != nil {
 		return auth.Owner{}, "", false, err
 	}
-	id, _ := identity.From(ctx)
+	id, _ := actingIdentity(ctx)
 	r.mu.RLock()
 	e, ok := r.servers[string(source)]
 	if !ok {
@@ -2359,7 +2359,7 @@ func (r *Registry) CheckResourceReadAtGeneration(ctx context.Context, read Resou
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	id, _ := identity.From(ctx)
+	id, _ := actingIdentity(ctx)
 	r.mu.RLock()
 	current := r.servers[read.source]
 	valid := read.entry != nil && current == read.entry && entryVisibleToIdentity(current, id) && current.currentGeneration == read.generation && (generation == "" || generation == read.generation)
@@ -2373,7 +2373,7 @@ func (r *Registry) CheckResourceReadAtGeneration(ctx context.Context, read Resou
 // requireIdentity fails closed when ctx carries no identity triple.
 // Identity is mandatory on every read path (AGENTS.md §6 rule 9).
 func requireIdentity(ctx context.Context) error {
-	id, ok := identity.From(ctx)
+	id, ok := actingIdentity(ctx)
 	if !ok {
 		return ErrRegistryIdentityMissing
 	}
@@ -2390,6 +2390,15 @@ func requireIdentity(ctx context.Context) error {
 // source authorizer, not by this preliminary identity filter. Session is deliberately not part of this
 // durable attachment boundary: a later session for the same user can use its
 // own attachment. The caller holds r.mu when reading entry fields.
+// actingIdentity is the identity registry visibility is evaluated for: the
+// working identity, with the user replaced by a seated session participant
+// so a writer acting inside another user's session sees its own user-owned
+// servers and never the partition owner's.
+func actingIdentity(ctx context.Context) (identity.Identity, bool) {
+	acting, _, ok := identity.ActingFrom(ctx)
+	return acting, ok
+}
+
 func entryVisibleToIdentity(e *serverEntry, id identity.Identity) bool {
 	return e != nil && e.owner.AllowsPrincipal(id.TenantID, id.UserID)
 }
@@ -2400,7 +2409,7 @@ func entryVisibleToIdentity(e *serverEntry, id identity.Identity) bool {
 // existence oracle. Caller must have already supplied a complete identity.
 func (r *Registry) identityVisibleEntry(ctx context.Context, name string) (*serverEntry, error) {
 	name = r.CanonicalSourceID(ctx, name)
-	id, ok := identity.From(ctx)
+	id, ok := actingIdentity(ctx)
 	if !ok {
 		return nil, ErrRegistryIdentityMissing
 	}
@@ -2466,7 +2475,7 @@ func (r *Registry) listServers(ctx context.Context, f ListFilter, visible Source
 		return nil, nil, fmt.Errorf("mcp: ListServers cancelled: %w", err)
 	}
 
-	id, _ := identity.From(ctx)
+	id, _ := actingIdentity(ctx)
 	type snapshot struct {
 		view    ServerView
 		source  tools.ToolSourceID
@@ -3136,7 +3145,7 @@ func (r *Registry) SetRawHTMLTrust(ctx context.Context, name string, trusted boo
 		return false, err
 	}
 	// requireIdentity already proved the triple is present and complete.
-	id, _ := identity.From(ctx)
+	id, _ := actingIdentity(ctx)
 	e, eerr := r.tenantEntry(name, id.TenantID)
 	if eerr != nil {
 		return false, eerr
@@ -3405,7 +3414,7 @@ func (r *Registry) physicalNameForOwner(name string, owner auth.Owner) string {
 // sources never gain a logical alias. Existing exact ids (including boot ids)
 // retain their meaning, and ambiguous or unauthorized names remain unresolved.
 func (r *Registry) CanonicalSourceID(ctx context.Context, name string) string {
-	id, ok := identity.From(ctx)
+	id, ok := actingIdentity(ctx)
 	agent, admitted := tools.EffectiveAgentConfigFrom(ctx)
 	if !ok || !admitted || id.TenantID == "" {
 		return name

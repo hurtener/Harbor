@@ -27,6 +27,14 @@ import "time"
 // mounts the App without Data Delivery, and a replayed projection
 // never rehydrates live callback authority).
 
+// Participant is the writer of a turn in a multi-participant session.
+type Participant struct {
+	// UserID is the verified writer.
+	UserID string
+	// Speaker is the writer's signed display label ("" = none).
+	Speaker string `json:",omitempty"`
+}
+
 // TurnRow is one projected conversation turn — the durable,
 // consumer-safe read model a caller renders. Rows are keyed by
 // (identity triple, TurnID); Sequence + TieBreaker are the immutable
@@ -117,6 +125,10 @@ type TurnRow struct {
 	// made. Unavailable when the run had no user-visible query (e.g.
 	// an injected-context run).
 	Query Query
+	// Participant names who wrote the turn in a multi-participant
+	// session (the verified writer and its signed display label). Nil
+	// for ordinary single-user turns. Immutable once appended.
+	Participant *Participant `json:",omitempty"`
 	// Answer is the assistant answer — a closed union of inline text,
 	// artifact reference, definite empty, evicted reference, or
 	// unavailable. Unavailable while the run has not produced one.

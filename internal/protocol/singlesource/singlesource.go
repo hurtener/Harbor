@@ -794,6 +794,7 @@ var CanonicalWireTypes = map[string]string{
 	"SessionTurnRow":            "types",
 	"SessionTurnAgent":          "types",
 	"SessionTurnQuery":          "types",
+	"SessionTurnParticipant":    "types",
 	"SessionTurnAnswer":         "types",
 	"SessionTurnAnswerRef":      "types",
 	"SessionTurnPause":          "types",

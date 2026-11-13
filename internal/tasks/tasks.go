@@ -231,8 +231,15 @@ type Task struct {
 	// Spawn, recovered with the task, and can only narrow agent/runtime
 	// limits.
 	RunLimits *RunLimitsRequest `json:",omitempty"`
-	CreatedAt int64             // unix nanoseconds; matches sessions / events convention
-	UpdatedAt int64             // unix nanoseconds
+	// Participant names the person who wrote this turn when it differs
+	// from, or is labelled on top of, the session partition user (a
+	// multi-participant session). Nil on every ordinary task, so the
+	// whole-record marshal stays byte-identical. User-keyed outbound
+	// resolution during the run acts as Participant.UserID; storage stays
+	// keyed by Identity.
+	Participant *identity.Participant `json:",omitempty"`
+	CreatedAt   int64                 // unix nanoseconds; matches sessions / events convention
+	UpdatedAt   int64                 // unix nanoseconds
 	// ToolCount is the running count of tool dispatches the runtime
 	// has performed against this task. Advanced exclusively through
 	// `TaskRegistry.IncrementToolCount` — never set directly by callers.
@@ -405,6 +412,8 @@ type SpawnRequest struct {
 	// RunLimits optionally tightens this run's limits. It participates in
 	// task identity and is detached at acceptance.
 	RunLimits *RunLimitsRequest
+	// Participant is the verified writer of this turn (see Task.Participant).
+	Participant *identity.Participant
 	// InputArtifactIDs are operator-uploaded multimodal inputs the
 	// task carries onto its first planner turn.
 	// Persisted onto `Task.InputArtifactIDs`; consumed by the run

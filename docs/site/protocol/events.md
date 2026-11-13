@@ -1633,6 +1633,7 @@ Payload `TaskSpawnedPayload` — safe payload (delivered typed, verbatim).
 | `ParentTaskID` | `tasks.TaskID` |  |
 | `Priority` | `int` |  |
 | `IdempotencyKey` | `string` |  |
+| `ParticipantUserID` | `string` | optional (`omitempty`) |
 
 ## `task.started`
 

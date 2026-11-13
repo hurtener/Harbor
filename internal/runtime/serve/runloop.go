@@ -1418,6 +1418,14 @@ func runConfigTaskError(err error, fallback tasks.TaskError) tasks.TaskError {
 	return fallback
 }
 
+// participantSpeaker returns the writer's display label, or "".
+func participantSpeaker(p *identity.Participant) string {
+	if p == nil {
+		return ""
+	}
+	return p.Speaker
+}
+
 func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	turnStartedAt := time.Now()
 	// Build the identity-scoped ctx the TaskRegistry needs. We attach
@@ -1489,6 +1497,30 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		turnStartedAt = time.Unix(0, task.CreatedAt)
 	}
 	taskCtx = telemetry.BeginTurnTiming(taskCtx, d.logger, turnStartedAt)
+	// Multi-participant session: seat the turn's writer so every user-keyed
+	// southbound resolution (credential exchange, MCP credential injection,
+	// per-user capability reconcile) acts as the writer while storage stays
+	// keyed by the session partition. Ordinary tasks carry no participant.
+	// cq is the CONFIGURATION quadruple: the run quadruple with the user
+	// replaced by the writer. User-keyed configuration (user prompt layer,
+	// user-scope signed capabilities and their catalog visibility, LLM and
+	// limit overrides) resolves as the writer; storage, events, artifacts
+	// and the run-bound skill snapshot stay keyed by q. Equal to q for every
+	// ordinary run.
+	cq := q
+	if task.Participant != nil {
+		cq.UserID = task.Participant.UserID
+		var pErr error
+		taskCtx, pErr = identity.WithParticipant(taskCtx, *task.Participant)
+		if pErr != nil {
+			d.logger.Warn("RunLoopDriver: task participant is malformed; failing run",
+				slog.String("task_id", string(taskID)), slog.String("run_id", q.RunID))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{Code: "participant_invalid", Message: "task participant is malformed"}); fErr != nil {
+				d.logger.Warn("RunLoopDriver: MarkFailed after participant validation failed", slog.String("err", fErr.Error()))
+			}
+			return
+		}
+	}
 	var externalGrant json.RawMessage
 	if len(task.ExternalGrant) > 0 {
 		var grant llm.ExternalGrant
@@ -1698,7 +1730,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// (a removed connection / a rollback past an add). Exposure is next-turn;
 	// teardown is process-global (an in-flight run calling a detached server
 	// fails loud — see the reconcileConnections wrapper doc).
-	d.reconcileConnections(taskCtx, effectiveAgentID, q, agentReachAdmitted)
+	d.reconcileConnections(taskCtx, effectiveAgentID, cq, agentReachAdmitted)
 
 	// Compile the per-task output schema ONCE at run start (the compile
 	// the run consumes). A compile failure fails the run LOUD with the
@@ -1833,9 +1865,9 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		// run LOUDLY (the registry IS the runtime StateStore — an error means
 		// the runtime is unhealthy). The shared projection keeps the cmd +
 		// devstack views identical (CLAUDE.md §17.6).
-		view, vErr := d.projectAgentConfigCatalog(taskCtx, effectiveAgentID, q, tools.CatalogFilter{
+		view, vErr := d.projectAgentConfigCatalog(taskCtx, effectiveAgentID, cq, tools.CatalogFilter{
 			TenantID:      q.TenantID,
-			UserID:        q.UserID,
+			UserID:        cq.UserID,
 			SessionID:     q.SessionID,
 			GrantedScopes: d.grantedScopes,
 		})
@@ -2034,7 +2066,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// rather than silently dropping the admin's policy (CLAUDE.md §13) —
 	// the override store IS the runtime StateStore, so a read error here
 	// means the runtime is already unhealthy.
-	llmOverrides, ovErr := d.resolveTaskLLMOverrides(taskCtx, effectiveAgentID, q, task.LLMSettings != nil)
+	llmOverrides, ovErr := d.resolveTaskLLMOverrides(taskCtx, effectiveAgentID, cq, task.LLMSettings != nil)
 	if ovErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: tenant-override resolution failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -2057,7 +2089,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// projection is shared verbatim with the devstack twin (CLAUDE.md §17.6);
 	// a read error fails the run loudly rather than silently dropping the
 	// operator's configured prompt.
-	llmOverrides, plErr := d.projectAgentConfigPromptLayers(taskCtx, effectiveAgentID, q, llmOverrides)
+	llmOverrides, plErr := d.projectAgentConfigPromptLayers(taskCtx, effectiveAgentID, cq, llmOverrides)
 	if plErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: prompt-layer projection failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -2089,7 +2121,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// virtual-agent defaults. Prompt and governance authority is unchanged.
 	llmOverrides = applyTaskLLMSettings(llmOverrides, task.LLMSettings)
 	maxSteps := d.maxStepsRunLoop
-	tokenBudget, memoryErr := projection.ActiveMemoryBudget(taskCtx, d.agentConfig, effectiveAgentID, q, d.tokenBudget, d.compression != nil)
+	tokenBudget, memoryErr := projection.ActiveMemoryBudget(taskCtx, d.agentConfig, effectiveAgentID, cq, d.tokenBudget, d.compression != nil)
 	if memoryErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: memory-budget projection failed", slog.String("err", memoryErr.Error()))
 		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(memoryErr, tasks.TaskError{
@@ -2109,7 +2141,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Resolve the effective run-completion hook once at run start (agent-config
 	// over yaml over none) via the shared projection. A read error fails the run
 	// loudly rather than silently dropping the operator's configured hook.
-	completionHook, chErr := d.projectRunCompletionHook(taskCtx, effectiveAgentID, q)
+	completionHook, chErr := d.projectRunCompletionHook(taskCtx, effectiveAgentID, cq)
 	if chErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: run-completion-hook projection failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -2144,7 +2176,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Resolve the effective session auto-naming spec once at run start
 	// (agent-config over yaml over off). A read error fails the run loudly
 	// rather than silently dropping the operator's configured policy.
-	namingSpec, nmErr := d.projectNaming(taskCtx, effectiveAgentID, q, llmOverrides)
+	namingSpec, nmErr := d.projectNaming(taskCtx, effectiveAgentID, cq, llmOverrides)
 	if nmErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: naming-policy projection failed; failing run",
 			slog.String("task_id", string(taskID)),
@@ -2164,7 +2196,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 
 	// Resolve the effective run limits last among the run-start projections
 	// (agent-config over yaml); the task's own request can only tighten them.
-	runLimits, limitsErr := projection.ActiveRunLimits(taskCtx, d.agentConfig, effectiveAgentID, q, d.runLimits)
+	runLimits, limitsErr := projection.ActiveRunLimits(taskCtx, d.agentConfig, effectiveAgentID, cq, d.runLimits)
 	if limitsErr != nil {
 		d.logger.ErrorContext(taskCtx, "RunLoopDriver: run-limit projection failed", slog.String("err", limitsErr.Error()))
 		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(limitsErr, tasks.TaskError{
@@ -2188,7 +2220,8 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			ToolAllowlist:        task.ToolAllowlist,
 			ExternalGrant:        externalGrant,
 			Query:                task.Query,
-			Goal:                 task.Query,   // initial goal = user query; runtime REDIRECT may mutate
+			Goal:                 task.Query, // initial goal = user query; runtime REDIRECT may mutate
+			Speaker:              participantSpeaker(task.Participant),
 			LLMOverrides:         llmOverrides, // admin-set tenant default, pinned at run start
 			MemoryBlocks:         memBlocks,
 			SkillsContext:        skillsCtx,

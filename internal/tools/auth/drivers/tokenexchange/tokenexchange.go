@@ -695,7 +695,7 @@ func (p *provider) Token(ctx context.Context, source tools.ToolSourceID) (auth.T
 		return p.exchangeAppOperation(ctx, id)
 	}
 	operationID, _ := tools.VerifiedExecutionOperationFrom(ctx)
-	key := p.cacheKey(id, operationID)
+	key := p.cacheKey(id, operationID, sessionOwnerFromCtx(ctx))
 
 	// Hot path: fresh cache hit → return immediately, emit nothing.
 	p.cacheMu.Lock()
@@ -834,7 +834,7 @@ func (p *provider) runExchange(callerCtx context.Context, id identity.Identity, 
 			return
 		}
 	}
-	baseKey := p.cacheKey(id, "")
+	baseKey := p.cacheKey(id, "", sessionOwnerFromCtx(ctx))
 	gen := p.gens[baseKey]
 	p.cacheMu.Unlock()
 
@@ -952,7 +952,7 @@ func (p *provider) exchange(ctx context.Context, id identity.Identity) (auth.Tok
 	}
 
 	operationID, _ := tools.VerifiedExecutionOperationFrom(ctx)
-	subjectToken, err := encodeSubjectToken(id, operationID)
+	subjectToken, err := encodeSubjectToken(id, operationID, sessionOwnerFromCtx(ctx))
 	if err != nil {
 		return auth.Token{}, exchangeMeta{}, fmt.Errorf("%w: encode subject token: %w", auth.ErrExchangeFailed, err)
 	}
@@ -1185,7 +1185,7 @@ func parseAudClaim(raw json.RawMessage) []string {
 // broker re-parks here.
 func (p *provider) buildConsentRequired(ctx context.Context, id identity.Identity, ce *consentError) error {
 	pause, err := p.coordinator.Request(ctx, pauseresume.PauseRequest{
-		Identity: id,
+		Identity: partitionFromCtx(ctx, id),
 		Reason:   pauseresume.ReasonExternalEvent,
 		Payload: map[string]any{
 			"source":        string(p.source),
@@ -1258,7 +1258,7 @@ func (p *provider) emit(ctx context.Context, evType events.EventType, id identit
 	}
 	return p.bus.Publish(ctx, events.Event{
 		Type:     evType,
-		Identity: identity.Quadruple{Identity: id},
+		Identity: identity.Quadruple{Identity: partitionFromCtx(ctx, id)},
 		Payload:  payload,
 	})
 }
@@ -1311,7 +1311,7 @@ func (p *provider) Revoke(ctx context.Context, _ tools.ToolSourceID) error {
 	if err := p.validateSignedCapabilityCaller(ctx, id); err != nil {
 		return err
 	}
-	baseKey := p.cacheKey(id, "")
+	baseKey := p.cacheKey(id, "", sessionOwnerFromCtx(ctx))
 	operationPrefix := baseKey + ";"
 	p.cacheMu.Lock()
 	p.gens[baseKey]++
@@ -1427,10 +1427,11 @@ func (p *provider) AllowedDownstreamHosts() []string {
 	return append([]string(nil), p.allowedDownstreamHosts...)
 }
 
-// identityFromCtx pulls the identity triple from ctx and fails closed
-// when any component is missing (CLAUDE.md §6 rule 9).
+// identityFromCtx pulls the ACTING identity triple from ctx (the working
+// triple, with the user replaced by a seated session participant) and
+// fails closed when any component is missing (CLAUDE.md §6 rule 9).
 func (p *provider) identityFromCtx(ctx context.Context) (identity.Identity, error) {
-	id, ok := identity.From(ctx)
+	id, _, ok := identity.ActingFrom(ctx)
 	if !ok {
 		return identity.Identity{}, fmt.Errorf("auth/tokenexchange: Token (provider name=%q): %w", p.name, auth.ErrIdentityRequired)
 	}
@@ -1440,16 +1441,41 @@ func (p *provider) identityFromCtx(ctx context.Context) (identity.Identity, erro
 	return id, nil
 }
 
+// sessionOwnerFromCtx returns the partition owner when a participant acts
+// inside another user's session, else "".
+func sessionOwnerFromCtx(ctx context.Context) string {
+	acting, partition, ok := identity.ActingFrom(ctx)
+	if !ok || acting.UserID == partition.UserID {
+		return ""
+	}
+	return partition.UserID
+}
+
+// partitionFromCtx returns the working (storage) identity: pauses and
+// events belong to the session partition, not to the acting writer.
+func partitionFromCtx(ctx context.Context, fallback identity.Identity) identity.Identity {
+	if _, partition, ok := identity.ActingFrom(ctx); ok {
+		return partition
+	}
+	return fallback
+}
+
 // encodeSubjectToken serialises the verified identity triple as
 // base64url(JSON) — the subject_token the broker interprets under the
 // Harbor-defined subject_token_type URN.
-func encodeSubjectToken(id identity.Identity, operationID string) (string, error) {
+//
+// The subject is the ACTING identity: in a multi-participant session it is
+// the writer, and session_owner names the partition owner of the session so
+// the broker can authorize that writer for that session. session_owner is
+// omitted for every ordinary subject (byte-identical to before).
+func encodeSubjectToken(id identity.Identity, operationID, sessionOwner string) (string, error) {
 	b, err := json.Marshal(struct {
-		TenantID    string `json:"tenant_id"`
-		UserID      string `json:"user_id"`
-		SessionID   string `json:"session_id"`
-		OperationID string `json:"execution_operation_id,omitempty"`
-	}{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, OperationID: operationID})
+		TenantID     string `json:"tenant_id"`
+		UserID       string `json:"user_id"`
+		SessionID    string `json:"session_id"`
+		SessionOwner string `json:"session_owner,omitempty"`
+		OperationID  string `json:"execution_operation_id,omitempty"`
+	}{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, SessionOwner: sessionOwner, OperationID: operationID})
 	if err != nil {
 		return "", err
 	}
@@ -1463,10 +1489,19 @@ func encodeSubjectToken(id identity.Identity, operationID string) (string, error
 // length-prefixed so external-input IDs containing separator bytes
 // cannot collide two keys (tenant "a;1" + user "b" vs tenant "a" +
 // user "1;b").
-func (p *provider) cacheKey(id identity.Identity, operationID string) string {
+//
+// A participant acting inside another user's session (sessionOwner
+// non-empty) gets its own key family bound to that session and owner, so
+// a credential pulled for the participant's own sessions is never served
+// to the shared session without the broker authorizing that exact subject.
+func (p *provider) cacheKey(id identity.Identity, operationID, sessionOwner string) string {
 	if operationID != "" {
-		base := p.cacheKey(id, "")
+		base := p.cacheKey(id, "", sessionOwner)
 		return fmt.Sprintf("%s;%d:%s", base, len(operationID), operationID)
+	}
+	if sessionOwner != "" {
+		base := p.cacheKey(id, "", "")
+		return fmt.Sprintf("%s;participant;%d:%s;%d:%s", base, len(id.SessionID), id.SessionID, len(sessionOwner), sessionOwner)
 	}
 	if p.signedBinding != nil {
 		scope := string(auth.ScopeUser)
@@ -1494,6 +1529,12 @@ func (p *provider) validateSignedCapabilityCaller(ctx context.Context, id identi
 	}
 	if id.TenantID != p.signedBinding.TenantID {
 		return fmt.Errorf("%w: signed capability tenant mismatch", auth.ErrIdentityRequired)
+	}
+	// A participant acting in another user's session may use only a
+	// capability bound to the participant itself, never the partition
+	// owner's.
+	if sessionOwnerFromCtx(ctx) != "" && id.UserID != p.signedBinding.UserID {
+		return fmt.Errorf("%w: signed capability belongs to another user", auth.ErrIdentityRequired)
 	}
 	// Private MCP preparation happens only after registration/recovery has
 	// authenticated the exact signed pair. Normal data-plane use instead needs

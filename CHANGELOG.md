@@ -17,6 +17,25 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- **Session participants (D-509).** An issuer may sign two optional claims:
+  `session_owner` lets a bearer for another user of the same tenant take part
+  in that owner's one session (it requires `session_reach` naming exactly
+  that session and no elevated scope), and `speaker` labels the writer. The
+  session's storage, transcript, events and artifacts stay in the owner's
+  partition; each turn records its writer (`Task.Participant`, the
+  `participant` field on session turn rows, `ParticipantUserID` on
+  `task.spawned`) and every user-keyed outbound call acts as the writer:
+  token-exchange subjects (with `session_owner` for the broker), MCP
+  credential injection, `_meta` identity stamps, MCP server visibility,
+  user-scope signed capabilities and user-layer configuration. A participant
+  bearer may call only `start` (existing sessions only), steering of its own
+  runs, `events`, `sessions.turns.list/get` and `artifacts.get/put`. Only the
+  writer of a run (or an admin) can steer it. The planner names the writer of
+  each request ("Message from: <speaker>") and of each retained historical
+  request. No schema migration.
+
 ## [1.50.0] — 2026-11-13
 
 ### Fixed

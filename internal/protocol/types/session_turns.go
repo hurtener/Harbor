@@ -197,6 +197,13 @@ type SessionUsageTurnRow struct {
 	Usage SessionTurnUsage `json:"usage"`
 }
 
+// SessionTurnParticipant is the writer of a turn in a session several
+// people take part in: the verified user id and its signed display label.
+type SessionTurnParticipant struct {
+	UserID  string `json:"user_id"`
+	Speaker string `json:"speaker,omitempty"`
+}
+
 // SessionTurnRow is the flat wire projection of one consumer
 // conversation turn — the durable, consumer-safe read model a caller
 // renders. Component availability is honest per component (a component
@@ -247,6 +254,9 @@ type SessionTurnRow struct {
 	Agent SessionTurnAgent `json:"agent"`
 	// Query is the renderable user query with the instant it was made.
 	Query SessionTurnQuery `json:"query"`
+	// Participant names who wrote the turn in a multi-participant
+	// session. Absent for ordinary single-user turns.
+	Participant *SessionTurnParticipant `json:"participant,omitempty"`
 	// Answer is the assistant answer — the closed union of inline text,
 	// artifact reference, definite empty, evicted reference, or
 	// unavailable.

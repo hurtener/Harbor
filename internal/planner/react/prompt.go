@@ -910,6 +910,13 @@ func buildUserContent(rc planner.RunContext) string {
 	}
 
 	var b strings.Builder
+	if rc.Speaker != "" {
+		// The label is a signed, bounded, printable single-line value
+		// (identity.ValidateSpeaker); it cannot break out of this line.
+		b.WriteString("Message from: ")
+		b.WriteString(rc.Speaker)
+		b.WriteString("\n")
+	}
 	b.WriteString("User goal: ")
 	b.WriteString(goal)
 

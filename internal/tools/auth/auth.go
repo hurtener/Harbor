@@ -376,6 +376,12 @@ func (e *ErrAuthRequired) Is(target error) bool {
 }
 
 // Sentinel errors. Callers compare via errors.Is.
+// ErrParticipantUnsupported — a user-bound interactive OAuth source was
+// called from a run written by a session participant acting inside another
+// user's session. Such a source has no way to act as the writer, so it fails
+// closed instead of using the partition owner's stored token.
+var ErrParticipantUnsupported = errors.New("auth: user-bound interactive OAuth is unavailable to a session participant")
+
 var (
 	// ErrAuthRequiredSentinel — comparison target for
 	// errors.Is(err, auth.ErrAuthRequiredSentinel). The typed

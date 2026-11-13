@@ -17110,3 +17110,63 @@ also count as completions in observability rollups.
 number is not the gateway's report, and must never call an incomplete total
 exact. "Exact" means "as reported by the model gateway for every call", not a
 provider invoice.
+
+## D-509 — Session participants: one owner partition, per-turn writer
+
+**Date:** 2026-11-13
+
+**Decision.** A session keeps exactly one owner partition `(tenant, owner,
+session)`. Two optional signed claims let several people of one tenant take
+part in it:
+
+- `session_owner` — the bearer acts as a **participant** inside that owner's
+  session. It must differ from `user`, requires `session_reach` naming exactly
+  the token's session, and is refused with an `admin` or `console:fleet` scope
+  (`session_participant_malformed`). The middleware seats the owner's triple as
+  the working identity and the verified user as the request's `Participant`.
+  A participant bearer may call only `control.start` (an existing session —
+  it never creates one), steering controls, `GET /v1/events`,
+  `sessions.turns.list/get` and `artifacts.get/put`; any other route is 403
+  `scope_mismatch` before a handler runs.
+- `speaker` — a printable single-line label (<=128 bytes) of the bearer's
+  user, valid with or without `session_owner`.
+
+Each turn records its writer on `Task.Participant` (JSON `omitempty`, so
+ordinary records are unchanged); children spawned inside the run inherit it.
+The run loop seats it on the run context and derives a configuration
+quadruple with the writer as user. **Storage stays keyed by the partition**:
+events, transcript, retained context, artifacts, the run-bound skill snapshot.
+**User-keyed resolution acts as the writer**: the token-exchange subject (and
+its cache family) with `session_owner` added for the broker, MCP credential
+injection and `_meta` identity stamps, MCP server visibility, user-scope
+signed capability reconcile and use (a participant may use only a capability
+bound to itself), user prompt layer, LLM and limit overrides. The interactive
+OAuth driver refuses user-bound sources in a participant run
+(`ErrParticipantUnsupported`) instead of using the owner's stored token.
+
+Only a run's writer (or an admin) can steer it: the owner cannot steer a
+participant's run and a participant cannot steer anyone else's. Idempotency
+keys fold the participant in, so another writer reusing a key conflicts.
+
+The writer appears as `participant {user_id, speaker}` on session turn rows,
+as `ParticipantUserID` on `task.spawned` (the audit record of who wrote the
+turn), and in the model context: "Message from: <speaker>" before the user
+goal, and `speaker` on the current and retained historical requests.
+
+**Known limits.** The run-bound skill snapshot and session-scoped personal
+skills still resolve for the partition (they are bound to the exact run
+quadruple). Revocation is the issuer's: a participant bearer stays valid until
+it expires, and a cached participant credential until its exchange TTL. A
+retained window written by this version carries `speaker`; an older binary
+reading it rejects the unknown field (no migration, but no clean rollback of
+labelled windows). `sessions.list` lists only the caller's own partition, so
+an issuer lists shared sessions itself.
+
+**Why.** A session several people take part in must run each turn with the
+writer's own credentials and configuration while they read and extend one
+conversation. Keeping one storage partition preserves the isolation tuple and
+every storage `WHERE` clause; the writer is per-turn metadata, never a new
+isolation axis. No schema change; fleets on `migration_mode: verify` need no
+manual step.
+
+**Cross-references:** D-397, D-505, D-271, D-328.
