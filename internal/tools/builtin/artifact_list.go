@@ -7,8 +7,10 @@ package builtin
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -99,14 +101,9 @@ func artifactList(ctx context.Context, store artifacts.ArtifactStore, args Artif
 	default:
 		return ArtifactListOut{Error: fmt.Sprintf("artifact_list: source %q must be user_upload, tool or other", args.Source)}, nil
 	}
-	offset := 0
-	if args.Cursor != "" {
-		n, convErr := strconv.Atoi(args.Cursor)
-		if convErr != nil || n < 0 {
-			return ArtifactListOut{Error: "artifact_list: cursor is not a value returned as next_cursor"}, nil //nolint:nilerr // soft error the model reads
-
-		}
-		offset = n
+	after, hasCursor, cursorErr := decodeListCursor(args.Cursor)
+	if cursorErr != nil {
+		return ArtifactListOut{Error: "artifact_list: cursor is not a value returned as next_cursor"}, nil //nolint:nilerr // soft error the model reads
 	}
 	limit := listDefaultLimit
 	if args.Limit > 0 {
@@ -133,7 +130,7 @@ func artifactList(ctx context.Context, store artifacts.ArtifactStore, args Artif
 		}
 		created := ""
 		if at := planner.ArtifactCreatedAt(ref.Source); !at.IsZero() {
-			created = at.UTC().Format(time.RFC3339)
+			created = at.UTC().Format(time.RFC3339Nano)
 		}
 		matched = append(matched, ArtifactListEntry{
 			Ref: entry.Ref, Filename: entry.Filename, MIME: entry.MIME, SizeBytes: entry.SizeBytes,
@@ -141,12 +138,23 @@ func artifactList(ctx context.Context, store artifacts.ArtifactStore, args Artif
 		})
 	}
 	out := ArtifactListOut{Total: len(matched), Artifacts: []ArtifactListEntry{}}
-	if offset < len(matched) {
-		end := min(offset+limit, len(matched))
-		out.Artifacts = matched[offset:end]
-		if end < len(matched) {
-			out.NextCursor = strconv.Itoa(end)
+	// Keyset pagination over the manifest order (newest first, then id): a
+	// page continues strictly after the cursor's (created_at, ref), so
+	// artifacts added between calls neither shift nor repeat entries.
+	first := 0
+	if hasCursor {
+		first = len(matched)
+		for i, entry := range matched {
+			if listKeyAfter(listKeyOf(entry), after) {
+				first = i
+				break
+			}
 		}
+	}
+	end := min(first+limit, len(matched))
+	out.Artifacts = matched[first:end]
+	if end < len(matched) && end > first {
+		out.NextCursor = encodeListCursor(listKeyOf(matched[end-1]))
 	}
 	return out, nil
 }
@@ -217,7 +225,59 @@ func artifactNote(ctx context.Context, store artifacts.ArtifactStore, bus events
 		Type: artifacts.EventTypeArtifactNoteSet, Identity: q, OccurredAt: time.Now().UTC(),
 		Payload: artifacts.ArtifactNoteSetPayload{ArtifactID: ref.ID, NoteBytes: len(note), Cleared: note == ""},
 	}); err != nil {
-		return ArtifactNoteOut{}, fmt.Errorf("artifact_note: record note change: %w", err)
+		// The note is already stored; report success and log the lost record.
+		slog.WarnContext(ctx, "artifact_note: note stored but the artifacts.note_set event was not published",
+			slog.String("tenant_id", q.TenantID), slog.String("session_id", q.SessionID), slog.String("artifact_id", ref.ID), slog.Any("error", err))
 	}
 	return ArtifactNoteOut{Ref: ref.ID, Note: ref.Note}, nil
+}
+
+// listKey is the manifest sort key: newest first, then ref ascending.
+type listKey struct {
+	created time.Time
+	ref     string
+}
+
+func listKeyOf(e ArtifactListEntry) listKey {
+	at, _ := time.Parse(time.RFC3339Nano, e.CreatedAt) //nolint:errcheck // unknown or empty stamps sort as the zero time, like the manifest
+	return listKey{created: at, ref: e.Ref}
+}
+
+// listKeyAfter reports whether k sorts strictly after the cursor key c.
+func listKeyAfter(k, c listKey) bool {
+	if !k.created.Equal(c.created) {
+		return k.created.Before(c.created)
+	}
+	return k.ref > c.ref
+}
+
+func encodeListCursor(k listKey) string {
+	nanos := int64(0)
+	if !k.created.IsZero() {
+		nanos = k.created.UnixNano()
+	}
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(nanos, 10) + "|" + k.ref))
+}
+
+func decodeListCursor(cursor string) (listKey, bool, error) {
+	if cursor == "" {
+		return listKey{}, false, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return listKey{}, false, err
+	}
+	nanosText, ref, ok := strings.Cut(string(raw), "|")
+	if !ok || ref == "" {
+		return listKey{}, false, errors.New("malformed cursor")
+	}
+	nanos, err := strconv.ParseInt(nanosText, 10, 64)
+	if err != nil {
+		return listKey{}, false, err
+	}
+	key := listKey{ref: ref}
+	if nanos != 0 {
+		key.created = time.Unix(0, nanos).UTC()
+	}
+	return key, true, nil
 }

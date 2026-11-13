@@ -340,6 +340,12 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 				// decision. Pending dispatches were refused above; this never
 				// adopts them.
 				if errors.Is(err, ErrRetainedContextCapacity) {
+					// Bound growth while compaction keeps failing: beyond twice
+					// the configured detail window, the oldest turn moves to
+					// exact retained evidence and the window is marked partial.
+					if len(window.Turns) > 2*r.turns && evictOverflowTurn(&window) {
+						continue
+					}
 					break
 				}
 				return err

@@ -542,6 +542,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	if err := spec.Limits.Validate(); err != nil {
 		return planner.Finish{}, fmt.Errorf("%w: %w", ErrRunLoopMisconfigured, err)
 	}
+	spec.Base.Budget.RunLimits = spec.Limits
 	// Every model call made under this run, including context maintenance,
 	// accumulates into one per-run usage total for the token limit.
 	ctx, runUsage := llm.WithRunUsage(ctx)
@@ -619,6 +620,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	initialGoal := spec.Base.Goal
 	runStartedAt := rl.clock.Now()
 	limitState := &runLimitState{limits: spec.Limits, startedAt: runStartedAt}
+	var maintenance maintenanceState
 
 	// outstandingToken is the run's current pause Token, "" when the run
 	// is not paused. It is per-run loop state — it lives on this
@@ -1096,26 +1098,30 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		if compactionEnabled {
 			if requestAware {
 				preparation.Compact = func(ctx context.Context, inputTokens, target int) (bool, error) {
-					return compressRequest(ctx, spec, rc, inputTokens, target)
+					return compressRequest(ctx, spec, rc, &maintenance, inputTokens, target)
 				}
-			} else {
+			} else if maintenance.failures < maxMaintenanceFailures {
 				compactionRC := rc
 				compactionRC.Budget.TokenBudget = preparation.InputTarget
-				if cerr := compressTrajectory(plannerCtx, spec, compactionRC); cerr != nil {
-					if recoverableCompaction(plannerCtx, cerr) {
-						// The previous checkpoint is retained; the request edge
-						// still enforces the hard input limit on the decision.
-						rl.logger.WarnContext(runCtx, "steering: trajectory maintenance failed; continuing with the previous checkpoint",
-							slog.String("run_id", q.RunID), slog.Int("step", step))
-					} else {
-						current := inbox.endAttempt(generation)
-						cancelAttempt()
-						if !current && runCtx.Err() == nil && onlyAttemptCancellation(cerr) {
-							carryInterruptedAttempt(&spec.Base, rc)
-							continue
-						}
-						return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
+				cerr := compressTrajectory(plannerCtx, spec, compactionRC)
+				switch {
+				case cerr == nil:
+					maintenance.failures = 0
+				case recoverableCompaction(plannerCtx, cerr):
+					// The previous checkpoint is retained; the request edge
+					// still enforces the hard input limit on the decision.
+					// Repeated failures stop maintenance for this run.
+					maintenance.failures++
+					rl.logger.WarnContext(runCtx, "steering: trajectory maintenance failed; continuing with the previous checkpoint",
+						slog.String("run_id", q.RunID), slog.Int("step", step))
+				default:
+					current := inbox.endAttempt(generation)
+					cancelAttempt()
+					if !current && runCtx.Err() == nil && onlyAttemptCancellation(cerr) {
+						carryInterruptedAttempt(&spec.Base, rc)
+						continue
 					}
+					return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
 				}
 			}
 		}

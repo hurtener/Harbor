@@ -65,6 +65,14 @@ func (*longRunDriver) Close(context.Context) error { return nil }
 
 func longRunStack(t *testing.T, driver *longRunDriver, window int, dsn string) *assemble.Stack {
 	t.Helper()
+	stack := longRunStackWith(t, driver, window, dsn)
+	registerBulkRead(t, stack)
+	return stack
+}
+
+// longRunStackWith assembles a SQLite-backed stack around any fixture driver.
+func longRunStackWith(t *testing.T, driver llm.Driver, window int, dsn string) *assemble.Stack {
+	t.Helper()
 	cfg := minimalCfg(t)
 	cfg.State.Driver, cfg.State.DSN = "sqlite", dsn
 	cfg.Artifacts.HeavyOutputThresholdBytes = 128 * 1024
@@ -78,6 +86,11 @@ func longRunStack(t *testing.T, driver *longRunDriver, window int, dsn string) *
 	if err != nil {
 		t.Fatal(err)
 	}
+	return stack
+}
+
+func registerBulkRead(t *testing.T, stack *assemble.Stack) {
+	t.Helper()
 	if err := stack.Catalog.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "bulk_read", Description: "Read one bulk report",
 		Transport: tools.TransportInProcess, Source: "long-run-fixture", Loading: tools.LoadingAlways,
 		ArgsSchema: json.RawMessage(`{"type":"object","properties":{"ordinal":{"type":"integer"}},"required":["ordinal"]}`)},
@@ -92,7 +105,6 @@ func longRunStack(t *testing.T, driver *longRunDriver, window int, dsn string) *
 		}}); err != nil {
 		t.Fatal(err)
 	}
-	return stack
 }
 
 func requestText(req llm.CompleteRequest) string {
@@ -266,7 +278,103 @@ func TestLongRun_TokenLimitStopsWithPartialAnswer(t *testing.T) {
 	driver.mu.Lock()
 	defer driver.mu.Unlock()
 	// 5100 tokens per call: the third call crosses 12000, then one final call.
-	if driver.calls != 4 || len(driver.finalReqs) != 1 || len(driver.finalReqs[0].Tools) != 0 {
+	if driver.calls != 4 || len(driver.finalReqs) != 1 || driver.finalReqs[0].ToolChoice != "none" {
 		t.Fatalf("calls=%d final=%d; want three tool calls then one tool-free final call", driver.calls, len(driver.finalReqs))
+	}
+}
+
+// smallDriver reads many small results; its summariser can stay down.
+type smallDriver struct {
+	mu        sync.Mutex
+	reads     map[string]int
+	decisions map[string]int
+	fail      bool
+	lastLen   map[string]int
+	requests  map[string][]llm.CompleteRequest
+}
+
+func newSmallDriver(fail bool) *smallDriver {
+	return &smallDriver{reads: map[string]int{}, decisions: map[string]int{}, lastLen: map[string]int{}, requests: map[string][]llm.CompleteRequest{}, fail: fail}
+}
+
+func (d *smallDriver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	q, _ := identity.QuadrupleFrom(ctx)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(req.Messages) == 0 {
+		return llm.CompleteResponse{}, errors.New("fixture: empty message list")
+	}
+	if s := req.Messages[0].Content.Text; s != nil && strings.Contains(*s, "You summarize historical agent execution") {
+		if d.fail {
+			return llm.CompleteResponse{}, errors.New("summariser down")
+		}
+		return llm.CompleteResponse{Content: `{"goals":["g"],"facts":["f"],"pending":["p"],"last_output_digest":"d","note":""}`, FinishReason: "stop"}, nil
+	}
+	d.lastLen[q.RunID] = len(req.Messages)
+	d.requests[q.RunID] = append(d.requests[q.RunID], req)
+	d.decisions[q.RunID]++
+	if n := d.decisions[q.RunID]; n <= d.reads[q.RunID] {
+		return llm.CompleteResponse{ToolCalls: []llm.ToolCallStructured{{ID: fmt.Sprint("r-", n), Name: "small_read",
+			Args: json.RawMessage(fmt.Sprintf(`{"ordinal":%d}`, n))}}, FinishReason: "tool_calls"}, nil
+	}
+	return llm.CompleteResponse{Content: "Done.", FinishReason: "stop"}, nil
+}
+
+func (*smallDriver) Close(context.Context) error { return nil }
+
+func registerSmallRead(t *testing.T, stack *assemble.Stack, size int) {
+	t.Helper()
+	if err := stack.Catalog.Register(tools.ToolDescriptor{Tool: tools.Tool{Name: "small_read", Description: "Read",
+		Transport: tools.TransportInProcess, Source: "fx", Loading: tools.LoadingAlways,
+		ArgsSchema: json.RawMessage(`{"type":"object","properties":{"ordinal":{"type":"integer"}},"required":["ordinal"]}`)},
+		Invoke: func(_ context.Context, args json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{Value: map[string]any{"r": strings.Repeat("s", size)}}, nil
+		}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Review regression: many small results with the summariser down for every
+// turn. The retained window must stay bounded and the next turn on a smaller
+// model must still fit — reduction collapses whole old exchanges when
+// previews alone are not enough — and never send an empty request.
+func TestLongRun_SmallObservationsWithSummariserDown(t *testing.T) {
+	for _, size := range []int{5000, 3800} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			dsn := filepath.Join(t.TempDir(), "small.db")
+			id := identity.Identity{TenantID: "t", UserID: "u", SessionID: "small"}
+			seedDriver := newSmallDriver(true)
+			for i := range 8 {
+				seedDriver.reads[fmt.Sprint("seed", i)] = 6
+			}
+			seed := longRunStackWith(t, seedDriver, 2_000_000, dsn)
+			registerSmallRead(t, seed, size)
+			for i := range 8 {
+				if _, err := seed.RunOnce(t.Context(), "seed", id, assemble.WithRunID(fmt.Sprint("seed", i))); err != nil {
+					t.Fatalf("seed %d: %v", i, err)
+				}
+			}
+			if err := seed.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			driver := newSmallDriver(true)
+			stack := longRunStackWith(t, driver, 20_000, dsn)
+			registerSmallRead(t, stack, size)
+			defer func() { _ = stack.Close(context.Background()) }()
+			if _, err := stack.RunOnce(t.Context(), "next", id, assemble.WithRunID("next")); err != nil {
+				t.Fatalf("next turn after repeated maintenance failures: %v", err)
+			}
+			driver.mu.Lock()
+			defer driver.mu.Unlock()
+			if driver.lastLen["next"] == 0 {
+				t.Fatal("the decision never reached the model")
+			}
+			profile := llm.ModelProfile{ContextWindowTokens: 20_000}
+			for i, req := range driver.requests["next"] {
+				if est := llm.EstimateRequestTokens(req, profile); est >= 20_000 {
+					t.Fatalf("decision %d estimated %d tokens, over the window", i+1, est)
+				}
+			}
+		})
 	}
 }

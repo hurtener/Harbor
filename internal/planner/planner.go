@@ -737,6 +737,11 @@ type FinalizeRequest struct {
 // make budget-aware decisions (e.g. choose a cheaper model when
 // CostRemaining is low).
 type Budget struct {
+	// RunLimits are the run's effective limits. Spawned child tasks inherit
+	// them as a stricter-only request, so a child cannot outlast its caller's
+	// bound. The run loop enforces them; planners only read.
+	RunLimits RunLimits
+
 	// Deadline is the absolute wall-clock deadline for the run. Zero
 	// value means no deadline. The Runtime's ctx is set to expire at
 	// Deadline; the planner SHOULD honour ctx.Err() between long

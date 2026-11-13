@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -339,9 +340,7 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 			// A single exchange larger than one request part is represented
 			// deterministically by a preview plus its retained reference.
 			if len(block) >= s.payloadBudget {
-				if block, err = s.clipStep(ctx, rc, clips, position, tr.Steps[position], block, trajectoryClipPreviewBytes); err != nil {
-					return nil, err
-				}
+				block = s.clipStep(ctx, rc, clips, position, tr.Steps[position], block, trajectoryClipPreviewBytes)
 			}
 			if !admit(block) {
 				if position != start {
@@ -353,9 +352,7 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 				if renderErr != nil {
 					return nil, renderErr
 				}
-				if block, err = s.clipStep(ctx, rc, clips, position, tr.Steps[position], full, trajectoryMinClipPreviewBytes); err != nil {
-					return nil, err
-				}
+				block = s.clipStep(ctx, rc, clips, position, tr.Steps[position], full, trajectoryMinClipPreviewBytes)
 				if !admit(block) {
 					return nil, fmt.Errorf("%w: exchange %d does not fit beside the narrative even as a bounded reference", ErrTrajectorySummaryCapacity, position+1)
 				}
@@ -537,36 +534,36 @@ func renderStepBlock(n int, step planner.Step) (string, error) {
 // clipStep represents one oversized exchange by a deterministic head preview
 // plus a session-scoped reference to its exact rendered text. The reference is
 // content addressed, so repeated maintenance attempts retain one copy. A store
-// failure is returned rather than hidden; the caller keeps its checkpoint.
-func (s *TrajectorySummariser) clipStep(ctx context.Context, rc planner.RunContext, clips map[int]string, index int, step planner.Step, block string, previewBytes int) (string, error) {
+// failure degrades to the preview alone (logged), never a maintenance failure.
+func (s *TrajectorySummariser) clipStep(ctx context.Context, rc planner.RunContext, clips map[int]string, index int, step planner.Step, block string, previewBytes int) string {
 	ref, retained := clips[index]
 	if !retained {
-		var err error
-		ref, err = s.retainStep(ctx, rc, index, step, block)
-		if err != nil {
-			return "", err
-		}
+		ref = s.retainStep(ctx, rc, index, step, block)
 		clips[index] = ref
 	}
 	preview := ClipUTF8(block, previewBytes)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Step %d clipped for maintenance (rendered exchange: %d bytes; showing the first %d bytes).", index+1, len(block), len(preview))
-	if ref != "" {
+	switch {
+	case ref != "" && planner.HasTool(rc.Catalog, "artifact_search"):
 		fmt.Fprintf(&b, " Exact evidence is stored as ref=%q; read it with artifact_fetch or artifact_search.", ref)
-	} else {
-		b.WriteString(" The remainder was not retained: no artifact store is configured.")
+	case ref != "":
+		fmt.Fprintf(&b, " Exact evidence is stored as ref=%q; read it with artifact_fetch.", ref)
+	default:
+		b.WriteString(" The remainder was not retained.")
 	}
 	b.WriteString("\n")
 	b.WriteString(preview)
 	b.WriteString("\n[end of clipped step preview]\n")
-	return b.String(), nil
+	return b.String()
 }
 
 // retainStep stores the exact rendered exchange under the run's isolation
-// triple. It returns "" without a configured store.
-func (s *TrajectorySummariser) retainStep(ctx context.Context, rc planner.RunContext, index int, step planner.Step, block string) (string, error) {
+// triple. It returns "" without a configured store or when storage fails:
+// losing the reference must not fail maintenance, and the preview says so.
+func (s *TrajectorySummariser) retainStep(ctx context.Context, rc planner.RunContext, index int, step planner.Step, block string) string {
 	if s.artifacts == nil {
-		return "", nil
+		return ""
 	}
 	tool := stepToolName(step.Action)
 	source := map[string]any{
@@ -591,9 +588,10 @@ func (s *TrajectorySummariser) retainStep(ctx context.Context, rc planner.RunCon
 		Namespace: "trajectory", Source: source,
 	})
 	if err != nil {
-		return "", fmt.Errorf("%w: retain exchange %d: %w", ErrTrajectorySummaryCapacity, index+1, err)
+		slog.WarnContext(ctx, "trajectory summariser: exchange evidence not retained", slog.String("run_id", rc.Quadruple.RunID), slog.Int("step", index+1))
+		return ""
 	}
-	return ref.ID, nil
+	return ref.ID
 }
 
 // stepToolName extracts the dispatched tool name from a live or detached

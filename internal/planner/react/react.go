@@ -888,13 +888,13 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 
 // finalize answers a run that reached a configured limit: the ordinary
 // context (with the same compaction preparation) plus the runtime's final
-// instruction, no tool declarations, and a bounded output allowance. Tool
+// instruction, tool choice "none", and a bounded output allowance. Tool
 // calls in the response are ignored; an empty answer is an invalid decision
 // the runtime replaces with a deterministic partial answer.
 func (p *ReActPlanner) finalize(ctx context.Context, rc planner.RunContext) (planner.Decision, error) {
 	rc.PendingToolCalls = nil
 	discovery := newDiscoverySnapshot(rc.Catalog)
-	projectedTools, _, _ := projectModelToolsListedFrom(rc, rc.DiscoveredTools, discovery)
+	projectedTools, declaredToolProjection, _ := projectModelToolsListedFrom(rc, rc.DiscoveredTools, discovery)
 	req, err := p.buildContextRequest(rc, projectedTools, discovery)
 	if err != nil {
 		return nil, err
@@ -923,7 +923,11 @@ func (p *ReActPlanner) finalize(ctx context.Context, rc planner.RunContext) (pla
 		}
 		req.ExternalGrant = &grant
 	}
-	req.Tools = nil
+	// Keep the declarations: a history that holds tool calls and results is
+	// rejected by providers when the request declares no tools. Tool choice
+	// "none" suppresses new calls; any call returned anyway is ignored.
+	req.Tools, _ = buildToolDeclarationsFromProjection(rc, projectedTools, declaredToolProjection)
+	req.ToolChoice = "none"
 	req.ParallelToolCalls = false
 	if rc.OnChunk != nil {
 		req.Stream = true

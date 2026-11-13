@@ -313,3 +313,31 @@ func sameRetainedContent(a, b retainedTurn) bool {
 	after, err := retainedDigest(b)
 	return err == nil && before == after
 }
+
+// evictOverflowTurn bounds the detail window when compaction keeps failing.
+// The oldest turn's exact steps move to retained evidence (lifetime and
+// erasure still govern them), the narrative checkpoint no longer matches the
+// window and is dropped, and the window is marked partial so the next request
+// says earlier context is incomplete. A late sibling is never passed.
+func evictOverflowTurn(window *retainedWindow) bool {
+	if len(window.Turns) == 0 {
+		return false
+	}
+	oldest := window.Turns[0]
+	for _, active := range window.Active {
+		if active.Sequence <= oldest.Admission.Sequence {
+			return false
+		}
+	}
+	if len(oldest.Steps) > 0 {
+		window.Evidence = append(window.Evidence, retainedEvidence{Admission: oldest.Admission, ExpiresAt: oldest.ExpiresAt, Steps: oldest.Steps})
+	}
+	window.CompactedThrough = oldest.Admission
+	window.Turns = window.Turns[1:]
+	window.Checkpoint = nil
+	window.Partial = true
+	// A compaction frontier is always paired with a generation; the window
+	// changed, so a later checkpoint must not reuse the earlier one.
+	window.Generation++
+	return true
+}

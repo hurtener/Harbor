@@ -111,6 +111,9 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 		// failed generation at zero, so this is invariant-completeness — it
 		// also correctly accounts any driver that DOES price failed calls.
 		llm.ReportAttemptCost(attemptCtx, resp.Cost)
+		// A consumed attempt's reported usage still counts toward the run's
+		// cumulative token limit.
+		llm.RunUsageFrom(attemptCtx).Add(resp.Usage)
 
 		attempts = append(attempts, attemptRecord{Mode: mode, Err: err})
 		lastErr = err

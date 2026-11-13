@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -178,6 +179,9 @@ func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, sy
 	injection, err := renderInjectionMessages(rc)
 	if err != nil {
 		return llm.CompleteRequest{}, err
+	}
+	if !planner.HasTool(rc.Catalog, "artifact_search") {
+		stripArtifactSearchHints(req.Messages)
 	}
 	if len(injection) > 0 {
 		// Splice the injection messages between the base system
@@ -2259,4 +2263,26 @@ func oneLine(s string) string {
 // text. Helper to keep call sites compact.
 func textContent(s string) llm.Content {
 	return llm.Content{Text: &s}
+}
+
+// artifactSearchHint matches the optional artifact_search clause the heavy
+// result footers carry.
+var artifactSearchHint = regexp.MustCompile(`, or artifact_search\(ref="[^"]*", pattern=\.\.\.\) to find text in it`)
+
+// stripArtifactSearchHints removes the artifact_search clause from rendered
+// heavy-result footers when the run cannot call that tool, leaving the
+// artifact_fetch hint unchanged.
+func stripArtifactSearchHints(messages []llm.ChatMessage) {
+	for i := range messages {
+		if text := messages[i].Content.Text; text != nil && strings.Contains(*text, "artifact_search(") {
+			stripped := artifactSearchHint.ReplaceAllString(*text, "")
+			messages[i].Content.Text = &stripped
+		}
+		parts := messages[i].Content.Parts
+		for j, part := range parts {
+			if part.Type == llm.PartText && strings.Contains(part.Text, "artifact_search(") {
+				parts[j].Text = artifactSearchHint.ReplaceAllString(part.Text, "")
+			}
+		}
+	}
 }

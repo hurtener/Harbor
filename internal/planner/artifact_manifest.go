@@ -146,3 +146,12 @@ func ArtifactProducingTool(src map[string]any) string {
 func ArtifactCreatedAt(src map[string]any) time.Time {
 	return artifactManifestCreatedAt(src)
 }
+
+// HasTool reports whether a run's catalog view exposes the named tool.
+func HasTool(view ToolCatalogView, name string) bool {
+	if view == nil {
+		return false
+	}
+	_, ok := view.Resolve(name)
+	return ok
+}

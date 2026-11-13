@@ -134,6 +134,9 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		// corrective turn and never propagates to the caller. Report its
 		// cost into the tap so it reaches cost accounting exactly once.
 		llm.ReportAttemptCost(attemptCtx, resp.Cost)
+		// A consumed attempt's reported usage still counts toward the run's
+		// cumulative token limit.
+		llm.RunUsageFrom(attemptCtx).Add(resp.Usage)
 
 		nextAttempt := attempt + 1
 		emitRetryWithFeedback(attemptCtx, c.deps.Bus, id, req.Model, nextAttempt, maxRetries, valErr)

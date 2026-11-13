@@ -19,23 +19,50 @@ func compressTrajectory(ctx context.Context, spec RunSpec, rc planner.RunContext
 	return compressTrajectoryWith(ctx, spec, rc, spec.Compression.MaybeCompress)
 }
 
+// maxMaintenanceFailures is how many consecutive summary-maintenance failures
+// a run tolerates before it stops calling the summariser for the rest of the
+// run and relies on deterministic reduction alone.
+const maxMaintenanceFailures = 2
+
+// errMaintenanceSuspended marks a request prepared without calling the
+// summariser because maintenance kept failing earlier in this run.
+var errMaintenanceSuspended = errors.New("steering: summary maintenance suspended after repeated failures")
+
+// maintenanceState is per-run, stack-local maintenance bookkeeping.
+type maintenanceState struct {
+	failures int
+}
+
 // compressRequest maintains the assembled request's context. A maintenance
 // failure never fails the run by itself: the previous checkpoint is kept, and a
 // request that still fits continues unchanged (ErrCompactionNoProgress tells
 // the preparation layer so). A request that no longer fits is reduced
-// deterministically, oldest observation first, until it does.
-func compressRequest(ctx context.Context, spec RunSpec, rc planner.RunContext, inputTokens, target int) (bool, error) {
+// deterministically — oldest observations to previews with references, then
+// oldest whole exchanges to markers — until it does. Only when even the newest
+// exchange alone cannot fit does it return ErrContextWindowExceeded, wrapping
+// the maintenance error. After repeated failures the summariser is skipped for
+// the rest of the run.
+func compressRequest(ctx context.Context, spec RunSpec, rc planner.RunContext, state *maintenanceState, inputTokens, target int) (bool, error) {
 	if rc.Trajectory == nil {
 		return false, planner.ErrNilTrajectory
 	}
 	original := rc.Trajectory.Summary
 	rc.Budget.TokenBudget = target
-	err := compressTrajectoryWith(ctx, spec, rc, func(ctx context.Context, rc planner.RunContext, tr *planner.Trajectory) error {
-		return spec.Compression.MaybeCompressRequest(ctx, rc, tr, inputTokens)
-	})
+	err := errMaintenanceSuspended
+	if state == nil || state.failures < maxMaintenanceFailures {
+		err = compressTrajectoryWith(ctx, spec, rc, func(ctx context.Context, rc planner.RunContext, tr *planner.Trajectory) error {
+			return spec.Compression.MaybeCompressRequest(ctx, rc, tr, inputTokens)
+		})
+	}
 	changed := rc.Trajectory.Summary != original
 	if err == nil || changed || !recoverableCompaction(ctx, err) {
+		if err == nil && state != nil {
+			state.failures = 0
+		}
 		return changed, err
+	}
+	if state != nil && !errors.Is(err, errMaintenanceSuspended) {
+		state.failures++
 	}
 	fit := llm.CheckContextCandidate(ctx)
 	if !errors.Is(fit, llm.ErrContextWindowExceeded) {
@@ -46,21 +73,21 @@ func compressRequest(ctx context.Context, spec RunSpec, rc planner.RunContext, i
 			slog.String("run_id", rc.Quadruple.RunID))
 		return false, fmt.Errorf("%w: %w", llm.ErrCompactionNoProgress, err)
 	}
-	reduced, rerr := reduceObservations(ctx, spec, rc)
+	reduced, fitted, rerr := reduceObservations(ctx, spec, rc)
 	if rerr != nil {
 		return reduced > 0, rerr
 	}
-	if reduced == 0 {
-		return false, err
+	if !fitted {
+		return reduced > 0, fmt.Errorf("%w: even the newest exchange does not fit: %w", llm.ErrContextWindowExceeded, err)
 	}
-	slog.WarnContext(ctx, "steering: context maintenance failed; reduced oldest observations to previews with references",
+	slog.WarnContext(ctx, "steering: context maintenance failed; reduced oldest context to previews with references",
 		slog.String("run_id", rc.Quadruple.RunID), slog.Int("reduced_exchanges", reduced))
 	return true, nil
 }
 
 // reduceObservations installs reduced exchanges one at a time under the
 // inspection mutex and stops as soon as the rebuilt request fits.
-func reduceObservations(ctx context.Context, spec RunSpec, rc planner.RunContext) (int, error) {
+func reduceObservations(ctx context.Context, spec RunSpec, rc planner.RunContext) (int, bool, error) {
 	tr := rc.Trajectory
 	mu := spec.TrajectoryMu
 	return spec.Compression.ReduceOldestObservations(ctx, rc, tr, func(index int, reduced planner.Step) (bool, error) {

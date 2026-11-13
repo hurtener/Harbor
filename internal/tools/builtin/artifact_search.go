@@ -11,6 +11,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -62,7 +63,11 @@ type ArtifactSearchMatch struct {
 	// ByteOffset is the byte offset of the line's start; pass it to
 	// artifact_fetch as `offset` to read around the match.
 	ByteOffset int64 `json:"byte_offset"`
-	// Text is the matching line (clipped to 512 bytes).
+	// MatchOffset is the byte offset of the match itself, useful on long
+	// single-line payloads such as minified JSON.
+	MatchOffset int64 `json:"match_offset"`
+	// Text is the matching line, or a 512-byte window around the match when
+	// the line is longer.
 	Text string `json:"text"`
 	// Before and After are the surrounding context lines, oldest first.
 	Before []string `json:"before,omitempty"`
@@ -191,9 +196,14 @@ func artifactSearch(ctx context.Context, store artifacts.ArtifactStore, args Art
 	return searchBlob(ctx, out, blob, args.Offset, match, contextLines, maxMatches)
 }
 
-func searchMatcher(args ArtifactSearchArgs) (func(string) bool, error) {
-	if args.Regex {
+// searchMatcher compiles the pattern to a matcher over the raw line bytes. It
+// returns the byte index of the first match, or -1.
+func searchMatcher(args ArtifactSearchArgs) (func([]byte) int, error) {
+	if args.Regex || args.CaseInsensitive {
 		expr := args.Pattern
+		if !args.Regex {
+			expr = regexp.QuoteMeta(expr)
+		}
 		if args.CaseInsensitive {
 			expr = "(?i)" + expr
 		}
@@ -201,19 +211,22 @@ func searchMatcher(args ArtifactSearchArgs) (func(string) bool, error) {
 		if err != nil {
 			return nil, fmt.Errorf("artifact_search: invalid RE2 pattern: %w", err)
 		}
-		return re.MatchString, nil
+		return func(line []byte) int {
+			if loc := re.FindIndex(line); loc != nil {
+				return loc[0]
+			}
+			return -1
+		}, nil
 	}
-	if args.CaseInsensitive {
-		needle := strings.ToLower(args.Pattern)
-		return func(line string) bool { return strings.Contains(strings.ToLower(line), needle) }, nil
-	}
-	return func(line string) bool { return strings.Contains(line, args.Pattern) }, nil
+	needle := []byte(args.Pattern)
+	return func(line []byte) int { return bytes.Index(line, needle) }, nil
 }
 
 // searchBlob scans lines from offset, bounded by searchMaxScanBytes. Line
 // numbers count from the start of the artifact, so an offset continuation
-// still reports absolute lines.
-func searchBlob(ctx context.Context, out ArtifactSearchOut, blob []byte, offset int64, match func(string) bool, contextLines, maxMatches int) (ArtifactSearchOut, error) {
+// still reports absolute lines. Matching runs on the raw line; only the
+// returned text is clipped, as a window around the match.
+func searchBlob(ctx context.Context, out ArtifactSearchOut, blob []byte, offset int64, match func([]byte) int, contextLines, maxMatches int) (ArtifactSearchOut, error) {
 	total := int64(len(blob))
 	if offset >= total {
 		return out, nil
@@ -244,7 +257,14 @@ func searchBlob(ctx context.Context, out ArtifactSearchOut, blob []byte, offset 
 		if end < 0 {
 			end, next = total, total
 		}
-		line := clipLine(blob[pos:end])
+		raw := blob[pos:end]
+		if len(raw) > 0 && raw[len(raw)-1] == '\r' {
+			raw = raw[:len(raw)-1]
+		}
+		var line string // the clipped head, built only when context needs it
+		if contextLines > 0 {
+			line = clipWindow(raw, 0)
+		}
 		kept := pending[:0]
 		for _, i := range pending {
 			out.Matches[i].After = append(out.Matches[i].After, line)
@@ -253,12 +273,15 @@ func searchBlob(ctx context.Context, out ArtifactSearchOut, blob []byte, offset 
 			}
 		}
 		pending = kept
-		if match(line) {
+		if at := match(raw); at >= 0 {
 			if len(out.Matches) == maxMatches {
 				out.Truncated, out.NextOffset = true, pos
 				return out, nil
 			}
-			out.Matches = append(out.Matches, ArtifactSearchMatch{Line: lineNo, ByteOffset: pos, Text: line, Before: append([]string(nil), before...)})
+			out.Matches = append(out.Matches, ArtifactSearchMatch{
+				Line: lineNo, ByteOffset: pos, MatchOffset: pos + int64(at),
+				Text: clipWindow(raw, at), Before: append([]string(nil), before...),
+			})
 			if contextLines > 0 {
 				pending = append(pending, len(out.Matches)-1)
 			}
@@ -297,20 +320,27 @@ func countNewlines(b []byte) int {
 	return n
 }
 
-// clipLine renders one line as valid text of at most searchMaxLineBytes.
-func clipLine(b []byte) string {
-	b = []byte(strings.TrimSuffix(string(b), "\r"))
-	clipped := len(b) > searchMaxLineBytes
-	if clipped {
-		cut := searchMaxLineBytes
-		for cut > 0 && !utf8.RuneStart(b[cut]) {
-			cut--
-		}
-		b = b[:cut]
+// clipWindow renders at most searchMaxLineBytes of a line as valid text: the
+// whole line when it fits, otherwise a window that starts a little before
+// byte `at` (the match), marked with ellipses. Only the window is copied.
+func clipWindow(raw []byte, at int) string {
+	if len(raw) <= searchMaxLineBytes {
+		return strings.ToValidUTF8(string(raw), "\uFFFD")
 	}
-	s := strings.ToValidUTF8(string(b), "�")
-	if clipped {
-		s += "…"
+	from := max(0, min(at-searchMaxLineBytes/4, len(raw)-searchMaxLineBytes))
+	for from > 0 && !utf8.RuneStart(raw[from]) {
+		from--
 	}
-	return s
+	to := min(len(raw), from+searchMaxLineBytes)
+	for to < len(raw) && to > from && !utf8.RuneStart(raw[to]) {
+		to--
+	}
+	text := strings.ToValidUTF8(string(raw[from:to]), "\uFFFD")
+	if from > 0 {
+		text = "…" + text
+	}
+	if to < len(raw) {
+		text += "…"
+	}
+	return text
 }

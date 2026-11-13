@@ -131,15 +131,28 @@ func TestArtifactList_FiltersPaginationAndNotes(t *testing.T) {
 	putToolResult(t, store, "other-session", "web_search", "foreign.json", "application/json", "{}", base)
 
 	page, err := artifactList(ctx, store, ArtifactListArgs{})
-	if err != nil || page.Total != 26 || len(page.Artifacts) != 20 || page.NextCursor != "20" || page.Artifacts[0].Ref != upload.ID {
+	if err != nil || page.Total != 26 || len(page.Artifacts) != 20 || page.NextCursor == "" || page.Artifacts[0].Ref != upload.ID {
 		t.Fatalf("first page total=%d len=%d next=%q first=%+v err=%v", page.Total, len(page.Artifacts), page.NextCursor, page.Artifacts[0], err)
 	}
+	// A newer artifact stored between pages neither shifts nor repeats the
+	// continuation (keyset cursor).
+	putToolResult(t, store, "s", "web_search", "late.json", "application/json", `{"late":true}`, base.Add(2*time.Hour))
 	rest, _ := artifactList(ctx, store, ArtifactListArgs{Cursor: page.NextCursor})
 	if len(rest.Artifacts) != 6 || rest.NextCursor != "" {
 		t.Fatalf("second page len=%d next=%q", len(rest.Artifacts), rest.NextCursor)
 	}
+	seen := map[string]bool{}
+	for _, a := range append(append([]ArtifactListEntry(nil), page.Artifacts...), rest.Artifacts...) {
+		if seen[a.Ref] || a.Filename == "late.json" {
+			t.Fatalf("keyset continuation repeated or shifted: %+v", a)
+		}
+		seen[a.Ref] = true
+	}
+	if bad, _ := artifactList(ctx, store, ArtifactListArgs{Cursor: "not-a-cursor"}); bad.Error == "" {
+		t.Fatal("malformed cursor accepted")
+	}
 	tools, _ := artifactList(ctx, store, ArtifactListArgs{Source: "tool", Tool: "web_search", Limit: 50})
-	if tools.Total != 13 {
+	if tools.Total != 14 { // 13 seeded plus the late web_search result
 		t.Fatalf("tool filter total = %d", tools.Total)
 	}
 	for _, a := range tools.Artifacts {
@@ -158,7 +171,7 @@ func TestArtifactList_FiltersPaginationAndNotes(t *testing.T) {
 	if noted.Artifacts[0].Note != "client brief, v2" {
 		t.Fatalf("note missing from listing: %+v", noted.Artifacts[0])
 	}
-	bad, _ := artifactList(ctx, store, ArtifactListArgs{Source: "bogus"})
+	bad, _ := artifactList(ctx, store, ArtifactListArgs{Source: "bogus", Limit: 1})
 	if bad.Error == "" {
 		t.Fatal("invalid source accepted")
 	}
@@ -245,4 +258,42 @@ func TestArtifactTools_ConcurrentReuseIsolated(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+type failingBus struct{ noteBus }
+
+func (*failingBus) Publish(context.Context, events.Event) error { return fmt.Errorf("bus down") }
+
+func TestArtifactNote_PublishFailureStillSucceeds(t *testing.T) {
+	store := artifactFetchTestStore(t)
+	ctx := artifactFetchTestCtx(t, "t", "u", "s", "r")
+	ref := putToolResult(t, store, "s", "web_search", "r.json", "application/json", `{"a":1}`, time.Now())
+	out, err := artifactNote(ctx, store, &failingBus{}, ArtifactNoteArgs{Ref: ref.ID, Note: "kept"})
+	if err != nil || out.Error != "" || out.Note != "kept" {
+		t.Fatalf("stored note reported as failed: %+v %v", out, err)
+	}
+}
+
+// Matching runs on the raw line: a needle far past the 512-byte display
+// window of a long single-line payload is found, and the returned text is a
+// window around it.
+func TestArtifactSearch_LongLineMatchBeyondDisplayWindow(t *testing.T) {
+	store := artifactFetchTestStore(t)
+	ctx := artifactFetchTestCtx(t, "t", "u", "s", "r")
+	body := `{"rows":"` + strings.Repeat("x", 2000) + `NEEDLE-42` + strings.Repeat("y", 3000) + `"}`
+	ref := putToolResult(t, store, "s", "fetch", "big.json", "application/json", body, time.Now())
+	for _, args := range []ArtifactSearchArgs{
+		{Ref: ref.ID, Pattern: "NEEDLE-42"},
+		{Ref: ref.ID, Pattern: "needle-42", CaseInsensitive: true},
+		{Ref: ref.ID, Pattern: `NEEDLE-\d+`, Regex: true},
+	} {
+		out, err := artifactSearch(ctx, store, args)
+		if err != nil || len(out.Matches) != 1 {
+			t.Fatalf("%+v: matches=%d err=%v", args, len(out.Matches), err)
+		}
+		m := out.Matches[0]
+		if !strings.Contains(m.Text, "NEEDLE-42") || len(m.Text) > searchMaxLineBytes+8 || m.MatchOffset != int64(strings.Index(body, "NEEDLE-42")) {
+			t.Fatalf("%+v: window=%q match_offset=%d", args, m.Text, m.MatchOffset)
+		}
+	}
 }

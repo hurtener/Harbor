@@ -16985,3 +16985,24 @@ its overflow line at `artifact_list`; heavy-result previews mention
 `artifact_search`.
 
 **Cross-references:** D-347, D-352.
+
+## D-504 — Reduction collapses whole exchanges as a last resort; the retained window stays bounded
+
+**Date:** 2026-11-12
+
+**Decision.** Amends D-501 after review. When previews alone do not make a
+request fit, reduction collapses the oldest whole exchanges (call, arguments,
+preamble, result) into a context marker referencing the retained exchange,
+never the newest one; only when the newest exchange alone cannot fit does the
+request fail with the context-window error wrapping the maintenance error. The
+preparation layer never sends a message list that did not pass the candidate
+check. After two consecutive maintenance failures a run stops calling the
+summariser. While compaction keeps failing, the retained detail window is
+bounded at twice the configured recent turns: the oldest turn moves to exact
+retained evidence, the stale checkpoint is dropped and the window is marked
+partial. Evidence-store failures degrade to previews without references.
+Artifact helper hints appear only when the run can call that helper. The
+limit-stop final call keeps tool declarations with tool choice `none`.
+
+**Cross-references:** D-501, D-502, D-503.
+

@@ -196,3 +196,29 @@ func TestRenderSessionArtifacts_NoteIsEscapedOnItsRow(t *testing.T) {
 		t.Fatalf("note escaped its row or block:\n%s", body)
 	}
 }
+
+// Optional artifact helpers are mentioned only when the run can call them;
+// an artifact_fetch-only run keeps the original hints.
+func TestArtifactHints_OnlyForEnabledTools(t *testing.T) {
+	entries := make([]planner.ArtifactManifestEntry, sessionArtifactsCap+2)
+	for i := range entries {
+		entries[i] = planner.ArtifactManifestEntry{Ref: "ref", Filename: "a\nb", SizeBytes: 1}
+	}
+	msg, ok := renderSessionArtifactsWith(entries, artifactToolHints{})
+	if !ok {
+		t.Fatal("no manifest")
+	}
+	body := *msg.Content.Text
+	if strings.Contains(body, "artifact_list") || strings.Contains(body, "artifact_search") || !strings.Contains(body, "+2 more (use artifact_fetch by ref)") {
+		t.Fatalf("fetch-only manifest mentions unavailable tools:\n%s", body)
+	}
+	if strings.Contains(body, "a\nb") {
+		t.Fatal("filename line break forged a row")
+	}
+	footer := "preview " + artifactFetchFooter("tool_x", "application/json", 10)
+	messages := []llm.ChatMessage{{Role: llm.RoleTool, Content: llm.Content{Text: &footer}}}
+	stripArtifactSearchHints(messages)
+	if got := *messages[0].Content.Text; strings.Contains(got, "artifact_search") || !strings.Contains(got, `artifact_fetch(ref="tool_x")`) {
+		t.Fatalf("stripped footer = %q", got)
+	}
+}

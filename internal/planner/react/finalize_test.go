@@ -45,8 +45,8 @@ func TestFinalize_AnswersWithoutToolsAtRunLimit(t *testing.T) {
 	if !ok || fin.Reason != planner.FinishLimitReached || fin.Payload != "Searched vendor A; vendor B remains." {
 		t.Fatalf("decision = %#v; tool calls in the response must be ignored", dec)
 	}
-	if len(client.req.Tools) != 0 || client.req.MaxTokens == nil || *client.req.MaxTokens != 512 {
-		t.Fatalf("final request offered tools or an unbounded output: tools=%d max=%v", len(client.req.Tools), client.req.MaxTokens)
+	if client.req.ToolChoice != "none" || len(client.req.Tools) == 0 || client.req.MaxTokens == nil || *client.req.MaxTokens != 512 {
+		t.Fatalf("final request must keep declarations with tool choice none and a bounded output: choice=%q tools=%d max=%v", client.req.ToolChoice, len(client.req.Tools), client.req.MaxTokens)
 	}
 	last := client.req.Messages[len(client.req.Messages)-1]
 	if last.Role != llm.RoleUser || last.Content.Text == nil || *last.Content.Text != "LIMIT-INSTRUCTION" {

@@ -1296,7 +1296,9 @@ When a run reaches a limit it emits `run.limit_reached` (payload `Limit` —
 tokens used and step count), makes one bounded call without tools that states
 what was done and what remains, and completes normally: `task.completed` with
 `result_inline.finish_reason` set to `limit_reached` and the partial answer.
-A limit never produces `task.failed`. Show the person that the limit was
+A limit never produces `task.failed`. A run with an output schema that stops at
+a limit completes without `answer_payload`; check `finish_reason` before
+reading it. Show the person that the limit was
 reached and let them continue in the next message.
 
 ### Session artifact tools

@@ -37,8 +37,13 @@ Two versions move independently in Harbor (RFC §5.3):
   replace or clear a short note; emits `artifacts.note_set`). Notes persist in
   every artifact store driver (forward migration 0003 for SQLite and
   PostgreSQL) and appear in the session manifest and `artifact_list`. The
-  manifest's overflow line points at `artifact_list`; heavy-result previews
-  mention `artifact_search` (D-503).
+  manifest's overflow line points at `artifact_list` and heavy-result previews
+  mention `artifact_search`, each only when that tool is enabled for the run.
+  Search matches the raw line and returns a window around the match plus its
+  `match_offset`; listing uses a keyset cursor (D-503).
+- Spawned child tasks inherit the caller's effective run limits as a
+  stricter-only request, and usage of retried or downgraded attempts counts
+  toward `max_tokens` when reported (D-502).
 
 ### Fixed
 
@@ -49,10 +54,24 @@ Two versions move independently in Harbor (RFC §5.3):
   (D-501).
 - A context-maintenance failure never fails the run: the previous checkpoint
   is kept and a fitting request continues; a request that no longer fits has
-  its oldest observations reduced to previews with references until it fits.
-  A session whose retained history no longer fits recovers on its next turn,
-  and a completed turn without a new checkpoint keeps its unsummarised
-  history instead of being refused (D-501).
+  its oldest observations reduced to previews with references, then its
+  oldest whole exchanges collapsed to referenced markers, until it fits (the
+  newest exchange is never reduced). After two consecutive failures a run
+  stops calling the summariser and relies on reduction. A session whose
+  retained history no longer fits recovers on its next turn; a completed turn
+  without a new checkpoint keeps its unsummarised history, bounded at twice
+  the configured recent turns (older detail moves to retained evidence and
+  the window is marked partial). A store failure while retaining evidence
+  degrades to a preview without a reference (D-501).
+
+### Known limitations
+
+- Run limits are checked between steps; durable-task recovery after a
+  restart starts the limit clock and token count afresh.
+- A run with an output schema that stops at a limit completes without
+  `answer_payload`; clients check `finish_reason`.
+- With `artifacts.heavy_output_threshold_bytes` below about 12 KiB, a
+  clipped maintenance preview can itself exceed one request part.
 
 ### Action required
 
