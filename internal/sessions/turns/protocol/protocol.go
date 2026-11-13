@@ -573,7 +573,8 @@ func (s *Service) operationsScoped(ctx context.Context) bool {
 // rowServed reports whether the caller's verified authority admits one
 // served row — the EFFECTIVE-AGENT GATE. A row with no effective agent
 // binding (empty Agent.ID) is served; a named-agent row requires the
-// caller's signed agent reach to contain that agent. An unwired gate
+// caller's signed agent reach — or its signed read-only agent reach
+// (auth.AgentReadReachClaim) — to contain that agent. An unwired gate
 // fails closed. The gate never reads identity or authority from the
 // row beyond the agent id itself.
 func (s *Service) rowServed(ctx context.Context, row turns.TurnRow) bool {
@@ -583,7 +584,8 @@ func (s *Service) rowServed(ctx context.Context, row turns.TurnRow) bool {
 	if s.agentReach == nil {
 		return false
 	}
-	return s.agentReach.AuthorizeAgentReach(ctx, row.Agent.ID) == nil
+	return s.agentReach.AuthorizeAgentReach(ctx, row.Agent.ID) == nil ||
+		auth.AuthorizeAgentRead(ctx, row.Agent.ID) == nil
 }
 
 // List implements the `sessions.turns.list` service adapter: one

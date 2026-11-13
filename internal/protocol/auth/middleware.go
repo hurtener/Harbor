@@ -190,6 +190,7 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 			ctx = WithRuntimeID(ctx, verified.RuntimeID)
 			ctx = WithScopes(ctx, verified.Scopes)
 			ctx = WithAgentReach(ctx, verified.AgentReach)
+			ctx = WithAgentReadReach(ctx, verified.AgentReadReach)
 			if transfer := verified.ArtifactTransfer; transfer != nil {
 				allowed := r.Method == http.MethodPost && r.URL.RawQuery == "" && !r.URL.ForceQuery &&
 					(transfer.Mode == "read" && r.URL.Path == "/v1/control/artifacts.get" ||
@@ -375,6 +376,8 @@ func reasonForWire(err error) string {
 		return "identity_claim_missing"
 	case errors.Is(err, ErrSessionReachMalformed):
 		return "session_reach_malformed"
+	case errors.Is(err, ErrAgentReadReachMalformed):
+		return "agent_read_reach_malformed"
 	case errors.Is(err, ErrAudienceMismatch):
 		return "audience_mismatch"
 	case errors.Is(err, ErrIssuerMismatch):

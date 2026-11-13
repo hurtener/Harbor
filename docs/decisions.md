@@ -17007,3 +17007,28 @@ Artifact helper hints appear only when the run can call that helper. The
 limit-stop final call keeps tool declarations with tool choice `none`.
 
 **Cross-references:** D-501, D-502, D-503.
+
+## D-505 — Read-only agent reach for session history
+
+**Date:** 2026-11-13
+
+**Decision.** A bearer may carry an optional signed `agent_read_reach` claim
+with the same strict bounded shape as `agent_reach`. The session history
+surfaces (`sessions.turns.list` and `sessions.turns.get`) serve a named-agent
+row when its agent is in `agent_reach` **or** in `agent_read_reach`. Nothing
+else reads the claim: start, steer, resume, cancel, agent configuration and
+every other agent-addressed call keep requiring `agent_reach`. A token whose
+`agent_read_reach` is non-empty must also carry a non-empty `session_reach`,
+otherwise it is rejected (`agent_read_reach_malformed`), so the history it
+unlocks is pinned to named sessions; the exact-session identity boundary is
+unchanged.
+
+**Why.** A session can outlive the agent it started with: an issuer may move
+the conversation to another agent, or stop letting the person use the first
+one. Before this, the effective-agent gate hid every earlier row from a bearer
+that could not select the earlier agent, so the person's own history went
+blank. Granting `agent_reach` instead would also let the bearer start that
+agent. No schema or wire-type change; old issuers are unaffected.
+
+**Cross-references:** D-397.
+

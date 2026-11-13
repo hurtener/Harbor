@@ -606,6 +606,49 @@ func TestService_List_AgentGate_ReachAdmitsRows(t *testing.T) {
 	}
 }
 
+// TestService_AgentGate_ReadReachServesRowsOnly pins agent_read_reach: a
+// session that moved from agent-a to agent-b shows BOTH agents' rows to a
+// bearer with agent_reach [agent-b] and agent_read_reach [agent-a]; read reach
+// alone serves rows; and an agent in neither set stays gated.
+func TestService_AgentGate_ReadReachServesRowsOnly(t *testing.T) {
+	svc, st, _, _ := newTestService(t)
+	mustSeedRow(t, st, fixtureID, fixtureRow("turn-a", turns.StatusComplete, "agent-a"))
+	mustSeedRow(t, st, fixtureID, fixtureRow("turn-b", turns.StatusComplete, "agent-b"))
+	mustSeedRow(t, st, fixtureID, fixtureRow("turn-c", turns.StatusComplete, "agent-c"))
+	base := verifiedCtx(t, fixtureID)
+
+	moved := auth.WithAgentReadReach(auth.WithAgentReach(base, []string{"agent-b"}), []string{"agent-a"})
+	resp, err := svc.List(moved, ListRequest{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := map[string]bool{}
+	for _, turn := range resp.Turns {
+		got[string(turn.TurnID)] = true
+	}
+	if !got["turn-a"] || !got["turn-b"] || got["turn-c"] {
+		t.Fatalf("moved-session page = %v, want turn-a and turn-b only", got)
+	}
+	if _, err := svc.Get(moved, GetRequest{SessionID: "session-1", TaskID: "turn-a"}); err != nil {
+		t.Fatalf("get turn-a with read reach: %v", err)
+	}
+	if _, err := svc.Get(moved, GetRequest{SessionID: "session-1", TaskID: "turn-c"}); !errIs(err, ErrTurnNotFound) {
+		t.Fatalf("get turn-c outside both sets: err = %v, want ErrTurnNotFound", err)
+	}
+
+	historyOnly := auth.WithAgentReadReach(auth.WithAgentReach(base, []string{}), []string{"agent-a"})
+	if _, err := svc.Get(historyOnly, GetRequest{SessionID: "session-1", TaskID: "turn-a"}); err != nil {
+		t.Fatalf("get turn-a with read reach only: %v", err)
+	}
+	if _, err := svc.Get(historyOnly, GetRequest{SessionID: "session-1", TaskID: "turn-b"}); !errIs(err, ErrTurnNotFound) {
+		t.Fatalf("get turn-b with read reach [agent-a]: err = %v, want ErrTurnNotFound", err)
+	}
+	// Read reach never authorizes selecting the agent.
+	if err := auth.NewAgentReachAuthorizer().AuthorizeAgentReach(historyOnly, "agent-a"); err == nil {
+		t.Fatal("agent_read_reach authorized selecting the agent")
+	}
+}
+
 // ---- erased session ----
 
 func TestService_ErasedSession_NonOracularAndNoResurrection(t *testing.T) {

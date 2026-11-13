@@ -194,6 +194,10 @@ type Verified struct {
 	// bearer may select on agent-addressed data-plane surfaces. A nil or empty
 	// set grants no such authority; it is not part of the isolation tuple.
 	AgentReach []string
+	// AgentReadReach is the signed set of agent registration IDs whose rows
+	// this bearer may READ on session history surfaces without selecting
+	// them (see AgentReadReachClaim). Nil when absent.
+	AgentReadReach []string
 	// SessionReach is the signed closed set of session IDs this bearer may
 	// select per request. A nil set means the claim is ABSENT and the
 	// dynamic per-request session selection is preserved unchanged; a
@@ -541,6 +545,11 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 			return Verified{}, sessionReachErr
 		}
 	}
+	readReach, readReachErr := ParseAgentReadReach(claims[AgentReadReachClaim])
+	if readReachErr != nil || (len(readReach) > 0 && len(sessionReach) == 0) {
+		v.audit(ctx, kidSeen, iss, sub, ErrAgentReadReachMalformed)
+		return Verified{}, ErrAgentReadReachMalformed
+	}
 	if artifactTransfer != nil && (len(sessionReach) != 1 || sessionReach[0] != id.SessionID || len(reach) != 0) {
 		v.audit(ctx, kidSeen, iss, sub, ErrArtifactTransferMalformed)
 		return Verified{}, ErrArtifactTransferMalformed
@@ -562,6 +571,7 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		Identity:            id,
 		Scopes:              scopes,
 		AgentReach:          reach,
+		AgentReadReach:      readReach,
 		SessionReach:        sessionReach,
 		Subject:             sub,
 		Issuer:              iss,
