@@ -80,6 +80,10 @@ var (
 	// ErrCandidateSupportFilesUnsupported means the skill carries support
 	// files, which publications cannot carry.
 	ErrCandidateSupportFilesUnsupported = errors.New("skills/publication: skills with support files cannot become publications")
+	// ErrClaimOutstanding means another acceptance of the candidate, with a
+	// different target, is recorded and not yet finalized or released. It is
+	// a conflict (errors.Is(err, ErrConflict) holds).
+	ErrClaimOutstanding = fmt.Errorf("%w: another acceptance of this candidate is in progress", ErrConflict)
 )
 
 // AcceptClaim is the exact acceptance an admin requested. It is recorded on
@@ -93,11 +97,17 @@ type AcceptClaim struct {
 	ExpectedPublicationContentHash string `json:"expected_publication_content_hash,omitempty"`
 	DecisionNote                   string `json:"decision_note,omitempty"`
 	ClaimedBy                      string `json:"claimed_by"`
+	// ClaimedAt identifies this claim: a release names it, so a release
+	// never clears a newer claim.
+	ClaimedAt time.Time `json:"claimed_at,omitempty"`
 }
 
-func (a AcceptClaim) sameRequest(b AcceptClaim) bool {
-	a.ClaimedBy, b.ClaimedBy = "", ""
-	return a == b
+// SameTarget reports whether two acceptances publish to the same place.
+// A retry naming the same target resumes the recorded claim with its
+// original compare-and-swap predicates, even if the caller re-read the
+// target publication after an earlier attempt already advanced it.
+func (a AcceptClaim) SameTarget(b AcceptClaim) bool {
+	return a.Mode == b.Mode && a.Name == b.Name && a.PublicationID == b.PublicationID
 }
 
 // Candidate is the durable candidate record. Skill is the frozen body and is
@@ -224,6 +234,11 @@ type CandidateStore interface {
 	// identical outstanding claim for a resume, or the finalized candidate
 	// for an identical replay).
 	Claim(ctx context.Context, caller identity.Quadruple, candidateID string, expectedGeneration uint64, claim AcceptClaim) (Candidate, error)
+	// ReleaseClaim clears the claim recorded at claimedAt from a pending
+	// candidate after a publish that definitively did not apply, so the
+	// candidate can be accepted differently, rejected or withdrawn. It is a
+	// no-op when that claim is no longer the recorded one.
+	ReleaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, claimedAt time.Time) error
 	// FinalizeAccept marks a claimed candidate accepted with the result.
 	FinalizeAccept(ctx context.Context, caller identity.Quadruple, candidateID string, result AcceptResult) (CandidateMetadata, error)
 	// Decide applies a reject (privileged) or withdraw (submitter) transition.
@@ -518,6 +533,7 @@ func (s *candidateStore) Claim(ctx context.Context, caller identity.Quadruple, c
 	claim.Name = canonicalName(claim.Name)
 	claim.PublicationID = strings.TrimSpace(claim.PublicationID)
 	claim.ClaimedBy = caller.UserID
+	claim.ClaimedAt = s.clock().UTC()
 	switch claim.Mode {
 	case AcceptModeNew:
 		if claim.PublicationID != "" || claim.ExpectedPublicationGeneration != 0 || claim.ExpectedPublicationContentHash != "" {
@@ -547,11 +563,15 @@ func (s *candidateStore) Claim(ctx context.Context, caller identity.Quadruple, c
 	if claim.Mode == AcceptModeNew && claim.Name == "" {
 		claim.Name = c.Name
 	}
-	if c.Claim != nil && c.Claim.sameRequest(claim) && ((c.State == CandidatePending && c.Generation == expectedGeneration) || (c.State == CandidateAccepted && c.Generation == expectedGeneration+1)) {
-		// Resume an outstanding claim, or replay a finalized acceptance.
+	if c.Claim != nil && c.Claim.SameTarget(claim) && ((c.State == CandidatePending && c.Generation == expectedGeneration) || (c.State == CandidateAccepted && c.Generation == expectedGeneration+1)) {
+		// Resume an outstanding claim with its original predicates, or
+		// replay a finalized acceptance.
 		return cloneCandidate(c), nil
 	}
-	if c.State != CandidatePending || c.Generation != expectedGeneration || c.Claim != nil {
+	if c.State == CandidatePending && c.Generation == expectedGeneration && c.Claim != nil {
+		return Candidate{}, ErrClaimOutstanding
+	}
+	if c.State != CandidatePending || c.Generation != expectedGeneration {
 		return Candidate{}, ErrConflict
 	}
 	c.Claim = &claim
@@ -560,6 +580,32 @@ func (s *candidateStore) Claim(ctx context.Context, caller identity.Quadruple, c
 		return Candidate{}, err
 	}
 	return cloneCandidate(c), nil
+}
+
+// ReleaseClaim implements CandidateStore.
+func (s *candidateStore) ReleaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, claimedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.open(ctx, caller); err != nil {
+		return err
+	}
+	a, token, err := s.backend.load(ctx, caller.TenantID)
+	if err != nil {
+		return err
+	}
+	i, ok := findCandidate(a, strings.TrimSpace(candidateID))
+	if !ok {
+		return ErrCandidateNotFound
+	}
+	c := a.Candidates[i]
+	if c.State != CandidatePending || c.Claim == nil || !c.Claim.ClaimedAt.Equal(claimedAt) {
+		// Already released, superseded or finalized: nothing to release.
+		return nil
+	}
+	c.Claim = nil
+	c.UpdatedAt = s.clock().UTC()
+	a.Candidates[i] = c
+	return s.backend.save(ctx, caller.TenantID, token, a)
 }
 
 // FinalizeAccept implements CandidateStore.

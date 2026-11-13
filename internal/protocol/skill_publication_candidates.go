@@ -96,6 +96,9 @@ func (s *SkillPublicationsSurface) dispatchCandidate(ctx context.Context, method
 		if !ok || r == nil {
 			return nil, invalidPublicationRequest(method, "SkillPublicationCandidateRejectRequest")
 		}
+		if err := s.clearStaleClaim(ctx, caller, r.CandidateID, true); err != nil {
+			return nil, mapPublicationError(method, err)
+		}
 		meta, err := s.candidates.Decide(ctx, caller, publication.DecideCandidateRequest{
 			IdempotencyKey: r.IdempotencyKey, CandidateID: r.CandidateID, ExpectedGeneration: r.ExpectedGeneration,
 			Outcome: publication.CandidateRejected, DecisionNote: r.DecisionNote,
@@ -108,6 +111,9 @@ func (s *SkillPublicationsSurface) dispatchCandidate(ctx context.Context, method
 		r, ok := req.(*types.SkillPublicationCandidateWithdrawRequest)
 		if !ok || r == nil {
 			return nil, invalidPublicationRequest(method, "SkillPublicationCandidateWithdrawRequest")
+		}
+		if err := s.clearStaleClaim(ctx, caller, r.CandidateID, false); err != nil {
+			return nil, mapPublicationError(method, err)
 		}
 		meta, err := s.candidates.Decide(ctx, caller, publication.DecideCandidateRequest{
 			IdempotencyKey: r.IdempotencyKey, CandidateID: r.CandidateID, ExpectedGeneration: r.ExpectedGeneration,
@@ -159,11 +165,20 @@ func (s *SkillPublicationsSurface) submitCandidate(ctx context.Context, method m
 // claimed publish already applied under another caller, the existing
 // publication is adopted rather than published twice.
 func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method methods.Method, caller identity.Quadruple, r *types.SkillPublicationCandidateAcceptRequest) (any, error) {
-	c, err := s.candidates.Claim(ctx, caller, r.CandidateID, r.ExpectedGeneration, publication.AcceptClaim{
+	want := publication.AcceptClaim{
 		Mode: r.Mode, Name: r.Name, PublicationID: r.PublicationID,
 		ExpectedPublicationGeneration: r.ExpectedPublicationGeneration, ExpectedPublicationContentHash: r.ExpectedPublicationContentHash,
 		DecisionNote: r.DecisionNote,
-	})
+	}
+	c, err := s.candidates.Claim(ctx, caller, r.CandidateID, r.ExpectedGeneration, want)
+	if stderrors.Is(err, publication.ErrClaimOutstanding) {
+		// A different acceptance is recorded. If it is stale (its attempt
+		// died mid-flight) and published nothing, release it and claim again.
+		if cerr := s.clearStaleClaim(ctx, caller, r.CandidateID, true); cerr != nil {
+			return nil, mapPublicationError(method, cerr)
+		}
+		c, err = s.candidates.Claim(ctx, caller, r.CandidateID, r.ExpectedGeneration, want)
+	}
 	if err != nil {
 		return nil, mapPublicationError(method, err)
 	}
@@ -214,6 +229,14 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		}
 	}
 	if err != nil {
+		if definitivePublishFailure(err) {
+			// Nothing was published under this claim (an applied publish
+			// replays or is adopted above), so release it: the candidate can
+			// be accepted under another name or target, rejected or withdrawn.
+			if rerr := s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.ClaimedAt); rerr != nil {
+				return nil, mapPublicationError(method, rerr)
+			}
+		}
 		return nil, mapPublicationError(method, err)
 	}
 	final, err := s.candidates.FinalizeAccept(ctx, caller, c.CandidateID, publication.AcceptResult{
@@ -223,6 +246,70 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		return nil, mapPublicationError(method, err)
 	}
 	return &types.SkillPublicationCandidateAcceptResponse{Candidate: candidateToWire(final), Publication: metadataToWire(meta), Receipt: receiptToWire(receipt), ProtocolVersion: types.ProtocolVersion}, nil
+}
+
+// staleClaimAfter is how long a recorded acceptance may stay unfinalized
+// before another acceptance, a rejection or a withdrawal may resolve it. An
+// in-flight publish finishes well within it.
+const staleClaimAfter = 2 * time.Minute
+
+// definitivePublishFailure reports whether a publish error proves the
+// publication store did not apply the claimed publish.
+func definitivePublishFailure(err error) bool {
+	return stderrors.Is(err, publication.ErrConflict) || stderrors.Is(err, publication.ErrNotFound) ||
+		stderrors.Is(err, publication.ErrRetired) || stderrors.Is(err, publication.ErrInvalidRequest) ||
+		stderrors.Is(err, publication.ErrRuntimeMismatch) || stderrors.Is(err, publication.ErrContentHashMismatch) ||
+		stderrors.Is(err, publication.ErrIdempotencyConflict)
+}
+
+// clearStaleClaim resolves a recorded acceptance before another decision.
+// A claim younger than staleClaimAfter may still be publishing: conflict. An
+// older claim whose publish applied is finalized (the candidate becomes
+// accepted, so the caller's decision then conflicts); one that published
+// nothing is released.
+func (s *SkillPublicationsSurface) clearStaleClaim(ctx context.Context, caller identity.Quadruple, candidateID string, privileged bool) error {
+	c, err := s.candidates.Read(ctx, caller, candidateID, privileged)
+	if err != nil {
+		return err
+	}
+	if c.State != publication.CandidatePending || c.Claim == nil {
+		return nil
+	}
+	claim := *c.Claim
+	if time.Since(claim.ClaimedAt) < staleClaimAfter {
+		return publication.ErrClaimOutstanding
+	}
+	if privileged {
+		if meta, prior, ok := s.appliedClaim(ctx, caller, c, claim); ok {
+			if _, ferr := s.candidates.FinalizeAccept(ctx, caller, c.CandidateID, publication.AcceptResult{
+				PublicationID: meta.PublicationID, RevisionID: meta.RevisionID, PriorContentHash: prior,
+				Receipt: publication.Receipt{Operation: "publish", PublicationID: meta.PublicationID, RevisionID: meta.RevisionID, Generation: meta.Generation, State: meta.State, BeforeHash: prior, AfterHash: meta.ContentHash},
+			}); ferr != nil {
+				return ferr
+			}
+			return publication.ErrConflict
+		}
+	} else {
+		// The submitter cannot read the catalog to prove the claim published
+		// nothing; an admin decision (accept or reject) resolves it.
+		return publication.ErrClaimOutstanding
+	}
+	return s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.ClaimedAt)
+}
+
+// appliedClaim finds the publication a stale claim produced, if any.
+func (s *SkillPublicationsSurface) appliedClaim(ctx context.Context, caller identity.Quadruple, c publication.Candidate, claim publication.AcceptClaim) (publication.Metadata, string, bool) {
+	switch claim.Mode {
+	case publication.AcceptModeNew:
+		meta, _, err := s.adoptNew(ctx, caller, claim.Name, c.CandidateID, publication.ErrConflict)
+		return meta, "", err == nil
+	case publication.AcceptModeSuccessor:
+		current, err := s.store.Get(ctx, caller, claim.PublicationID)
+		if err == nil && current.Generation == claim.ExpectedPublicationGeneration+1 && s.publishedBy(ctx, caller, current.PublicationID, c.CandidateID) {
+			return current, claim.ExpectedPublicationContentHash, true
+		}
+	}
+	return publication.Metadata{}, "", false
 }
 
 // candidateMarkerKey records, inside the published revision body, which

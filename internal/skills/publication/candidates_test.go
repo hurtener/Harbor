@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -241,5 +242,45 @@ func TestStore_ReadVisibility(t *testing.T) {
 	}
 	if _, _, err := store.Read(ctx, publicationIdentity("tenant-b", "admin", "s"), ReadRequest{PublicationID: pub.PublicationID, AnyState: true}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-tenant err=%v", err)
+	}
+}
+
+func TestCandidateClaimReleaseAndOutstanding(t *testing.T) {
+	for name, store := range candidateStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			admin := publicationIdentity("tenant-a", "admin", "s-admin")
+			meta := submit(t, store, "alice", "k1", "triage")
+			first, err := store.Claim(ctx, admin, meta.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew})
+			if err != nil || first.Claim == nil || first.Claim.ClaimedAt.IsZero() {
+				t.Fatalf("claim=%+v err=%v", first, err)
+			}
+			// A different target while the claim is outstanding is refused as such.
+			if _, err := store.Claim(ctx, admin, meta.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, Name: "other"}); !errors.Is(err, ErrClaimOutstanding) || !errors.Is(err, ErrConflict) {
+				t.Fatalf("outstanding err=%v", err)
+			}
+			// The same target resumes the original claim even with a new note.
+			again, err := store.Claim(ctx, admin, meta.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, DecisionNote: "x"})
+			if err != nil || !again.Claim.ClaimedAt.Equal(first.Claim.ClaimedAt) || again.Claim.DecisionNote != "" {
+				t.Fatalf("resume=%+v err=%v", again.Claim, err)
+			}
+			// Releasing another claim time is a no-op; releasing the recorded one clears it.
+			if err := store.ReleaseClaim(ctx, admin, meta.CandidateID, first.Claim.ClaimedAt.Add(-time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := store.Read(ctx, admin, meta.CandidateID, true); got.Claim == nil {
+				t.Fatal("mismatched release cleared the claim")
+			}
+			if err := store.ReleaseClaim(ctx, admin, meta.CandidateID, first.Claim.ClaimedAt); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := store.Read(ctx, admin, meta.CandidateID, true)
+			if got.Claim != nil || got.State != CandidatePending || got.Generation != 1 {
+				t.Fatalf("released=%+v", got)
+			}
+			if _, err := store.Decide(ctx, admin, DecideCandidateRequest{IdempotencyKey: "r", CandidateID: meta.CandidateID, ExpectedGeneration: 1, Outcome: CandidateRejected}, true); err != nil {
+				t.Fatalf("reject after release: %v", err)
+			}
+		})
 	}
 }

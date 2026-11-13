@@ -32,7 +32,9 @@ Two versions move independently in Harbor (RFC §5.3):
   of their personal skills for organization-admin review; an admin accepts it
   as a new publication or as a successor revision of an existing one, or
   rejects it with a note. Acceptance goes through the ordinary publication
-  store and is retry-safe across admins (never publishes twice). Skills with
+  store and is retry-safe across admins (never publishes twice); a failed
+  publish (for example a name clash) releases the candidate for another
+  decision instead of leaving it stuck. Skills with
   support files are refused (`candidate_support_files_unsupported`); one pending
   candidate per person and name (`candidate_pending_exists`). Advertised as
   `skill_publication_candidates`. Additive; no Protocol version bump.

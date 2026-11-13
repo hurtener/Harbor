@@ -17144,8 +17144,14 @@ can withdraw. The candidate keeps the resulting publication and revision ids
 and, for a successor, the content hash it replaced.
 
 Acceptance spans two aggregates, so it is claim, publish, finalize: the claim
-records the exact acceptance on the pending candidate; the same request from
-any admin resumes it and anything else conflicts while it is outstanding. The
+records the acceptance on the pending candidate; a request naming the same
+target (mode, name, publication) from any admin resumes it with the claim's
+original compare-and-set predicates, even if the caller re-read an already
+advanced target. A publish that definitively did not apply (name clash,
+stale or missing target) releases the claim, so the candidate can be accepted
+differently, rejected or withdrawn. A claim left unfinalized for two minutes
+is resolved before another decision: finalized if its publish applied,
+released otherwise; a younger claim with a different target conflicts. The
 published body carries a runtime-private candidate marker (never projected on
 the wire), which is the proof a resumed acceptance uses to adopt a publish
 that already applied instead of publishing again; the publication store's own

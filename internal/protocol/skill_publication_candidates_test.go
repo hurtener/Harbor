@@ -347,3 +347,95 @@ func TestCandidates_ResumeAfterPartialAcceptAdoptsWithoutRepublishing(t *testing
 		})
 	}
 }
+
+// A name clash on a new acceptance must not wedge the candidate: the claim
+// is released, so the admin can accept under another name or reject it.
+func TestCandidates_NameClashReleasesTheClaim(t *testing.T) {
+	f := newCandidateFixture(t)
+	admin := candAdminCtx(t, "admin")
+	if _, err := f.surface.Dispatch(admin, methods.MethodSkillsPublicationsPublish, &types.SkillPublicationPublishRequest{Identity: candID("admin"), Name: "weekly-report", Skill: types.SkillPublicationSkill{Name: "weekly-report", Trigger: "when", Steps: []string{"org"}}, IdempotencyKey: "p", ExpectedAbsent: true}); err != nil {
+		t.Fatal(err)
+	}
+	c := f.submit(t, "bruno", "weekly-report", "k1")
+	accept := func(name, key string) error {
+		_, err := f.surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: "new", Name: name, IdempotencyKey: key})
+		return err
+	}
+	if err := accept("", "a1"); candCode(err) != protoerrors.CodeSkillPublicationConflict {
+		t.Fatalf("clash err=%v", err)
+	}
+	// Retrying the same clash still conflicts (never "in progress").
+	if err := accept("", "a2"); candCode(err) != protoerrors.CodeSkillPublicationConflict {
+		t.Fatalf("clash retry err=%v", err)
+	}
+	// Another name succeeds.
+	if err := accept("weekly-report-bruno", "a3"); err != nil {
+		t.Fatalf("accept under another name: %v", err)
+	}
+	pubs, _ := f.store.List(admin, publicationTestIdentity("admin"))
+	if len(pubs) != 2 {
+		t.Fatalf("publications=%d want 2", len(pubs))
+	}
+
+	// And a clashing candidate can be rejected after the failed accept.
+	c2 := f.submit(t, "carla", "weekly-report", "k1")
+	if _, err := f.surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: c2.CandidateID, ExpectedGeneration: 1, Mode: "new", IdempotencyKey: "b1"}); candCode(err) != protoerrors.CodeSkillPublicationConflict {
+		t.Fatalf("clash err=%v", err)
+	}
+	if _, err := f.surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesReject, &types.SkillPublicationCandidateRejectRequest{Identity: candID("admin"), CandidateID: c2.CandidateID, ExpectedGeneration: 1, DecisionNote: "duplicate", IdempotencyKey: "r1"}); err != nil {
+		t.Fatalf("reject after clash: %v", err)
+	}
+	// The submitter can withdraw after a failed accept too.
+	c3 := f.submit(t, "dina", "weekly-report", "k1")
+	_, _ = f.surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: c3.CandidateID, ExpectedGeneration: 1, Mode: "new", IdempotencyKey: "c1"})
+	if _, err := f.surface.Dispatch(candUserCtx(t, "dina"), methods.MethodSkillsPublicationsCandidatesWithdraw, &types.SkillPublicationCandidateWithdrawRequest{Identity: candID("dina"), CandidateID: c3.CandidateID, ExpectedGeneration: 1, IdempotencyKey: "w1"}); err != nil {
+		t.Fatalf("withdraw after clash: %v", err)
+	}
+}
+
+// A successor retry that re-read the target after the first attempt already
+// advanced it resumes the recorded claim instead of conflicting.
+func TestCandidates_SuccessorRetryWithFreshPredicatesResumes(t *testing.T) {
+	raw := publication.NewMemoryStore("runtime-a")
+	store, err := publication.NewAuthorizedStore(raw, auth.NewAgentReachAuthorizer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := &flakyFinalize{CandidateStore: publication.NewMemoryCandidateStore("runtime-a")}
+	snap := protocol.PersonalSkillSnapshotFunc(func(_ context.Context, _, name string) (skills.Skill, string, int, error) {
+		return skills.Skill{Name: name, Trigger: "when", Steps: []string{"v2"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser}, "", 0, nil
+	})
+	surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store, Candidates: candidates, Snapshots: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := candAdminCtx(t, "admin")
+	pubResp, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsPublish, &types.SkillPublicationPublishRequest{Identity: candID("admin"), Name: "triage", Skill: types.SkillPublicationSkill{Name: "triage", Trigger: "when", Steps: []string{"v1"}}, IdempotencyKey: "p", ExpectedAbsent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := pubResp.(*types.SkillPublicationPublishResponse).Publication
+	sub, err := surface.Dispatch(candUserCtx(t, "alice"), methods.MethodSkillsPublicationsCandidatesSubmit, &types.SkillPublicationCandidateSubmitRequest{Identity: candID("alice"), AgentID: "agent-a", Name: "triage", IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sub.(*types.SkillPublicationCandidateSubmitResponse).Candidate.CandidateID
+	req := types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, Mode: "successor", PublicationID: pub.PublicationID, ExpectedPublicationGeneration: pub.Generation, ExpectedPublicationContentHash: pub.ContentHash, IdempotencyKey: "a"}
+	if _, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &req); err == nil {
+		t.Fatal("first accept should fail at finalize")
+	}
+	current, err := store.Get(admin, publicationTestIdentity("admin"), pub.PublicationID)
+	if err != nil || current.Generation != 2 {
+		t.Fatalf("current=%+v err=%v", current, err)
+	}
+	// The retry carries the re-read (advanced) predicates.
+	req.ExpectedPublicationGeneration, req.ExpectedPublicationContentHash = current.Generation, current.ContentHash
+	resp, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &req)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	got := resp.(*types.SkillPublicationCandidateAcceptResponse)
+	if got.Candidate.State != "accepted" || got.Publication.Generation != 2 || got.Candidate.PriorContentHash != pub.ContentHash {
+		t.Fatalf("resumed=%+v", got)
+	}
+}
