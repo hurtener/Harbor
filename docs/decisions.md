@@ -17070,3 +17070,30 @@ already lives in this runtime; copying it keeps the target independent of the
 source agent's later edits or retirement. No schema change, no new wire field.
 
 **Cross-references:** D-496.
+
+## D-507 — Turn usage keeps per-call provenance: reported is exact, backfill is estimated
+
+**Date:** 2026-11-13
+
+**Decision.** The durable turn materializer derives each cumulative usage
+measure's state from the provenance of the `llm.cost.recorded` calls that fed
+it, instead of a fixed state. A token measure is `exact` while every
+contributing call was a driver report and becomes `estimated` once any call
+carried `Usage.Estimated` (Harbor's usage backfill). The cost measure is
+`exact` while every contributing call carried a gateway-reported cost object
+(`Cost.ReportPresent` without `Cost.Estimated`) and becomes `estimated` once
+any call used the configured price-table backfill (`Cost.Estimated`) or carried
+a cost of unknown provenance (no `ReportPresent`, e.g. records written before
+the flag existed). `estimated` is sticky for the turn. Values, arithmetic and
+the zero-is-not-reported rule are unchanged.
+
+Previously every cost measure was `estimated` and every token measure was
+`exact`, regardless of source: a gateway-reported cost could never be
+distinguished from a price-table guess, and backfilled token estimates were
+presented as exact.
+
+**Why.** Consumers that report usage need to say "estimated" only when Harbor
+actually estimated. The per-call flags already exist on the canonical payload;
+the projection now carries them. "Exact" here means "as reported by the model
+gateway for every call", not a provider invoice. No wire or schema change.
+

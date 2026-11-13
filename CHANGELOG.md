@@ -17,6 +17,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- Turn usage projections keep per-call provenance (D-507): a cost reported by
+  the model gateway on every call is `exact` instead of always `estimated`,
+  and token or cost measures fed by Harbor's own backfill are `estimated`
+  instead of `exact`.
+
 ## [1.49.0] — 2026-11-13
 
 ### Fixed

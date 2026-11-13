@@ -1448,6 +1448,18 @@ func costUSD(v any) (float64, error) {
 // not-reported, so zero never becomes a fabricated exact claim).
 func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) (turns.Usage, error) {
 	next := cur
+	// Provenance is per call and sticky per measure: a measure stays exact
+	// only while every contributing call was a driver report. Harbor's own
+	// backfill (Usage.Estimated / Cost.Estimated) and a cost object of unknown
+	// provenance (no ReportPresent, e.g. legacy records) make it estimated.
+	tokensEstimated := fieldBool(usage, "Estimated")
+	costEstimated := fieldBool(cost, "Estimated") || !fieldBool(cost, "ReportPresent")
+	measureState := func(prev turns.UsageMeasure, estimated bool) turns.UsageState {
+		if estimated || prev.State == turns.UsageEstimated {
+			return turns.UsageEstimated
+		}
+		return turns.UsageExact
+	}
 	addMeasure := func(prev turns.UsageMeasure, delta int64) (turns.UsageMeasure, error) {
 		if delta < 0 {
 			return turns.UsageMeasure{}, fmt.Errorf("materializer: cumulative usage delta %d is negative — corrupt arithmetic never wraps or is silently omitted", delta)
@@ -1466,7 +1478,7 @@ func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) 
 			return turns.UsageMeasure{}, fmt.Errorf("materializer: cumulative usage overflows int64 (%d + %d) — corrupt arithmetic never wraps or is silently omitted", acc, delta)
 		}
 		acc += delta
-		return turns.UsageMeasure{State: turns.UsageExact, Value: &acc}, nil
+		return turns.UsageMeasure{State: measureState(prev, tokensEstimated), Value: &acc}, nil
 	}
 	addField := func(key string, prev turns.UsageMeasure) (turns.UsageMeasure, error) {
 		delta, present, err := usageDelta(usage, key)
@@ -1515,9 +1527,11 @@ func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) 
 	}
 
 	// Cost: the float64 USD per-call total is converted to integer
-	// micro-dollars by rounding and accumulated as integers; the measure
-	// is honestly ESTIMATED (the source is approximate) and money is
-	// never accumulated in float64. The conversion and accumulation are
+	// micro-dollars by rounding and accumulated as integers; money is never
+	// accumulated in float64. The measure is EXACT when every contributing
+	// call carried the gateway's reported cost (Cost.ReportPresent without
+	// Cost.Estimated) and ESTIMATED once any call used the configured
+	// price-table backfill or carried a cost of unknown provenance. The conversion and accumulation are
 	// overflow-checked — corrupt cost arithmetic never wraps.
 	if v, ok := cost["TotalCost"]; ok && v != nil {
 		totalUSD, err := costUSD(v)
@@ -1546,7 +1560,7 @@ func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) 
 				return turns.Usage{}, fmt.Errorf("materializer: cumulative cost overflows integer micro-dollars (%d + %d) — corrupt arithmetic never wraps or is silently omitted", acc, micro)
 			}
 			acc += micro
-			next.CostMicroUSD = turns.UsageMeasure{State: turns.UsageEstimated, Value: &acc}
+			next.CostMicroUSD = turns.UsageMeasure{State: measureState(next.CostMicroUSD, costEstimated), Value: &acc}
 		}
 	}
 	if model != "" {
