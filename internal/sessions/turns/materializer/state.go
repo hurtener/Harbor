@@ -130,6 +130,15 @@ type turnState struct {
 	// usage is the cumulative per-measure usage accumulator fed to the
 	// projector wholesale on every usage-affecting update.
 	usage turns.Usage
+	// costUnknown records that a call of this turn carried no cost report
+	// (D-507). It keeps the turn's cost estimated even when a later call
+	// reports one. It is in-memory: a restart between that call and the
+	// next reported one loses it unless a known amount already existed
+	// (that case is persisted as an estimated measure immediately).
+	costUnknown bool
+	// awaitingCost is set by llm.context.prepared (a provider attempt
+	// began) and cleared by llm.cost.recorded for the same root run.
+	awaitingCost bool
 	// reasoning is the BOUNDED ordered derived reasoning feed (index +
 	// closed kind), fed wholesale on every planner-decision attach. The
 	// feed is clamped at the projector's per-observation feed-acceptance

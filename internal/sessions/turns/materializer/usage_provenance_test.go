@@ -71,3 +71,74 @@ func TestMaterialize_UsageProvenancePerMeasure(t *testing.T) {
 		})
 	}
 }
+
+func contextPreparedEv(id identity.Identity, runID string) events.Event {
+	return events.Event{
+		Type:     llm.EventTypeContextPrepared,
+		Identity: testQuad(id, runID),
+		Payload:  llm.ContextPreparedPayload{Identity: testQuad(id, runID)},
+	}
+}
+
+// TestMaterialize_UnknownCostIsStickyForTheTurn pins that one call without a
+// cost report (a missing record, or an attempt that errored with no report)
+// keeps the turn's cost estimated even when later calls report cost.
+func TestMaterialize_UnknownCostIsStickyForTheTurn(t *testing.T) {
+	reported := llm.Usage{ReportPresent: true, PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}
+	for name, steps := range map[string]func(h *harness, run string){
+		"unknown cost before a reported one": func(h *harness, run string) {
+			h.src.publish(t, provenanceCostEv(h.id, run, reported, llm.Cost{}))
+			h.src.publish(t, provenanceCostEv(h.id, run, reported, llm.Cost{ReportPresent: true, TotalCost: 0.2, Currency: "USD"}))
+		},
+		"errored attempt without a report": func(h *harness, run string) {
+			h.src.publish(t, contextPreparedEv(h.id, run))
+			h.src.publish(t, provenanceCostEv(h.id, run, reported, llm.Cost{ReportPresent: true, TotalCost: 0.2, Currency: "USD"}))
+			h.src.publish(t, contextPreparedEv(h.id, run)) // this attempt errored: no cost record
+			h.src.publish(t, contextPreparedEv(h.id, run))
+			h.src.publish(t, provenanceCostEv(h.id, run, reported, llm.Cost{ReportPresent: true, TotalCost: 0.1, Currency: "USD"}))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, "")
+			defer h.closeStore()
+			m := h.newMaterializer(t)
+			quad := testQuad(h.id, "run-u")
+			h.src.publish(t, spawnEv(h.id, quad.RunID, "task-u", tasks.KindForeground, ""))
+			steps(h, quad.RunID)
+			h.src.publish(t, failedEv(h.id, "task-u", "timeout"))
+			if _, err := m.Materialize(context.Background()); err != nil {
+				t.Fatalf("materialize: %v", err)
+			}
+			row := mustGetRow(t, h, "task-u")
+			if row.Usage.CostMicroUSD.State != turns.UsageEstimated {
+				t.Errorf("cost = %+v, want estimated (an unknown call makes the total incomplete)", row.Usage.CostMicroUSD)
+			}
+			if row.Usage.TotalTokens.State != turns.UsageExact {
+				t.Errorf("tokens = %+v, want exact (every token report was present)", row.Usage.TotalTokens)
+			}
+		})
+	}
+}
+
+// TestMaterialize_ReportedAttemptsKeepExactCost pins the happy path: each
+// attempt prepared then recorded with a gateway report stays exact.
+func TestMaterialize_ReportedAttemptsKeepExactCost(t *testing.T) {
+	h := newHarness(t, "")
+	defer h.closeStore()
+	m := h.newMaterializer(t)
+	quad := testQuad(h.id, "run-r")
+	reported := llm.Usage{ReportPresent: true, PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-r", tasks.KindForeground, ""))
+	for i := 0; i < 3; i++ {
+		h.src.publish(t, contextPreparedEv(h.id, quad.RunID))
+		h.src.publish(t, provenanceCostEv(h.id, quad.RunID, reported, llm.Cost{ReportPresent: true, TotalCost: 0.01, Currency: "USD"}))
+	}
+	h.src.publish(t, failedEv(h.id, "task-r", "timeout"))
+	if _, err := m.Materialize(context.Background()); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	row := mustGetRow(t, h, "task-r")
+	if row.Usage.CostMicroUSD.State != turns.UsageExact || usageValue(t, row.Usage.CostMicroUSD) != 30_000 {
+		t.Errorf("cost = %+v, want exact 30000", row.Usage.CostMicroUSD)
+	}
+}

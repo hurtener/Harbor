@@ -100,8 +100,8 @@ func TestMaterialize_UsageArithmeticOverflowFailsLoud(t *testing.T) {
 	m := h.newMaterializer(t)
 	quad := testQuad(h.id, "run-of")
 	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-of", tasks.KindForeground, ""))
-	h.src.publish(t, redactedCostEvent(h.id, quad.RunID, map[string]any{"PromptTokens": int64(math.MaxInt64)}, nil))
-	h.src.publish(t, redactedCostEvent(h.id, quad.RunID, map[string]any{"PromptTokens": int64(1)}, nil))
+	h.src.publish(t, redactedCostEvent(h.id, quad.RunID, map[string]any{"ReportPresent": true, "PromptTokens": int64(math.MaxInt64)}, nil))
+	h.src.publish(t, redactedCostEvent(h.id, quad.RunID, map[string]any{"ReportPresent": true, "PromptTokens": int64(1)}, nil))
 
 	if _, err := m.Materialize(context.Background()); err == nil {
 		t.Fatal("accumulation overflow must fail the pass loudly")

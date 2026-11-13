@@ -17071,29 +17071,42 @@ source agent's later edits or retirement. No schema change, no new wire field.
 
 **Cross-references:** D-496.
 
-## D-507 — Turn usage keeps per-call provenance: reported is exact, backfill is estimated
+## D-507 — Turn usage keeps per-call provenance: reported is exact, everything else is estimated
 
 **Date:** 2026-11-13
 
 **Decision.** The durable turn materializer derives each cumulative usage
-measure's state from the provenance of the `llm.cost.recorded` calls that fed
-it, instead of a fixed state. A token measure is `exact` while every
-contributing call was a driver report and becomes `estimated` once any call
-carried `Usage.Estimated` (Harbor's usage backfill). The cost measure is
-`exact` while every contributing call carried a gateway-reported cost object
-(`Cost.ReportPresent` without `Cost.Estimated`) and becomes `estimated` once
-any call used the configured price-table backfill (`Cost.Estimated`) or carried
-a cost of unknown provenance (no `ReportPresent`, e.g. records written before
-the flag existed). `estimated` is sticky for the turn. Values, arithmetic and
-the zero-is-not-reported rule are unchanged.
+measure's state from the provenance of the provider calls that fed it,
+instead of a fixed state.
 
-Previously every cost measure was `estimated` and every token measure was
-`exact`, regardless of source: a gateway-reported cost could never be
-distinguished from a price-table guess, and backfilled token estimates were
-presented as exact.
+- **Tokens** are `exact` only while every contributing `llm.cost.recorded`
+  carried a driver report (`Usage.ReportPresent` without `Usage.Estimated`);
+  otherwise `estimated`.
+- **Cost** is `exact` only while every call of the turn carried a
+  gateway-reported cost (`Cost.ReportPresent` without `Cost.Estimated`). A
+  price-table backfill (`Cost.Estimated`), a call with no cost report, or a
+  provider attempt that ended without any cost record makes the turn's cost
+  incomplete: `costUnknown` is sticky for the turn and every known amount is
+  `estimated`.
+- **Errored attempts.** The safety wrapper now emits `llm.cost.recorded` for
+  an errored driver attempt whose driver still reported usage or cost (it was
+  billed with a known amount). An errored attempt with no report emits
+  nothing; the materializer sees an `llm.context.prepared` (one per driver
+  attempt, emitted by the same wrapper) without a following cost record when
+  the next attempt begins, and marks the cost incomplete. A request refused
+  for exceeding the context window (`CapacityExceeded`) never reaches the
+  provider and is not counted.
+- `estimated` is sticky for the turn. Values, arithmetic and the
+  zero-is-not-reported rule are unchanged. No wire or schema change.
 
-**Why.** Consumers that report usage need to say "estimated" only when Harbor
-actually estimated. The per-call flags already exist on the canonical payload;
-the projection now carries them. "Exact" here means "as reported by the model
-gateway for every call", not a provider invoice. No wire or schema change.
+**Known limits.** The sticky flag lives in the materializer's in-memory turn
+state: a restart between an unknown call and a later reported one loses it
+unless a known amount already existed (that case is written as `estimated`
+immediately). An errored final attempt with no report, immediately followed by
+the terminal event, is not detected. Errored attempts that emit a cost record
+also count as completions in observability rollups.
 
+**Why.** Consumers that report usage need to say "estimated" only when the
+number is not the gateway's report, and must never call an incomplete total
+exact. "Exact" means "as reported by the model gateway for every call", not a
+provider invoice.

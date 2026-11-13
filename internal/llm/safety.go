@@ -168,9 +168,15 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 		// error — an errored attempt still carries a provider-reported
 		// `Cost` the outer retry/downgrade attempt-cost tap folds into
 		// governance accounting. Zeroing it here would silently drop
-		// intermediate-attempt spend. No cost observability emit on the
-		// error path (the emit rides successful driver-level completions,
-		// matching the old bifrost cadence).
+		// intermediate-attempt spend. An errored attempt whose driver
+		// still reported usage or cost was billed with a known amount, so
+		// it emits the same observability record (D-507). An errored
+		// attempt with no report emits nothing; the turn projection sees
+		// a provider attempt without a cost record and marks the turn's
+		// cost incomplete.
+		if resp.Usage.ReportPresent || resp.Cost.ReportPresent {
+			emitCostRecorded(ctx, c.deps.Bus, id, req.Model, resp.Cost, resp.Usage, profile.ContextWindowTokens)
+		}
 		return resp, err
 	}
 
