@@ -565,6 +565,9 @@ func (m *MemoryStore) Publish(ctx context.Context, caller identity.Quadruple, re
 	if err != nil {
 		return Metadata{}, Receipt{}, err
 	}
+	if err := checkReservedExtra(skill, req.Candidate); err != nil {
+		return Metadata{}, Receipt{}, err
+	}
 	if req.Candidate != nil {
 		if res, ok := candidateRevision(m.pubs[caller.TenantID], req.Candidate.CandidateID); ok {
 			return res.Publication, res.Receipt, nil
@@ -659,6 +662,9 @@ func (m *MemoryStore) PublishSuccessor(ctx context.Context, caller identity.Quad
 	}
 	skill, err := validateSkill(req.Skill, "")
 	if err != nil {
+		return Metadata{}, Receipt{}, err
+	}
+	if err := checkReservedExtra(skill, req.Candidate); err != nil {
 		return Metadata{}, Receipt{}, err
 	}
 	if req.Candidate != nil {
@@ -1116,6 +1122,9 @@ func (d *StateStoreStore) Publish(ctx context.Context, c identity.Quadruple, r P
 	if err != nil {
 		return Metadata{}, Receipt{}, err
 	}
+	if err := checkReservedExtra(skill, r.Candidate); err != nil {
+		return Metadata{}, Receipt{}, err
+	}
 	if r.Candidate != nil {
 		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {
 			return res.Publication, res.Receipt, nil
@@ -1295,6 +1304,9 @@ func (d *StateStoreStore) PublishSuccessor(ctx context.Context, c identity.Quadr
 	}
 	if !present {
 		return Metadata{}, Receipt{}, ErrNotFound
+	}
+	if err := checkReservedExtra(skill, r.Candidate); err != nil {
+		return Metadata{}, Receipt{}, err
 	}
 	if r.Candidate != nil {
 		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {

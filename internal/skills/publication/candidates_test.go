@@ -387,3 +387,52 @@ func withName(sk skills.Skill, name string) skills.Skill {
 	sk.Name = name
 	return sk
 }
+
+// An ordinary publish cannot plant the candidate marker (which would make a
+// pending candidate adopt another body), and a candidate publish may carry
+// only its own marker.
+func TestPublishRefusesReservedMarker(t *testing.T) {
+	raw, err := stateinmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = raw.Close(context.Background()) })
+	durable, err := NewStateStore(raw, "rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, store := range map[string]Store{"memory": NewMemoryStore("rt"), "state": durable} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			admin := publicationIdentity("tenant-a", "admin", "s-admin")
+			planted := publicationSkill("triage", "v1")
+			planted.Extra = map[string]any{CandidateMarkerKey: "cand-1"}
+			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p", Name: "triage", Skill: planted, ExpectedAbsent: true}); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("planted marker on publish err=%v", err)
+			}
+			other := publicationSkill("triage", "v1")
+			other.Extra = map[string]any{"_publication.anything": "x"}
+			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p2", Name: "triage", Skill: other, ExpectedAbsent: true}); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("reserved key on publish err=%v", err)
+			}
+			clean, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p3", Name: "triage", Skill: publicationSkill("triage", "v1"), ExpectedAbsent: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.PublishSuccessor(ctx, admin, SuccessorRequest{IdempotencyKey: "s", PublicationID: clean.PublicationID, ExpectedGeneration: clean.Generation, ExpectedContentHash: clean.ContentHash, Skill: planted}); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("planted marker on successor err=%v", err)
+			}
+			// A candidate publish naming another candidate is refused too.
+			if err := store.FenceCandidate(ctx, admin, "cand-2", "t"); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "c", Name: "other", Skill: withName(planted, "other"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-2", Token: "t"}}); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("foreign marker on candidate publish err=%v", err)
+			}
+			// Nothing planted means nothing to adopt.
+			if res, err := store.ResolveCandidate(ctx, admin, "cand-1", "t1"); err != nil || res.Applied {
+				t.Fatalf("resolve=%+v err=%v", res, err)
+			}
+		})
+	}
+}

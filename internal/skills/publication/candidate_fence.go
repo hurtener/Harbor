@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 )
 
@@ -17,6 +18,29 @@ import (
 const CandidateMarkerKey = "_publication.candidate_id"
 
 const revokedFencePrefix = "revoked:"
+
+// reservedExtraPrefix is the reserved Extra namespace of publication
+// bookkeeping (CandidateMarkerKey). Only a fenced candidate publish may carry
+// it, and only naming its own candidate.
+const reservedExtraPrefix = "_publication."
+
+// checkReservedExtra refuses a body that plants publication bookkeeping: an
+// ordinary publish carries no reserved key, and a candidate publish carries
+// exactly its own marker.
+func checkReservedExtra(skill skills.Skill, f *CandidateFence) error {
+	for key, value := range skill.Extra {
+		if !strings.HasPrefix(key, reservedExtraPrefix) {
+			continue
+		}
+		if f == nil || key != CandidateMarkerKey {
+			return fmt.Errorf("%w: extra key %q is reserved", ErrInvalidRequest, key)
+		}
+		if marker, _ := value.(string); marker != f.CandidateID {
+			return fmt.Errorf("%w: candidate marker does not name this candidate", ErrInvalidRequest)
+		}
+	}
+	return nil
+}
 
 // ErrCandidateFenced means the acceptance this publish belonged to was
 // revoked (its claim was resolved as stale): the publish never lands. It is a
