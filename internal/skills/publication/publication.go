@@ -211,13 +211,15 @@ type Store interface {
 	// Revisions lists one publication's immutable revisions, oldest first,
 	// as content-free metadata (admin-only through AuthorizedStore).
 	Revisions(ctx context.Context, caller identity.Quadruple, publicationID string) ([]Metadata, error)
-	// FenceCandidate makes token the candidate's live acceptance fence. It
-	// fails with ErrConflict while a different live token holds the fence.
-	FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID, token string) error
+	// FenceCandidate resumes the exact live fence token (presented != 0) or
+	// allocates a new one, max(live, revoked)+1, for a new acceptance
+	// (presented == 0). A revoked or superseded token is ErrCandidateFenced;
+	// a different live acceptance is ErrConflict.
+	FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, presented uint64) (uint64, error)
 	// ResolveCandidate atomically reports the revision the candidate's
-	// publish produced, or, if none, revokes token so that publish can never
-	// land. Any error means "unknown": the caller must not release the claim.
-	ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID, token string) (CandidateResolution, error)
+	// publish produced, or, if none, revokes the live fence so no publish
+	// under it can land. Any error means "unknown": do not release the claim.
+	ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID string) (CandidateResolution, error)
 	Close(ctx context.Context) error
 }
 
@@ -456,7 +458,7 @@ type MemoryStore struct {
 	closed  bool
 	clock   func() time.Time
 	pubs    map[string][]Publication
-	fences  map[string]map[string]string
+	fences  map[string]map[string]fenceState
 	refs    map[string]Reference
 	ops     map[string]operation
 }
@@ -1030,9 +1032,11 @@ func NewStateStore(st state.StateStore, runtimeID string) (*StateStoreStore, err
 type durableAggregate struct {
 	Publications []Publication        `json:"publications"`
 	Operations   map[string]operation `json:"operations,omitempty"`
-	// CandidateFences maps a candidate to its live (or revoked) acceptance
-	// token; fenced publishes commit only under the live one.
-	CandidateFences map[string]string `json:"candidate_fences,omitempty"`
+	// CandidateFenceTokens maps a candidate to its integer acceptance fence;
+	// fenced publishes commit only under the live token. (Unreleased interim
+	// builds wrote string fences under another key; those are ignored, which
+	// leaves such a candidate unfenced — revoked and resolvable — never stuck.)
+	CandidateFenceTokens map[string]fenceState `json:"candidate_fence_tokens,omitempty"`
 }
 type durableReference struct {
 	Reference  Reference            `json:"reference"`
@@ -1129,7 +1133,7 @@ func (d *StateStoreStore) Publish(ctx context.Context, c identity.Quadruple, r P
 		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {
 			return res.Publication, res.Receipt, nil
 		}
-		if err := checkFence(a.CandidateFences, r.Candidate); err != nil {
+		if err := checkFence(a.CandidateFenceTokens, r.Candidate); err != nil {
 			return Metadata{}, Receipt{}, err
 		}
 	}
@@ -1312,7 +1316,7 @@ func (d *StateStoreStore) PublishSuccessor(ctx context.Context, c identity.Quadr
 		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {
 			return res.Publication, res.Receipt, nil
 		}
-		if err := checkFence(a.CandidateFences, r.Candidate); err != nil {
+		if err := checkFence(a.CandidateFenceTokens, r.Candidate); err != nil {
 			return Metadata{}, Receipt{}, err
 		}
 	}

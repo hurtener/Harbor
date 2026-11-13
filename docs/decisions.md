@@ -17153,12 +17153,15 @@ differently, rejected or withdrawn. A claim left unfinalized for two minutes
 is resolved before another decision: finalized if its publish applied,
 released otherwise; a younger claim with a different target conflicts. The
 publish step also runs under a 60-second deadline, shorter than that window.
-Each claim fences its publish: before publishing, the claim's token (its
-fixed-width claim time, so tokens only increase) becomes the candidate's live
-fence in the publication aggregate — accepted only if it is the live token or
-newer than the current one, so a revoked token is permanent and an acceptance
-that paused before fencing while its claim was resolved can never publish;
-the accept also re-checks that its claim is still the recorded one, and the publish
+Each claim fences its publish with an integer token allocated by the
+publication store from a per-candidate counter in the same per-tenant record,
+under the same compare-and-set that installs it: a new acceptance gets
+max(live, revoked)+1, a resume must present the exact live token (recorded on
+the claim), and a revoked token is permanent. Claims carry a per-candidate
+sequence number that identifies them; their timestamp only measures age for
+the stale window and never orders anything. A fence string from an interim
+unreleased build is ignored (revoked and resolvable). The accept also
+re-checks that its claim is still the recorded one, and the publish
 commits only while that token is still the fence, in the same
 compare-and-set; only the candidate-marker Extra key is reserved
 (other underscore keys accepted by earlier releases keep working); a publish

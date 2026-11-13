@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -254,7 +253,7 @@ func TestCandidateClaimReleaseAndOutstanding(t *testing.T) {
 			admin := publicationIdentity("tenant-a", "admin", "s-admin")
 			meta := submit(t, store, "alice", "k1", "triage")
 			first, err := store.Claim(ctx, admin, meta.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew})
-			if err != nil || first.Claim == nil || first.Claim.ClaimedAt.IsZero() {
+			if err != nil || first.Claim == nil || first.Claim.ClaimedAt.IsZero() || first.Claim.Seq != 1 {
 				t.Fatalf("claim=%+v err=%v", first, err)
 			}
 			// A different target while the claim is outstanding is refused as such.
@@ -263,17 +262,17 @@ func TestCandidateClaimReleaseAndOutstanding(t *testing.T) {
 			}
 			// The same target resumes the original claim even with a new note.
 			again, err := store.Claim(ctx, admin, meta.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, DecisionNote: "x"})
-			if err != nil || !again.Claim.ClaimedAt.Equal(first.Claim.ClaimedAt) || again.Claim.DecisionNote != "" {
+			if err != nil || again.Claim.Seq != first.Claim.Seq || again.Claim.DecisionNote != "" {
 				t.Fatalf("resume=%+v err=%v", again.Claim, err)
 			}
 			// Releasing another claim time is a no-op; releasing the recorded one clears it.
-			if err := store.ReleaseClaim(ctx, admin, meta.CandidateID, first.Claim.ClaimedAt.Add(-time.Second)); err != nil {
+			if err := store.ReleaseClaim(ctx, admin, meta.CandidateID, first.Claim.Seq+1); err != nil {
 				t.Fatal(err)
 			}
 			if got, _ := store.Read(ctx, admin, meta.CandidateID, true); got.Claim == nil {
 				t.Fatal("mismatched release cleared the claim")
 			}
-			if err := store.ReleaseClaim(ctx, admin, meta.CandidateID, first.Claim.ClaimedAt); err != nil {
+			if err := store.ReleaseClaim(ctx, admin, meta.CandidateID, first.Claim.Seq); err != nil {
 				t.Fatal(err)
 			}
 			got, _ := store.Read(ctx, admin, meta.CandidateID, true)
@@ -340,23 +339,25 @@ func TestCandidateFenceRejectsARevokedPublish(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			admin := publicationIdentity("tenant-a", "admin", "s-admin")
-			if err := store.FenceCandidate(ctx, admin, "cand-1", "t1"); err != nil {
-				t.Fatal(err)
+			t1, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
+			if err != nil || t1 != 1 {
+				t.Fatalf("first fence=%d err=%v", t1, err)
 			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", "t2"); !errors.Is(err, ErrConflict) {
+			if _, err := store.FenceCandidate(ctx, admin, "cand-1", 0); !errors.Is(err, ErrConflict) {
 				t.Fatalf("second live fence err=%v", err)
 			}
-			res, err := store.ResolveCandidate(ctx, admin, "cand-1", "t1")
+			res, err := store.ResolveCandidate(ctx, admin, "cand-1")
 			if err != nil || res.Applied {
 				t.Fatalf("resolve=%+v err=%v", res, err)
 			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", "t2"); err != nil {
-				t.Fatalf("new fence after revoke: %v", err)
+			t2, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
+			if err != nil || t2 != 2 {
+				t.Fatalf("new fence after revoke=%d err=%v", t2, err)
 			}
 			sk := publicationSkill("triage", "v1")
 			sk.Extra = map[string]any{CandidateMarkerKey: "cand-1"}
 			// The old acceptance's publish arrives late: refused at commit.
-			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "old", Name: "triage", Skill: sk, ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: "t1"}}); !errors.Is(err, ErrCandidateFenced) {
+			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "old", Name: "triage", Skill: sk, ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: t1}}); !errors.Is(err, ErrCandidateFenced) {
 				t.Fatalf("revoked publish err=%v", err)
 			}
 			if pubs, _ := store.List(ctx, admin); len(pubs) != 0 {
@@ -364,17 +365,17 @@ func TestCandidateFenceRejectsARevokedPublish(t *testing.T) {
 			}
 			// The live acceptance publishes once; a repeat by another caller is
 			// the same revision, never a second publication.
-			first, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "new", Name: "triage-2", Skill: withName(sk, "triage-2"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: "t2"}})
+			first, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "new", Name: "triage-2", Skill: withName(sk, "triage-2"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: t2}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			other := publicationIdentity("tenant-a", "admin2", "s-admin2")
-			again, _, err := store.Publish(ctx, other, PublishRequest{IdempotencyKey: "new", Name: "triage-2", Skill: withName(sk, "triage-2"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: "t2"}})
+			again, _, err := store.Publish(ctx, other, PublishRequest{IdempotencyKey: "new", Name: "triage-2", Skill: withName(sk, "triage-2"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: t2}})
 			if err != nil || again.PublicationID != first.PublicationID {
 				t.Fatalf("repeat=%+v err=%v", again, err)
 			}
 			// Once applied, resolution reports it and never revokes.
-			res, err = store.ResolveCandidate(ctx, admin, "cand-1", "t2")
+			res, err = store.ResolveCandidate(ctx, admin, "cand-1")
 			if err != nil || !res.Applied || res.Publication.PublicationID != first.PublicationID {
 				t.Fatalf("applied resolve=%+v err=%v", res, err)
 			}
@@ -424,49 +425,49 @@ func TestPublishRefusesReservedMarker(t *testing.T) {
 				t.Fatalf("planted marker on successor err=%v", err)
 			}
 			// A candidate publish naming another candidate is refused too.
-			if err := store.FenceCandidate(ctx, admin, "cand-2", "t"); err != nil {
+			tok, err := store.FenceCandidate(ctx, admin, "cand-2", 0)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "c", Name: "other", Skill: withName(planted, "other"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-2", Token: "t"}}); !errors.Is(err, ErrInvalidRequest) {
+			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "c", Name: "other", Skill: withName(planted, "other"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-2", Token: tok}}); !errors.Is(err, ErrInvalidRequest) {
 				t.Fatalf("foreign marker on candidate publish err=%v", err)
 			}
 			// Nothing planted means nothing to adopt.
-			if res, err := store.ResolveCandidate(ctx, admin, "cand-1", "t1"); err != nil || res.Applied {
+			if res, err := store.ResolveCandidate(ctx, admin, "cand-1"); err != nil || res.Applied {
 				t.Fatalf("resolve=%+v err=%v", res, err)
 			}
 		})
 	}
 }
 
-// Paused-accept regression at the store: a revoked token can never be
-// installed again, and tokens only move forward (memory and durable stores).
+// Paused-accept regression at the store: integer tokens; a revoked token is
+// permanent, a resume must present the exact live token, and a new
+// acceptance gets max(live, revoked)+1 (memory and durable stores).
 func TestCandidateFenceRevokedTokenIsPermanent(t *testing.T) {
 	for name, store := range fenceStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			admin := publicationIdentity("tenant-a", "admin", "s-admin")
-			// A rejection resolves the claim before the accept fenced.
-			if res, err := store.ResolveCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:01.000000000Z"); err != nil || res.Applied {
+			t1, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
+			if err != nil || t1 != 1 {
+				t.Fatalf("t1=%d err=%v", t1, err)
+			}
+			if again, err := store.FenceCandidate(ctx, admin, "cand-1", t1); err != nil || again != t1 {
+				t.Fatalf("resume=%d err=%v", again, err)
+			}
+			// A rejection resolves it before the paused accept resumes.
+			if res, err := store.ResolveCandidate(ctx, admin, "cand-1"); err != nil || res.Applied {
 				t.Fatalf("resolve=%+v err=%v", res, err)
 			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:01.000000000Z"); !errors.Is(err, ErrCandidateFenced) {
-				t.Fatalf("revoked token re-fenced: %v", err)
+			if _, err := store.FenceCandidate(ctx, admin, "cand-1", t1); !errors.Is(err, ErrCandidateFenced) {
+				t.Fatalf("revoked token resumed: %v", err)
 			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:00.000000000Z"); !errors.Is(err, ErrCandidateFenced) {
-				t.Fatalf("older token fenced: %v", err)
+			t2, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
+			if err != nil || t2 != t1+1 {
+				t.Fatalf("t2=%d err=%v", t2, err)
 			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:02.000000000Z"); err != nil {
-				t.Fatalf("newer token: %v", err)
-			}
-			// Resolving an older token never moves a newer revoked fence back.
-			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:02.000000000Z"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:01.000000000Z"); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:02.000000000Z"); !errors.Is(err, ErrCandidateFenced) {
-				t.Fatalf("revoked newer token re-fenced: %v", err)
+			if _, err := store.FenceCandidate(ctx, admin, "cand-1", t1); !errors.Is(err, ErrCandidateFenced) {
+				t.Fatalf("older token after newer: %v", err)
 			}
 		})
 	}
@@ -535,12 +536,80 @@ func TestPublicationUpgradeFromLegacyRecord(t *testing.T) {
 		t.Fatalf("successor on legacy record=%+v err=%v", succ, err)
 	}
 	// A candidate whose snapshot carries the legacy key publishes too.
-	if err := store.FenceCandidate(ctx, admin, "cand-1", "t"); err != nil {
+	tok, err := store.FenceCandidate(ctx, admin, "cand-1", 0)
+	if err != nil {
 		t.Fatal(err)
 	}
 	cand := publicationSkill("weekly", "v3")
 	cand.Extra = map[string]any{"_publication.source": "existing metadata", CandidateMarkerKey: "cand-1"}
-	if _, _, err := store.PublishSuccessor(ctx, admin, SuccessorRequest{IdempotencyKey: "c", PublicationID: succ.PublicationID, ExpectedGeneration: succ.Generation, ExpectedContentHash: succ.ContentHash, Skill: cand, Candidate: &CandidateFence{CandidateID: "cand-1", Token: "t"}}); err != nil {
+	if _, _, err := store.PublishSuccessor(ctx, admin, SuccessorRequest{IdempotencyKey: "c", PublicationID: succ.PublicationID, ExpectedGeneration: succ.Generation, ExpectedContentHash: succ.ContentHash, Skill: cand, Candidate: &CandidateFence{CandidateID: "cand-1", Token: tok}}); err != nil {
 		t.Fatalf("candidate successor with legacy key: %v", err)
+	}
+}
+
+// Fences survive a SQLite reopen mid-claim: the resume presents its exact
+// integer token and resolution still revokes it.
+func TestCandidateFenceSurvivesSQLiteReopen(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "reopen.sqlite")
+	admin := publicationIdentity("tenant-a", "admin", "s-admin")
+	open := func() (*StateStoreStore, func()) {
+		sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := NewStateStore(sq, "rt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st, func() { _ = sq.Close(ctx) }
+	}
+	first, closeFirst := open()
+	tok, err := first.FenceCandidate(ctx, admin, "cand-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeFirst()
+	second, closeSecond := open()
+	defer closeSecond()
+	if again, err := second.FenceCandidate(ctx, admin, "cand-1", tok); err != nil || again != tok {
+		t.Fatalf("resume after reopen=%d err=%v", again, err)
+	}
+	sk := publicationSkill("triage", "v1")
+	sk.Extra = map[string]any{CandidateMarkerKey: "cand-1"}
+	if _, _, err := second.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p", Name: "triage", Skill: sk, ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: tok}}); err != nil {
+		t.Fatalf("publish after reopen: %v", err)
+	}
+	if res, err := second.ResolveCandidate(ctx, admin, "cand-1"); err != nil || !res.Applied {
+		t.Fatalf("resolve after reopen=%+v err=%v", res, err)
+	}
+}
+
+// An interim build's string fence is legacy: ignored, so the candidate is
+// unfenced — revoked and resolvable — and a new acceptance fences normally.
+func TestCandidateFenceLegacyStringFenceIsResolvable(t *testing.T) {
+	sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "legacy-fence.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sq.Close(context.Background()) })
+	ctx := context.Background()
+	admin := publicationIdentity("tenant-a", "admin", "s-admin")
+	b, err := json.Marshal(map[string]any{"publications": []Publication{}, "candidate_fences": map[string]string{"cand-1": "2026-11-13T10:00:00.1Z"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sq.SaveIf(ctx, []state.SlotExpectation{{Identity: orgIdentity("tenant-a"), Kind: publicationOrgKind}}, state.StateRecord{ID: state.NewEventID(), Identity: orgIdentity("tenant-a"), Kind: publicationOrgKind, Bytes: b}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStateStore(sq, "rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := store.ResolveCandidate(ctx, admin, "cand-1"); err != nil || res.Applied {
+		t.Fatalf("legacy resolve=%+v err=%v", res, err)
+	}
+	if tok, err := store.FenceCandidate(ctx, admin, "cand-1", 0); err != nil || tok == 0 {
+		t.Fatalf("fence after legacy=%d err=%v", tok, err)
 	}
 }

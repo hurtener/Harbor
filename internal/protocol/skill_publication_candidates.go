@@ -195,13 +195,24 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		return &types.SkillPublicationCandidateAcceptResponse{Candidate: candidateToWire(candidateMeta(c)), Publication: metadataToWire(meta), Receipt: receiptToWire(receipt), ProtocolVersion: types.ProtocolVersion}, nil
 	}
 	claim := *c.Claim
-	token := claimToken(claim)
 	// Fence the publish with this claim: the publication store commits it
-	// only while this token is the candidate's live fence, in the same
-	// compare-and-set as the publish, and returns the revision the candidate
-	// already produced (any admin, any session, any generation) instead of
-	// writing again.
-	if err := s.store.FenceCandidate(ctx, caller, c.CandidateID, token); err != nil {
+	// only while this claim's integer token is the candidate's live fence, in
+	// the same compare-and-set as the publish, and returns the revision the
+	// candidate already produced (any admin, any session, any generation)
+	// instead of writing again. A resume presents its recorded token; a new
+	// claim is allocated max(live, revoked)+1 by the store.
+	token, err := s.store.FenceCandidate(ctx, caller, c.CandidateID, claim.FenceToken)
+	if err != nil && claim.FenceToken == 0 && stderrors.Is(err, publication.ErrConflict) && !stderrors.Is(err, publication.ErrCandidateFenced) && time.Since(claim.ClaimedAt) >= staleClaimAfter {
+		// This claim allocated a fence but crashed before recording it (or a
+		// leftover fence remains): once stale, resolve it and allocate anew.
+		if res, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID); rerr != nil {
+			return nil, mapPublicationError(method, fmt.Errorf("%w: %w", errStaleResolutionUnknown, rerr))
+		} else if res.Applied {
+			return s.finalizeResolved(ctx, method, caller, c.CandidateID, res)
+		}
+		token, err = s.store.FenceCandidate(ctx, caller, c.CandidateID, 0)
+	}
+	if err != nil {
 		if stderrors.Is(err, publication.ErrCandidateFenced) {
 			// This acceptance was resolved (revoked) while it paused: it can
 			// never publish. Its claim was already released by that resolution.
@@ -212,13 +223,23 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		}
 		return nil, mapPublicationError(method, err)
 	}
+	if claim.FenceToken == 0 {
+		if rerr := s.candidates.RecordClaimFence(ctx, caller, c.CandidateID, claim.Seq, token); rerr != nil {
+			// The claim changed while fencing: revoke what was installed.
+			if _, xerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID); xerr != nil {
+				return nil, mapPublicationError(method, xerr)
+			}
+			return nil, mapPublicationError(method, publication.ErrCandidateFenced)
+		}
+		claim.FenceToken = token
+	}
 	// The fence must belong to the claim that is still recorded: if a
 	// rejection, withdrawal or another acceptance resolved this claim while it
 	// paused, revoke what was just installed and stop.
 	if current, rerr := s.candidates.Read(ctx, caller, c.CandidateID, true); rerr != nil {
 		return nil, mapPublicationError(method, rerr)
-	} else if current.State != publication.CandidatePending || current.Claim == nil || !current.Claim.ClaimedAt.Equal(claim.ClaimedAt) {
-		if _, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID, token); rerr != nil {
+	} else if current.State != publication.CandidatePending || current.Claim == nil || current.Claim.Seq != claim.Seq {
+		if _, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID); rerr != nil {
 			return nil, mapPublicationError(method, rerr)
 		}
 		return nil, mapPublicationError(method, publication.ErrCandidateFenced)
@@ -259,13 +280,13 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		if definitivePublishFailure(err) {
 			// Release only once the store has PROVEN nothing applied (and
 			// revoked this claim's fence); otherwise keep the claim.
-			res, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID, token)
+			res, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID)
 			if rerr != nil {
 				return nil, mapPublicationError(method, err)
 			}
 			if res.Applied {
 				meta, prior, receipt, err = res.Publication, res.PriorContentHash, res.Receipt, nil
-			} else if rerr := s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.ClaimedAt); rerr != nil {
+			} else if rerr := s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.Seq); rerr != nil {
 				return nil, mapPublicationError(method, rerr)
 			}
 		}
@@ -295,10 +316,15 @@ const StaleClaimAfter = 2 * time.Minute
 // shorter than StaleClaimAfter so a stale claim never has a publish in flight.
 const AcceptPublishDeadline = 60 * time.Second
 
-// claimToken identifies one recorded acceptance for the publication fence.
-// Fixed width, so tokens compare (and only ever increase) as strings.
-func claimToken(claim publication.AcceptClaim) string {
-	return claim.ClaimedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
+// finalizeResolved finishes an acceptance whose publish is proven applied.
+func (s *SkillPublicationsSurface) finalizeResolved(ctx context.Context, method methods.Method, caller identity.Quadruple, candidateID string, res publication.CandidateResolution) (any, error) {
+	final, err := s.candidates.FinalizeAccept(ctx, caller, candidateID, publication.AcceptResult{
+		PublicationID: res.Publication.PublicationID, RevisionID: res.Publication.RevisionID, PriorContentHash: res.PriorContentHash, Receipt: res.Receipt,
+	})
+	if err != nil {
+		return nil, mapPublicationError(method, err)
+	}
+	return &types.SkillPublicationCandidateAcceptResponse{Candidate: candidateToWire(final), Publication: metadataToWire(res.Publication), Receipt: receiptToWire(res.Receipt), ProtocolVersion: types.ProtocolVersion}, nil
 }
 
 // errStaleResolutionUnknown means a stale acceptance could not be proven
@@ -339,7 +365,7 @@ func (s *SkillPublicationsSurface) clearStaleClaim(ctx context.Context, caller i
 	}
 	// Atomically: the revision the claim produced, or a revoked fence so its
 	// publish can never land. Any error is "unknown": keep the claim.
-	res, err := s.store.ResolveCandidate(ctx, caller, c.CandidateID, claimToken(claim))
+	res, err := s.store.ResolveCandidate(ctx, caller, c.CandidateID)
 	if err != nil {
 		return fmt.Errorf("%w: resolving a stale acceptance: %w", errStaleResolutionUnknown, err)
 	}
@@ -351,7 +377,7 @@ func (s *SkillPublicationsSurface) clearStaleClaim(ctx context.Context, caller i
 		}
 		return publication.ErrConflict
 	}
-	return s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.ClaimedAt)
+	return s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.Seq)
 }
 
 func markCandidate(skill skills.Skill, candidateID string) skills.Skill {

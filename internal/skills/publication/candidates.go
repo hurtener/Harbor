@@ -103,9 +103,15 @@ type AcceptClaim struct {
 	ExpectedPublicationContentHash string `json:"expected_publication_content_hash,omitempty"`
 	DecisionNote                   string `json:"decision_note,omitempty"`
 	ClaimedBy                      string `json:"claimed_by"`
-	// ClaimedAt identifies this claim: a release names it, so a release
-	// never clears a newer claim.
+	// ClaimedAt is the claim's age for the stale window only; it never
+	// orders or identifies claims.
 	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+	// Seq identifies this claim (per-candidate, monotonic): a release names
+	// it, so a release never clears a newer claim.
+	Seq uint64 `json:"seq,omitempty"`
+	// FenceToken is the publication-store fence allocated for this claim
+	// (0 until recorded). A resume presents exactly this token.
+	FenceToken uint64 `json:"fence_token,omitempty"`
 }
 
 // SameTarget reports whether two acceptances publish to the same place.
@@ -141,7 +147,9 @@ type Candidate struct {
 	RuntimeID           string         `json:"runtime_id"`
 	Skill               skills.Skill   `json:"skill"`
 	Claim               *AcceptClaim   `json:"claim,omitempty"`
-	AcceptReceipt       *Receipt       `json:"accept_receipt,omitempty"`
+	// ClaimSeq numbers this candidate's claims monotonically.
+	ClaimSeq      uint64   `json:"claim_seq,omitempty"`
+	AcceptReceipt *Receipt `json:"accept_receipt,omitempty"`
 }
 
 // CandidateMetadata is the content-free candidate projection.
@@ -240,11 +248,15 @@ type CandidateStore interface {
 	// identical outstanding claim for a resume, or the finalized candidate
 	// for an identical replay).
 	Claim(ctx context.Context, caller identity.Quadruple, candidateID string, expectedGeneration uint64, claim AcceptClaim) (Candidate, error)
-	// ReleaseClaim clears the claim recorded at claimedAt from a pending
+	// ReleaseClaim clears the claim numbered claimSeq from a pending
 	// candidate after a publish that definitively did not apply, so the
 	// candidate can be accepted differently, rejected or withdrawn. It is a
 	// no-op when that claim is no longer the recorded one.
-	ReleaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, claimedAt time.Time) error
+	ReleaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, claimSeq uint64) error
+	// RecordClaimFence stores the fence token allocated for the claim
+	// numbered claimSeq. It fails with ErrConflict when that claim is no
+	// longer the recorded one or already holds a different token.
+	RecordClaimFence(ctx context.Context, caller identity.Quadruple, candidateID string, claimSeq, token uint64) error
 	// FinalizeAccept marks a claimed candidate accepted with the result.
 	FinalizeAccept(ctx context.Context, caller identity.Quadruple, candidateID string, result AcceptResult) (CandidateMetadata, error)
 	// Decide applies a reject (privileged) or withdraw (submitter) transition.
@@ -645,6 +657,8 @@ func (s *candidateStore) Claim(ctx context.Context, caller identity.Quadruple, c
 	if c.State != CandidatePending || c.Generation != expectedGeneration {
 		return Candidate{}, ErrConflict
 	}
+	c.ClaimSeq++
+	claim.Seq, claim.FenceToken = c.ClaimSeq, 0
 	c.Claim = &claim
 	a.Candidates[i] = c
 	if err := s.backend.save(ctx, caller.TenantID, token, a); err != nil {
@@ -654,7 +668,7 @@ func (s *candidateStore) Claim(ctx context.Context, caller identity.Quadruple, c
 }
 
 // ReleaseClaim implements CandidateStore.
-func (s *candidateStore) ReleaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, claimedAt time.Time) error {
+func (s *candidateStore) ReleaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, claimSeq uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.open(ctx, caller); err != nil {
@@ -669,7 +683,7 @@ func (s *candidateStore) ReleaseClaim(ctx context.Context, caller identity.Quadr
 		return ErrCandidateNotFound
 	}
 	c := a.Candidates[i]
-	if c.State != CandidatePending || c.Claim == nil || !c.Claim.ClaimedAt.Equal(claimedAt) {
+	if c.State != CandidatePending || c.Claim == nil || c.Claim.Seq != claimSeq {
 		// Already released, superseded or finalized: nothing to release.
 		return nil
 	}
@@ -677,6 +691,41 @@ func (s *candidateStore) ReleaseClaim(ctx context.Context, caller identity.Quadr
 	c.UpdatedAt = s.clock().UTC()
 	a.Candidates[i] = c
 	return s.backend.save(ctx, caller.TenantID, token, a)
+}
+
+// RecordClaimFence implements CandidateStore.
+func (s *candidateStore) RecordClaimFence(ctx context.Context, caller identity.Quadruple, candidateID string, claimSeq, token uint64) error {
+	if token == 0 {
+		return fmt.Errorf("%w: fence token is required", ErrInvalidRequest)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.open(ctx, caller); err != nil {
+		return err
+	}
+	a, st, err := s.backend.load(ctx, caller.TenantID)
+	if err != nil {
+		return err
+	}
+	i, ok := findCandidate(a, strings.TrimSpace(candidateID))
+	if !ok {
+		return ErrCandidateNotFound
+	}
+	c := a.Candidates[i]
+	if c.State != CandidatePending || c.Claim == nil || c.Claim.Seq != claimSeq {
+		return ErrConflict
+	}
+	if c.Claim.FenceToken == token {
+		return nil
+	}
+	if c.Claim.FenceToken != 0 {
+		return ErrConflict
+	}
+	claim := *c.Claim
+	claim.FenceToken = token
+	c.Claim = &claim
+	a.Candidates[i] = c
+	return s.backend.save(ctx, caller.TenantID, st, a)
 }
 
 // FinalizeAccept implements CandidateStore.

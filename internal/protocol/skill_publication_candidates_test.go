@@ -3,6 +3,10 @@ package protocol_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/hurtener/Harbor/internal/config"
+	sqlitedriver "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -509,11 +513,11 @@ type unknownResolution struct {
 	fail bool
 }
 
-func (u *unknownResolution) ResolveCandidate(ctx context.Context, caller identity.Quadruple, id, token string) (publication.CandidateResolution, error) {
+func (u *unknownResolution) ResolveCandidate(ctx context.Context, caller identity.Quadruple, id string) (publication.CandidateResolution, error) {
 	if u.fail {
 		return publication.CandidateResolution{}, errors.New("simulated catalog read failure")
 	}
-	return u.Store.ResolveCandidate(ctx, caller, id, token)
+	return u.Store.ResolveCandidate(ctx, caller, id)
 }
 
 // A stale claim whose publish applied is never released on an unknown
@@ -597,8 +601,11 @@ func TestCandidates_RevokedStaleClaimCannotLandLater(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	staleToken := claimed.Claim.ClaimedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
-	if err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, staleToken); err != nil {
+	staleToken, err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := candidates.RecordClaimFence(admin, publicationTestIdentity("admin"), id, claimed.Claim.Seq, staleToken); err != nil {
 		t.Fatal(err)
 	}
 	// Another admin accepts under another name: the stale claim is resolved.
@@ -645,13 +652,20 @@ func TestCandidates_PausedAcceptCannotFenceAfterReject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := claimed.Claim.ClaimedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
+	// It had allocated and recorded its fence just before pausing.
+	token, err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := candidates.RecordClaimFence(admin, publicationTestIdentity("admin"), id, claimed.Claim.Seq, token); err != nil {
+		t.Fatal(err)
+	}
 	// Meanwhile a rejection resolves the stale claim and rejects.
 	if _, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesReject, &types.SkillPublicationCandidateRejectRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, DecisionNote: "no", IdempotencyKey: "r"}); err != nil {
 		t.Fatalf("reject: %v", err)
 	}
 	// The accept resumes: its fence is refused and its publish never lands.
-	if err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, token); !errors.Is(err, publication.ErrCandidateFenced) {
+	if _, err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, token); !errors.Is(err, publication.ErrCandidateFenced) {
 		t.Fatalf("resumed fence err=%v", err)
 	}
 	sk := skills.Skill{Name: "triage", Trigger: "when", Steps: []string{"v1"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser, Extra: map[string]any{publication.CandidateMarkerKey: id}}
@@ -664,5 +678,130 @@ func TestCandidates_PausedAcceptCannotFenceAfterReject(t *testing.T) {
 	c, _ := candidates.Read(admin, publicationTestIdentity("admin"), id, true)
 	if c.State != publication.CandidateRejected {
 		t.Fatalf("candidate=%+v", c)
+	}
+}
+
+// Fence ordering never depends on wall clocks: with an equal or a backward
+// clock, a failed acceptance is released and a new one still proceeds.
+func TestCandidates_FenceOrderingIgnoresTheClock(t *testing.T) {
+	base := time.Now().Add(-time.Hour)
+	for name, clock := range map[string]func() func() time.Time{
+		"equal": func() func() time.Time { return func() time.Time { return base } },
+		"backward": func() func() time.Time {
+			var mu sync.Mutex
+			n := 0
+			return func() time.Time {
+				mu.Lock()
+				defer mu.Unlock()
+				n++
+				return base.Add(-time.Duration(n) * time.Minute)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := publication.NewMemoryStore("runtime-a")
+			store, err := publication.NewAuthorizedStore(raw, auth.NewAgentReachAuthorizer())
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidates := publication.NewMemoryCandidateStoreWithClock("runtime-a", clock())
+			snap := protocol.PersonalSkillSnapshotFunc(func(_ context.Context, _, name string) (skills.Skill, string, int, error) {
+				return skills.Skill{Name: name, Trigger: "when", Steps: []string{"v1"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser}, "", 0, nil
+			})
+			surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store, Candidates: candidates, Snapshots: snap})
+			if err != nil {
+				t.Fatal(err)
+			}
+			admin := candAdminCtx(t, "admin")
+			if _, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsPublish, &types.SkillPublicationPublishRequest{Identity: candID("admin"), Name: "triage", Skill: types.SkillPublicationSkill{Name: "triage", Trigger: "when", Steps: []string{"org"}}, IdempotencyKey: "p", ExpectedAbsent: true}); err != nil {
+				t.Fatal(err)
+			}
+			sub, err := surface.Dispatch(candUserCtx(t, "alice"), methods.MethodSkillsPublicationsCandidatesSubmit, &types.SkillPublicationCandidateSubmitRequest{Identity: candID("alice"), AgentID: "agent-a", Name: "triage", IdempotencyKey: "k"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := sub.(*types.SkillPublicationCandidateSubmitResponse).Candidate.CandidateID
+			accept := func(name, key string) error {
+				_, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, Mode: "new", Name: name, IdempotencyKey: key})
+				return err
+			}
+			for i := 0; i < 3; i++ {
+				if err := accept("", fmt.Sprintf("clash-%d", i)); candCode(err) != protoerrors.CodeSkillPublicationConflict {
+					t.Fatalf("clash %d err=%v", i, err)
+				}
+			}
+			if err := accept("triage-alice", "ok"); err != nil {
+				t.Fatalf("accept after clashes with %s clock: %v", name, err)
+			}
+		})
+	}
+}
+
+// A same-target retry after a restart resumes the recorded claim with its
+// exact integer fence and adopts the publish that already applied.
+func TestCandidates_SameTargetRetryAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	type runtime struct {
+		surface    *protocol.SkillPublicationsSurface
+		store      publication.Store
+		candidates publication.CandidateStore
+		close      func()
+	}
+	boot := func(failFinalize bool) runtime {
+		sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(dir, "runtime.sqlite")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pubs, err := publication.NewStateStore(sq, "runtime-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		store, err := publication.NewAuthorizedStore(pubs, auth.NewAgentReachAuthorizer())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cands publication.CandidateStore
+		cands, err = publication.NewStateStoreCandidateStore(sq, "runtime-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if failFinalize {
+			cands = &flakyFinalize{CandidateStore: cands}
+		}
+		snap := protocol.PersonalSkillSnapshotFunc(func(_ context.Context, _, name string) (skills.Skill, string, int, error) {
+			return skills.Skill{Name: name, Trigger: "when", Steps: []string{"v1"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser}, "", 0, nil
+		})
+		surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store, Candidates: cands, Snapshots: snap})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runtime{surface: surface, store: store, candidates: cands, close: func() { _ = sq.Close(ctx) }}
+	}
+	first := boot(true)
+	sub, err := first.surface.Dispatch(candUserCtx(t, "alice"), methods.MethodSkillsPublicationsCandidatesSubmit, &types.SkillPublicationCandidateSubmitRequest{Identity: candID("alice"), AgentID: "agent-a", Name: "triage", IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sub.(*types.SkillPublicationCandidateSubmitResponse).Candidate.CandidateID
+	req := &types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, Mode: "new", IdempotencyKey: "a"}
+	if _, err := first.surface.Dispatch(candAdminCtx(t, "admin"), methods.MethodSkillsPublicationsCandidatesAccept, req); err == nil {
+		t.Fatal("first accept should fail at finalize")
+	}
+	first.close()
+
+	second := boot(false)
+	defer second.close()
+	req.Identity = candID("admin2")
+	resp, err := second.surface.Dispatch(candAdminCtx(t, "admin2"), methods.MethodSkillsPublicationsCandidatesAccept, req)
+	if err != nil {
+		t.Fatalf("retry after restart: %v", err)
+	}
+	if got := resp.(*types.SkillPublicationCandidateAcceptResponse); got.Candidate.State != "accepted" {
+		t.Fatalf("after restart=%+v", got.Candidate)
+	}
+	pubs, _ := second.store.List(candAdminCtx(t, "admin2"), publicationTestIdentity("admin2"))
+	if len(pubs) != 1 {
+		t.Fatalf("publications=%+v want exactly one", pubs)
 	}
 }
