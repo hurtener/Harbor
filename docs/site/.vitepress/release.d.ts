@@ -1,4 +1,4 @@
-// Injected by config.ts (vite `define`) from CHANGELOG.md at build time.
+// Injected by config.ts (vite `define`) at build time.
 declare const __HARBOR_RELEASE__: {
   version: string;
   short: string;
@@ -6,4 +6,17 @@ declare const __HARBOR_RELEASE__: {
   summary: string;
   eyebrow: string;
   announcement: string;
+  recent: {
+    version: string;
+    date: string;
+    summary: string;
+    items: { title: string; body: string }[];
+  }[];
+};
+
+declare const __HARBOR_FACTS__: {
+  protocolMethods: number;
+  cliCommands: number;
+  operatorSkills: number;
+  recipes: number;
 };

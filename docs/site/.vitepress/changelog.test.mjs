@@ -41,6 +41,9 @@ test("summary joins bold lead phrases and strips markdown", () => {
     ].join("\n"),
   );
   assert.equal(r.version, "2.3.4");
+  assert.deepEqual(r.recent.map((x) => x.version), ["2.3.4", "2.3.3"]);
+  assert.deepEqual(r.recent[0].items[0], { title: "foo.bar keeps state across restarts", body: "Details." });
+  assert.equal(r.recent[1].summary, "Older");
   assert.equal(r.summary, "foo.bar keeps state across restarts; faster rollups for all agent_packs.copy");
   assert.equal(r.announcement, "v2.3.4 just shipped — foo.bar keeps state across restarts; faster rollups for all agent_packs.copy");
 });
