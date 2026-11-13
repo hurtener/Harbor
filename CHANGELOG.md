@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.48.0] — 2026-11-13
+
+### Added
+
+- **`agent_read_reach` bearer claim (D-505).** Optional, same shape as
+  `agent_reach`. `sessions.turns.list` / `sessions.turns.get` serve rows of
+  the agents it names without letting the bearer select them; start, steer
+  and every other agent-addressed call still need `agent_reach`. A non-empty
+  value requires a non-empty `session_reach`. No migration.
+
 ## [1.47.1] — 2026-11-13
 
 ### Fixed
