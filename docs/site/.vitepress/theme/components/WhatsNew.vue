@@ -11,14 +11,14 @@ import Section from "./Section.vue";
         <h2 class="hb-new__title">{{ w.headline }}</h2>
         <span class="hb-new__date">{{ w.date }}</span>
       </div>
-      <ul class="hb-new__list">
-        <li v-for="b in w.bullets" :key="b.title">
+      <ul class="hb-new__list" v-reveal data-stagger>
+        <li v-for="(b, i) in w.bullets" :key="b.title" :style="{ '--hb-i': i }">
           <h3>{{ b.title }}</h3>
           <p v-if="b.body">{{ b.body }}</p>
         </li>
       </ul>
-      <dl v-if="w.earlier.length" class="hb-new__earlier">
-        <div v-for="e in w.earlier" :key="e.version">
+      <dl v-if="w.earlier.length" class="hb-new__earlier" v-reveal data-stagger>
+        <div v-for="(e, i) in w.earlier" :key="e.version" :style="{ '--hb-i': i }">
           <dt>{{ e.version }}</dt>
           <dd>{{ e.summary }}</dd>
         </div>

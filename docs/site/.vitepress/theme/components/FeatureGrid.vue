@@ -14,8 +14,13 @@ defineProps<{
 
 <template>
   <Section :id="id" :eyebrow="eyebrow" :headline="headline" :sub="sub" :alt="alt">
-    <div class="hb-grid" v-reveal>
-      <article v-for="t in tiles" :key="t.title" class="hb-tile">
+    <div class="hb-grid" v-reveal data-stagger>
+      <article
+        v-for="(t, i) in tiles"
+        :key="t.title"
+        class="hb-tile"
+        :style="{ '--hb-i': i }"
+      >
         <span v-if="t.kicker" class="hb-tile__kicker">{{ t.kicker }}</span>
         <span v-else class="hb-tile__mark" aria-hidden="true"></span>
         <h3 class="hb-tile__title">

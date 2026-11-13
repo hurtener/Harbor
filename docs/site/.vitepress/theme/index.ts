@@ -15,11 +15,15 @@ import "./styles/landing.css";
 
 // v-reveal: a scroll-into-view fade. SSR-safe — the server-rendered HTML stays
 // visible (good for no-JS + SEO); the hidden state is only applied on the
-// client for elements that start below the fold, so above-the-fold content
-// never flashes. Honors prefers-reduced-motion via CSS in landing.css.
+// client, behind the `hb-reveal` root class this directive sets, and only for
+// elements that start below the fold, so above-the-fold content never
+// flashes. A container marked `data-stagger` also reveals its direct children
+// in sequence (index from the `--hb-i` custom property). Honors
+// prefers-reduced-motion here and via CSS in landing.css.
 const reveal: Directive<HTMLElement> = {
   mounted(el) {
     if (typeof IntersectionObserver === "undefined") return;
+    document.documentElement.classList.add("hb-reveal");
     const reduced =
       typeof matchMedia !== "undefined" &&
       matchMedia("(prefers-reduced-motion: reduce)").matches;
