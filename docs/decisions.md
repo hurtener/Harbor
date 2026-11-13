@@ -17032,3 +17032,34 @@ agent. No schema or wire-type change; old issuers are unaffected.
 
 **Cross-references:** D-397.
 
+
+## D-506 — Same-runtime pack copy carries package-backed items
+
+**Date:** 2026-11-13
+
+**Decision.** `agent_packs.copy` copies a package-backed item with its exact
+`package_hash` instead of refusing it. Before anything is reserved or
+published, the copy checks that the source agent holds an installed package
+at exactly the referenced hash (otherwise `invalid`). After every successful
+outcome (fresh, no-op or replay), each copied package-backed item that the
+target's active revision carries is made resolvable: the source agent's
+installed package at that hash is written under the target agent's own
+control-plane key (skill re-keyed to the target), conditionally and
+idempotently, never over a package another item now references. The copy then
+releases target packages that no item references, so deselecting a copied
+item drops its package. A source that no longer holds the referenced hash
+fails closed; the next copy carries the current package. A support-file-only
+change (same skill body, new `package_hash`) is a change, not a no-op.
+
+Inspection now keeps `package_hash` on revision-layer and revision-only
+effective items. Previously the effective view rebuilt items from the skill
+body and dropped it, so the D-496 refusal never fired: a copy silently carried
+the body without its package, and the item's support files did not resolve on
+the target.
+
+**Why.** An operator copying an agent's skills onto another agent of the same
+runtime expects the whole skill, support files included. The installed package
+already lives in this runtime; copying it keeps the target independent of the
+source agent's later edits or retirement. No schema change, no new wire field.
+
+**Cross-references:** D-496.
