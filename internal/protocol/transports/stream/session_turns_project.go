@@ -117,6 +117,7 @@ func projectSessionTurnRow(row turns.TurnRow) types.SessionTurnRow {
 		ErrorMessage:        row.ErrorMessage,
 		Agent:               projectSessionTurnAgent(row.Agent),
 		Query:               projectSessionTurnQuery(row.Query),
+		Participant:         projectSessionTurnParticipant(row.Participant),
 		Answer:              projectSessionTurnAnswer(row.Answer),
 		Pause:               projectSessionTurnPause(row.Pause),
 		Inputs:              inputs,
@@ -318,4 +319,11 @@ func projectSessionOpsTurnRow(row turns.OpsTurnRow) types.SessionOpsTurnRow {
 		Pause:               projectSessionTurnPause(row.Pause),
 		LastAppliedEventSeq: row.LastAppliedEventSeq,
 	}
+}
+
+func projectSessionTurnParticipant(p *turns.Participant) *types.SessionTurnParticipant {
+	if p == nil {
+		return nil
+	}
+	return &types.SessionTurnParticipant{UserID: p.UserID, Speaker: p.Speaker}
 }

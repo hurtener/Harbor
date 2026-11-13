@@ -17,6 +17,35 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.52.0] — 2026-11-13
+
+### Added
+
+- **Session participants (D-509).** An issuer may sign two optional claims:
+  `session_owner` lets a bearer for another user of the same tenant take part
+  in that owner's one session (it requires `session_reach` naming exactly
+  that session and no elevated scope), and `speaker` labels the writer. The
+  session's storage, transcript, events and artifacts stay in the owner's
+  partition; each turn records its writer (`Task.Participant`, the
+  `participant` field on session turn rows, `ParticipantUserID` on
+  `task.spawned`). No schema migration.
+- **Each turn acts as its writer (D-509).** Every user-keyed outbound call on
+  a participant's turn uses the writer's identity: token-exchange subjects
+  (with `session_owner` for the broker), provider-route select/resolve
+  requests (`session_owner` on the wire), external inference grants and usage
+  receipts, governance budgets and rate limits, MCP credential injection,
+  connect preparation, `_meta` identity stamps and server visibility, A2A
+  identity, user-scope signed capabilities and user-layer configuration. The
+  planner names the writer of each request as a quoted display-name label,
+  including on retained historical requests.
+- **Participant turns stay narrow (D-509).** Personal skills (the owner's and
+  the session's) are hidden on a participant's turn; a participant's
+  `artifacts.put` is pinned to its session and audited with
+  `ParticipantUserID`. A participant bearer may call only `start` (existing
+  sessions only), steering of its own runs, `events`,
+  `sessions.turns.list/get` and `artifacts.get/put`. Only the writer of a run
+  (or an admin) can steer it.
+
 ## [1.51.0] — 2026-11-13
 
 ### Added

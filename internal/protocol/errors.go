@@ -111,6 +111,11 @@ var (
 	// a different (tenant, user). Cross-principal session-id reuse is
 	// rejected. Maps to CodeInvalidRequest.
 	ErrSessionIDReuse = stderrors.New("protocol: session id reused across principals")
+	// ErrSessionParticipantNoSession — a session participant (a bearer
+	// acting inside another user's session) named a session that does not
+	// exist in the owner's partition. Participants never create sessions.
+	// Maps to CodeScopeMismatch.
+	ErrSessionParticipantNoSession = stderrors.New("protocol: session participant requires an existing session")
 )
 
 // mapSessionEnsureError translates a SessionEnsurer error into a stable
@@ -134,6 +139,10 @@ func mapSessionEnsureError(method string, err error) *protoerrors.Error {
 	case stderrors.Is(err, ErrSessionIDReuse):
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: session id is already in use by a different tenant/user", method)
+
+	case stderrors.Is(err, ErrSessionParticipantNoSession):
+		return protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: a session participant can only take part in an existing session", method)
 
 	default:
 		return protoerrors.Newf(protoerrors.CodeRuntimeError,

@@ -287,10 +287,10 @@ func (r *RateLimiter) persistLocked(ctx context.Context, q identity.Quadruple, k
 func (r *RateLimiter) emitRateLimited(ctx context.Context, q identity.Quadruple, tier, model string, requested, available int, cfg RateLimitConfig, now time.Time) {
 	_ = r.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit; bus failure doesn't change the rate-limit decision
 		Type:       EventTypeRateLimited,
-		Identity:   q,
+		Identity:   eventQuad(ctx, q),
 		OccurredAt: now,
 		Payload: RateLimitedPayload{
-			Identity:     q,
+			Identity:     eventQuad(ctx, q),
 			Tier:         tier,
 			Model:        model,
 			Requested:    requested,

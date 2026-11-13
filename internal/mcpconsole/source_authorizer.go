@@ -122,7 +122,9 @@ func (a *SourceAuthorizer) VisibleRegistration(ctx context.Context, _ tools.Tool
 	if owner.Scope() == auth.ScopeBootGlobal {
 		return true, nil
 	}
-	id, _ := identity.From(ctx)
+	// Visibility is evaluated for the ACTING user: a session participant
+	// sees its own user-scoped servers, never the partition owner's.
+	id, _, _ := identity.ActingFrom(ctx)
 	if !owner.AllowsPrincipal(id.TenantID, id.UserID) {
 		return false, nil
 	}

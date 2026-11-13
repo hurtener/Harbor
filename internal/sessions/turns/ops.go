@@ -52,7 +52,7 @@ import "time"
 // operations-safe READ projection (OpsTurnRow / AppOpsRef) are pinned
 // so their shapes stay deliberate.
 var opsFieldSet = map[string][]string{
-	"Append":         {"TurnID", "TaskID", "RunID", "Query", "QueryAt", "AgentID", "AgentName", "AgentBindingSource", "Status", "StartedAt", "Activity", "Inputs", "Outputs", "Pause", "EventSeq"},
+	"Append":         {"TurnID", "TaskID", "RunID", "Query", "QueryAt", "AgentID", "AgentName", "AgentBindingSource", "Participant", "Status", "StartedAt", "Activity", "Inputs", "Outputs", "Pause", "EventSeq"},
 	"Update":         {"Status", "Answer", "Usage", "Activity", "Inputs", "Outputs", "Pause", "EventSeq"},
 	"Seal":           {"Status", "FinishReason", "ErrorClass", "FinishMessage", "ErrorMessage", "FinishedAt", "EventSeq"},
 	"ReasoningInput": {"Steps", "EventSeq"},
@@ -70,9 +70,10 @@ var opsFieldSet = map[string][]string{
 	"AppRefKey":      {"EffectiveAgentID", "ServerID", "ResourceURI"},
 	"Agent":          {"ID", "Name", "BindingSource", "Complete"},
 	"Query":          {"Text", "At", "Complete"},
+	"Participant":    {"UserID", "Speaker"},
 	"AnswerRef":      {"ID", "MimeType", "SizeBytes", "Filename", "SHA256"},
 	"Pause":          {"Class", "Reason", "Lifecycle", "Availability"},
-	"TurnRow":        {"TurnID", "TaskID", "RunID", "SessionID", "Sequence", "TieBreaker", "Status", "Sealed", "Version", "LastAppliedEventSeq", "StartedAt", "UpdatedAt", "FinishedAt", "FinishReason", "ErrorClass", "FinishMessage", "ErrorMessage", "Agent", "Query", "Answer", "Pause", "Inputs", "Outputs", "Usage", "Reasoning", "Activity", "Apps"},
+	"TurnRow":        {"TurnID", "TaskID", "RunID", "SessionID", "Sequence", "TieBreaker", "Status", "Sealed", "Version", "LastAppliedEventSeq", "StartedAt", "UpdatedAt", "FinishedAt", "FinishReason", "ErrorClass", "FinishMessage", "ErrorMessage", "Agent", "Query", "Participant", "Answer", "Pause", "Inputs", "Outputs", "Usage", "Reasoning", "Activity", "Apps"},
 	"OpsTurnRow":     {"TurnID", "TaskID", "RunID", "SessionID", "Sequence", "TieBreaker", "Status", "Sealed", "Version", "StartedAt", "UpdatedAt", "FinishedAt", "FinishReason", "ErrorClass", "FinishMessage", "ErrorMessage", "AgentID", "AgentName", "AgentBindingSource", "Usage", "Activity", "ReasoningSteps", "Inputs", "Outputs", "Apps", "Pause", "LastAppliedEventSeq"},
 	"AppOpsRef":      {"EffectiveAgentID", "ServerID", "ToolName", "Availability"},
 }
@@ -118,6 +119,9 @@ type Append struct {
 	// derives unknown — defaulted must be reported explicitly by the
 	// runtime.
 	AgentBindingSource AgentBindingSource
+	// Participant is the turn's writer in a multi-participant session
+	// (nil for ordinary turns).
+	Participant *Participant
 	// Status is the initial mutable lifecycle state: StatusPending,
 	// StatusRunning (default when empty), or StatusPaused. A terminal
 	// status here is invalid (ErrInvalidStatus) — terminal rows are

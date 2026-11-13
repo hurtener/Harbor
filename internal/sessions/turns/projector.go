@@ -255,13 +255,14 @@ func (p *Projector) Append(ctx context.Context, id identity.Identity, a Append) 
 			At:       queryAt,
 			Complete: queryCompleteness(a.Query),
 		},
-		Answer:    Answer{State: AnswerStateUnavailable, Complete: CompletenessUnavailable},
-		Pause:     pause,
-		Usage:     initialUsage,
-		Reasoning: Reasoning{Complete: CompletenessUnavailable},
-		Inputs:    inputs,
-		Outputs:   outputs,
-		Apps:      nil,
+		Participant: cloneParticipant(a.Participant),
+		Answer:      Answer{State: AnswerStateUnavailable, Complete: CompletenessUnavailable},
+		Pause:       pause,
+		Usage:       initialUsage,
+		Reasoning:   Reasoning{Complete: CompletenessUnavailable},
+		Inputs:      inputs,
+		Outputs:     outputs,
+		Apps:        nil,
 	}
 	row.Activity = activity
 	stored, err := p.store.AppendTurnIf(ctx, id, row)
@@ -1479,4 +1480,12 @@ func normalizeAppRef(ref AppRef, i int) (AppRef, error) {
 		return AppRef{}, fmt.Errorf("%w: app ref %d completeness %q", ErrInvalidInput, i, ref.Complete)
 	}
 	return ref, nil
+}
+
+func cloneParticipant(p *Participant) *Participant {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
 }

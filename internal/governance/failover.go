@@ -277,10 +277,10 @@ func (p *chainFailoverPolicy) emitFailover(ctx context.Context, quad identity.Qu
 	now := p.clock.Now()
 	_ = p.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit; bus failure doesn't change the walk (see doc above)
 		Type:       EventTypeFailover,
-		Identity:   quad,
+		Identity:   eventQuad(ctx, quad),
 		OccurredAt: now,
 		Payload: GovernanceFailoverPayload{
-			Identity:     quad,
+			Identity:     eventQuad(ctx, quad),
 			FromProvider: from,
 			ToProvider:   to,
 			HopIndex:     hopIndex,

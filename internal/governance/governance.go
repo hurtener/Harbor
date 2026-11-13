@@ -220,16 +220,22 @@ func (c Config) clock() Clock {
 // identityFromCtx is the canonical ctx → identity.Identity gate. Missing
 // identity returns wrapped `ErrIdentityRequired`. Governance is
 // identity-mandatory (AGENTS.md §6 rule 9): the wrapper fails closed.
+//
+// The returned identity is the ACTING identity: in a multi-participant
+// session the writer's user replaces the partition user, so per-user tiers,
+// budgets and rate limits are the writer's own. Events stay in the session
+// partition (eventQuad).
 func identityFromCtx(ctx context.Context) (identity.Identity, error) {
 	id, ok := identity.From(ctx)
 	if !ok {
 		// Try the quadruple key too — some upstream callers attach
 		// only the quadruple. Either path is acceptable.
 		if q, ok := identity.QuadrupleFrom(ctx); ok {
-			return q.Identity, nil
+			return actingUser(ctx, q.Identity), nil
 		}
 		return identity.Identity{}, fmt.Errorf("%w: no identity in ctx", ErrIdentityRequired)
 	}
+	id = actingUser(ctx, id)
 	if err := identity.Validate(id); err != nil {
 		return identity.Identity{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
@@ -244,6 +250,7 @@ func quadrupleFromCtx(ctx context.Context) (identity.Quadruple, error) {
 		if err := identity.Validate(q.Identity); err != nil {
 			return identity.Quadruple{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 		}
+		q.Identity = actingUser(ctx, q.Identity)
 		return q, nil
 	}
 	id, err := identityFromCtx(ctx)
@@ -251,6 +258,29 @@ func quadrupleFromCtx(ctx context.Context) (identity.Quadruple, error) {
 		return identity.Quadruple{}, err
 	}
 	return identity.Quadruple{Identity: id}, nil
+}
+
+// actingUser replaces the partition user with a seated session participant
+// writing inside that partition.
+func actingUser(ctx context.Context, partition identity.Identity) identity.Identity {
+	if p, ok := identity.ParticipantFrom(ctx); ok && p.IsGuest(partition) {
+		partition.UserID = p.UserID
+	}
+	return partition
+}
+
+// eventQuad maps an acting (keying) quadruple back to the session partition
+// for event publication, so governance events reach the session's
+// subscribers. Identity for ordinary runs.
+func eventQuad(ctx context.Context, q identity.Quadruple) identity.Quadruple {
+	if p, ok := identity.ParticipantFrom(ctx); ok && p.UserID == q.UserID {
+		if partition, ok := identity.From(ctx); ok && partition.TenantID == q.TenantID && partition.SessionID == q.SessionID {
+			q.UserID = partition.UserID
+		} else if pq, ok := identity.QuadrupleFrom(ctx); ok && pq.TenantID == q.TenantID && pq.SessionID == q.SessionID {
+			q.UserID = pq.UserID
+		}
+	}
+	return q
 }
 
 // quadKey is the comparable map key shape for an identity quadruple.

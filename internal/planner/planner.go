@@ -117,6 +117,12 @@ type RunContext struct {
 	// at run start; never mutated.
 	Query string
 
+	// Speaker is the optional display label of the person who wrote this
+	// turn in a multi-participant session. Empty for ordinary runs; when
+	// set, the prompt names the writer of the current request so the model
+	// can tell the people sharing one session apart.
+	Speaker string
+
 	// Goal is the current planner-visible goal. May be redirected by
 	// a REDIRECT control signal; the Runtime updates the field
 	// between planner steps.

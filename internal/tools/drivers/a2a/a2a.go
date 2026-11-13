@@ -242,7 +242,9 @@ func (p *Provider) buildDescriptor(skill a2atypes.AgentSkill) tools.ToolDescript
 // invoke is the inner-most call: build the A2A Message, dispatch via
 // the wire transport, surface the resulting Task as ToolResult.
 func (p *Provider) invoke(ctx context.Context, skillID string, args json.RawMessage) (tools.ToolResult, error) {
-	id, ok := identity.From(ctx)
+	// The stamped user is the ACTING user (a session participant writing in
+	// another user's session), consistent with the MCP identity stamp.
+	id, _, ok := identity.ActingFrom(ctx)
 	if !ok {
 		return tools.ToolResult{}, fmt.Errorf("tools/a2a.invoke: identity required")
 	}

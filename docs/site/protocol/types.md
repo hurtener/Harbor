@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 496 canonical Harbor Protocol wire types, generated from the single-source
+The 497 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -4332,6 +4332,15 @@ Declared in `internal/protocol/types`.
 | `snapshot_id` | `uint64` |  |
 | `as_of` | `time.Time` |  |
 
+## SessionTurnParticipant
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `user_id` | `string` |  |
+| `speaker` | `string` | optional (`omitempty`) |
+
 ## SessionTurnPause
 
 Declared in `internal/protocol/types`.
@@ -4398,6 +4407,7 @@ Declared in `internal/protocol/types`.
 | `error_message` | `string` | optional (`omitempty`) |
 | `agent` | `types.SessionTurnAgent` — see [`SessionTurnAgent`](./types.md#sessionturnagent) |  |
 | `query` | `types.SessionTurnQuery` — see [`SessionTurnQuery`](./types.md#sessionturnquery) |  |
+| `participant` | `*types.SessionTurnParticipant` — see [`SessionTurnParticipant`](./types.md#sessionturnparticipant) | optional (`omitempty`) |
 | `answer` | `types.SessionTurnAnswer` — see [`SessionTurnAnswer`](./types.md#sessionturnanswer) |  |
 | `pause` | `types.SessionTurnPause` — see [`SessionTurnPause`](./types.md#sessionturnpause) |  |
 | `inputs` | `[]types.SessionTurnAttachment` — see [`SessionTurnAttachment`](./types.md#sessionturnattachment) | optional (`omitempty`) |

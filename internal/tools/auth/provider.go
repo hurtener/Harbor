@@ -211,6 +211,13 @@ func (p *Provider) Token(ctx context.Context, source tools.ToolSourceID) (Token,
 	if !ok {
 		return Token{}, fmt.Errorf("%w: no OAuthConfig for source %q", ErrConfigInvalid, source)
 	}
+	// The interactive provider stores user-bound tokens and parks consent
+	// in the session partition, so it cannot act as a participant writing
+	// in another user's session. Fail closed rather than hand the writer
+	// the partition owner's credential.
+	if part, ok := identity.ParticipantFrom(ctx); ok && part.IsGuest(id) && cfg.BindingScope == ScopeUser {
+		return Token{}, wrap(ErrParticipantUnsupported, "source %q", source)
+	}
 	subj := cfg.SubjectID(id)
 	if subj == "" {
 		return Token{}, wrap(ErrConfigInvalid, "subject empty for scope %s (ctx user=%q, cfg agent=%q)",

@@ -1140,3 +1140,59 @@ func TestSessionSkillResolver_OperatorTierConcurrentReuse(t *testing.T) {
 	}
 	assertGoroutinesRestored(t, baseline)
 }
+
+// A turn written by a session participant never sees the partition owner's
+// personal skills (user rung or session tier); shared skills remain, and the
+// owner's own turn still sees everything.
+func TestSessionSkillResolver_ExcludePersonalForParticipantTurns(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-participant")
+	id.RunID = "run-participant"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyID := id
+	legacyID.RunID = ""
+	if err := st.Save(context.Background(), legacyCandidate(t, legacyID, "agent-a", "legacy")); err != nil {
+		t.Fatal(err)
+	}
+	base := &resolverReader{}
+	for _, skill := range []skills.Skill{
+		resolverSkill(id, "admin", skills.ScopeGlobal),
+		resolverSkill(id, "user", skills.ScopeUser),
+		resolverSkill(id, "legacy", skills.ScopeSession),
+	} {
+		base.add(id, skill)
+	}
+	membership := sessionoverlay.SessionSkillMembership{AdminMembershipSet: true, AdminNames: []string{"admin", "user"}, UserPersonalNames: []string{"user"}}
+	for _, tc := range []struct {
+		exclude bool
+		want    string
+	}{
+		{exclude: false, want: "[admin legacy user]"},
+		{exclude: true, want: "[admin]"},
+	} {
+		cfg := resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, membership)
+		cfg.ExcludePersonal = tc.exclude
+		resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("exclude=%v: %v", tc.exclude, err)
+		}
+		listed, err := resolver.List(context.Background(), id, skills.ListFilter{Limit: 10})
+		if err != nil || fmt.Sprint(skillNames(listed)) != tc.want {
+			t.Fatalf("exclude=%v names = %v (%v), want %s", tc.exclude, skillNames(listed), err, tc.want)
+		}
+		if tc.exclude {
+			for _, name := range []string{"user", "legacy"} {
+				if _, err := resolver.Get(context.Background(), id, name); !errors.Is(err, skills.ErrSkillNotFound) {
+					t.Fatalf("personal %q readable on a participant turn: %v", name, err)
+				}
+			}
+			if result, err := resolver.Search(context.Background(), id, "user", 10); err != nil || len(result) != 0 {
+				t.Fatalf("personal skill searchable on a participant turn: %+v %v", result, err)
+			}
+		}
+	}
+}

@@ -428,10 +428,10 @@ func (a *CostAccumulator) emitBudgetExceeded(ctx context.Context, q identity.Qua
 	now := a.clock.Now()
 	_ = a.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit; bus failure doesn't change the rejection (see doc above)
 		Type:       EventTypeBudgetExceeded,
-		Identity:   q,
+		Identity:   eventQuad(ctx, q),
 		OccurredAt: now,
 		Payload: BudgetExceededPayload{
-			Identity:   q,
+			Identity:   eventQuad(ctx, q),
 			Tier:       tier,
 			Model:      model,
 			TotalCost:  total,

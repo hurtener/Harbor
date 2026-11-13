@@ -206,6 +206,13 @@ type Verified struct {
 	// member sessions. It is bearer authority only — never a storage
 	// filter and never part of the isolation tuple.
 	SessionReach []string
+	// SessionOwner is the signed partition owner of the bearer's one
+	// session when the bearer acts as a participant inside another user's
+	// session (see SessionOwnerClaim). Empty when absent.
+	SessionOwner string
+	// Speaker is the signed display label of the bearer's user (see
+	// SpeakerClaim). Empty when absent.
+	Speaker string
 	// Subject is the JWT's `sub` claim, if present. Audited; never used
 	// as an isolation principal (the triple is the isolation key).
 	Subject string
@@ -550,6 +557,11 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		v.audit(ctx, kidSeen, iss, sub, ErrAgentReadReachMalformed)
 		return Verified{}, ErrAgentReadReachMalformed
 	}
+	sessionOwner, speaker, participantErr := parseSessionParticipant(claims, id, sessionReach, scopes)
+	if participantErr != nil {
+		v.audit(ctx, kidSeen, iss, sub, ErrSessionParticipantMalformed)
+		return Verified{}, participantErr
+	}
 	if artifactTransfer != nil && (len(sessionReach) != 1 || sessionReach[0] != id.SessionID || len(reach) != 0) {
 		v.audit(ctx, kidSeen, iss, sub, ErrArtifactTransferMalformed)
 		return Verified{}, ErrArtifactTransferMalformed
@@ -573,6 +585,8 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		AgentReach:          reach,
 		AgentReadReach:      readReach,
 		SessionReach:        sessionReach,
+		SessionOwner:        sessionOwner,
+		Speaker:             speaker,
 		Subject:             sub,
 		Issuer:              iss,
 	}, nil

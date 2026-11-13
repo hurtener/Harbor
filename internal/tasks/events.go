@@ -125,6 +125,10 @@ type TaskSpawnedPayload struct {
 	ParentTaskID   TaskID // empty when no parent
 	Priority       int
 	IdempotencyKey string
+	// ParticipantUserID is the verified writer when the task was spawned
+	// by (or under) a session participant: the audit record of who wrote
+	// the turn. Empty for ordinary tasks.
+	ParticipantUserID string `json:",omitempty"`
 }
 
 // TaskStartedPayload reports MarkRunning. Carries the prior status

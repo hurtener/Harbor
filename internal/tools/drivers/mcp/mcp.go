@@ -2083,7 +2083,9 @@ func (p *Provider) Close(ctx context.Context) error {
 // / call-prompt); the server-pushed onResourceUpdated path uses
 // `Config.DefaultIdentity` and bypasses this helper.
 func buildIdentityMeta(ctx context.Context, annotations map[string]string) (mcpsdk.Meta, error) {
-	id, ok := identity.From(ctx)
+	// The stamped user is the ACTING user: in a multi-participant session
+	// it is the turn's writer, never the session partition owner.
+	id, _, ok := identity.ActingFrom(ctx)
 	if !ok {
 		return nil, ErrIdentityMissing
 	}
@@ -2406,7 +2408,7 @@ func (ErrSourceOwnerDenied) Permanent() bool { return true }
 
 func (p *Provider) buildIdentityMeta(ctx context.Context) (mcpsdk.Meta, error) {
 	if p.cfg.Owner.Scope() != auth.ScopeBootGlobal {
-		id, present := identity.From(ctx)
+		id, _, present := identity.ActingFrom(ctx)
 		agent, admitted := tools.EffectiveAgentConfigFrom(ctx)
 		if !present || !admitted || agent != p.cfg.Owner.Agent || !p.cfg.Owner.AllowsPrincipal(id.TenantID, id.UserID) {
 			return nil, ErrSourceOwnerDenied{}

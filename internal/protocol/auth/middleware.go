@@ -170,6 +170,27 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 				return
 			}
 
+			// Session participant: a bearer signed with session_owner acts
+			// inside the owner's partition. The working (storage) identity
+			// becomes the owner's triple; the verified writer is seated as
+			// the Participant so user-keyed outbound calls act as the
+			// writer. The grant is limited to exact-session methods.
+			var participant *identity.Participant
+			if verified.SessionOwner != "" {
+				if !participantRouteAllowed(r) {
+					cfg.logger.WarnContext(r.Context(), "auth: participant bearer called a method outside the participant grant",
+						slog.String("code", string(protoerrors.CodeScopeMismatch)),
+						slog.String("reason_sentinel", "session_participant_method_denied"))
+					writeProtocolError(w, http.StatusForbidden,
+						protoerrors.Newf(protoerrors.CodeScopeMismatch, "session participant bearers may only use exact-session methods"))
+					return
+				}
+				participant = &identity.Participant{UserID: verified.Identity.UserID, Speaker: verified.Speaker}
+				effectiveID.UserID = verified.SessionOwner
+			} else if verified.Speaker != "" {
+				participant = &identity.Participant{UserID: verified.Identity.UserID, Speaker: verified.Speaker}
+			}
+
 			if identity.IsReservedUser(effectiveID) {
 				writeProtocolError(w, http.StatusForbidden,
 					protoerrors.Newf(protoerrors.CodeScopeMismatch, "the token's user id is reserved"))
@@ -186,6 +207,14 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 					protoerrors.Newf(protoerrors.CodeRuntimeError,
 						"validator returned an invalid identity"))
 				return
+			}
+			if participant != nil {
+				ctx, idErr = identity.WithParticipant(ctx, *participant)
+				if idErr != nil {
+					writeProtocolError(w, http.StatusUnauthorized,
+						protoerrors.Newf(protoerrors.CodeIdentityRequired, "jwt rejected: session_participant_malformed"))
+					return
+				}
 			}
 			ctx = WithRuntimeID(ctx, verified.RuntimeID)
 			ctx = WithScopes(ctx, verified.Scopes)
@@ -378,6 +407,8 @@ func reasonForWire(err error) string {
 		return "session_reach_malformed"
 	case errors.Is(err, ErrAgentReadReachMalformed):
 		return "agent_read_reach_malformed"
+	case errors.Is(err, ErrSessionParticipantMalformed):
+		return "session_participant_malformed"
 	case errors.Is(err, ErrAudienceMismatch):
 		return "audience_mismatch"
 	case errors.Is(err, ErrIssuerMismatch):

@@ -207,9 +207,17 @@ func (o *Outbox) Enqueue(ctx context.Context, receipt llm.AttemptUsageReceipt) e
 		return err
 	}
 	q, ok := identity.QuadrupleFrom(ctx)
-	if !ok || q.TenantID != receipt.TenantID || q.UserID != receipt.UserID || q.SessionID != receipt.SessionID || q.RunID != receipt.LogicalRunID {
+	// The receipt names the ACTING user (the grant's user): a session
+	// participant's turn is billed to the participant.
+	actingUser := q.UserID
+	if p, has := identity.ParticipantFrom(ctx); has && p.IsGuest(q.Identity) {
+		actingUser = p.UserID
+	}
+	if !ok || q.TenantID != receipt.TenantID || actingUser != receipt.UserID || q.SessionID != receipt.SessionID || q.RunID != receipt.LogicalRunID {
 		return fmt.Errorf("%w: receipt identity is not the verified call scope", ErrInvalidReceipt)
 	}
+	// The outbox keys its durable record by the receipt's own identity.
+	q.UserID = actingUser
 	if err := o.enqueueAt(ctx, q, receipt); err != nil {
 		return err
 	}

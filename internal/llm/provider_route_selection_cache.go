@@ -29,6 +29,7 @@ const (
 type ProviderRouteSelectionKey struct {
 	TenantID                     string
 	UserID                       string
+	SessionOwner                 string
 	EffectiveAgentID             string
 	RouteID                      string
 	RouteGeneration              uint64
@@ -43,7 +44,7 @@ type ProviderRouteSelectionKey struct {
 // ProviderRouteSelectionKeyFor derives the cache key from a trusted request.
 func ProviderRouteSelectionKeyFor(req ProviderRouteRequest) ProviderRouteSelectionKey {
 	return ProviderRouteSelectionKey{
-		TenantID: req.TenantID, UserID: req.UserID, EffectiveAgentID: req.EffectiveAgentID,
+		TenantID: req.TenantID, UserID: req.UserID, SessionOwner: req.SessionOwner, EffectiveAgentID: req.EffectiveAgentID,
 		RouteID: req.RouteID, RouteGeneration: req.RouteGeneration,
 		ProviderConnectionID:         req.ProviderConnectionID,
 		ProviderConnectionGeneration: req.ProviderConnectionGeneration,

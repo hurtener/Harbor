@@ -26,6 +26,7 @@ type requestWire struct {
 	Operation                    string `json:"operation"`
 	TenantID                     string `json:"tenant_id"`
 	UserID                       string `json:"user_id"`
+	SessionOwner                 string `json:"session_owner,omitempty"`
 	SessionID                    string `json:"session_id"`
 	LogicalRunID                 string `json:"logical_run_id"`
 	EffectiveAgentID             string `json:"effective_agent_id"`
@@ -89,7 +90,7 @@ func MarshalSelectionRequest(req llm.ProviderRouteRequest) ([]byte, error) {
 
 func marshalRequest(req llm.ProviderRouteRequest, operation string) ([]byte, error) {
 	w := requestWire{
-		Version: Version, Operation: operation, TenantID: req.TenantID, UserID: req.UserID, SessionID: req.SessionID,
+		Version: Version, Operation: operation, TenantID: req.TenantID, UserID: req.UserID, SessionOwner: req.SessionOwner, SessionID: req.SessionID,
 		LogicalRunID: req.LogicalRunID, EffectiveAgentID: req.EffectiveAgentID,
 		TaskID: req.TaskID, LogicalCallID: req.LogicalCallID, RouteID: req.RouteID,
 		RouteGeneration: req.RouteGeneration, ProviderConnectionID: req.ProviderConnectionID,
@@ -101,7 +102,7 @@ func marshalRequest(req llm.ProviderRouteRequest, operation string) ([]byte, err
 	}
 	if (w.Operation != OperationSelect && w.Operation != OperationResolve) ||
 		(w.Purpose != string(llm.ProviderRoutePurposeRun) && w.Purpose != string(llm.ProviderRoutePurposePosture)) ||
-		w.TenantID == "" || w.UserID == "" || w.SessionID == "" || w.LogicalRunID == "" ||
+		w.TenantID == "" || w.UserID == "" || w.SessionOwner == w.UserID || w.SessionID == "" || w.LogicalRunID == "" ||
 		w.EffectiveAgentID == "" || w.TaskID == "" || w.LogicalCallID == "" ||
 		w.RouteID == "" || w.RouteGeneration == 0 || w.ProviderConnectionID == "" ||
 		w.ProviderConnectionGeneration == 0 || w.CredentialAssetGeneration == 0 || w.ModelSelector == "" {
@@ -138,7 +139,7 @@ func UnmarshalOperationRequest(body []byte) (string, llm.ProviderRouteRequest, e
 		return "", llm.ProviderRouteRequest{}, llm.ErrProviderRouteInvalid
 	}
 	req := llm.ProviderRouteRequest{
-		TenantID: w.TenantID, UserID: w.UserID, SessionID: w.SessionID, LogicalRunID: w.LogicalRunID,
+		TenantID: w.TenantID, UserID: w.UserID, SessionOwner: w.SessionOwner, SessionID: w.SessionID, LogicalRunID: w.LogicalRunID,
 		EffectiveAgentID: w.EffectiveAgentID, TaskID: w.TaskID, LogicalCallID: w.LogicalCallID,
 		RouteID: w.RouteID, RouteGeneration: w.RouteGeneration, ProviderConnectionID: w.ProviderConnectionID,
 		ProviderConnectionGeneration: w.ProviderConnectionGeneration,

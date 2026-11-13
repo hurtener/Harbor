@@ -17203,3 +17203,82 @@ package-backed revisions) and narrowing who may install a publication.
 
 **Cross-references:** D-430, D-500.
 
+## D-509 — Session participants: one owner partition, per-turn writer
+
+**Date:** 2026-11-13
+
+**Decision.** A session keeps exactly one owner partition `(tenant, owner,
+session)`. Two optional signed claims let several people of one tenant take
+part in it:
+
+- `session_owner` — the bearer acts as a **participant** inside that owner's
+  session. It must differ from `user`, requires `session_reach` naming exactly
+  the token's session, and is refused with an `admin` or `console:fleet` scope
+  (`session_participant_malformed`). The middleware seats the owner's triple as
+  the working identity and the verified user as the request's `Participant`.
+  A participant bearer may call only `control.start` (an existing session —
+  it never creates one), steering controls, `GET /v1/events`,
+  `sessions.turns.list/get` and `artifacts.get/put`; any other route is 403
+  `scope_mismatch` before a handler runs.
+- `speaker` — a printable single-line label (<=128 bytes) of the bearer's
+  user, valid with or without `session_owner`.
+
+Each turn records its writer on `Task.Participant` (JSON `omitempty`, so
+ordinary records are unchanged); children spawned inside the run inherit it.
+The run loop seats it on the run context and derives a configuration
+quadruple with the writer as user. **Storage stays keyed by the partition**:
+events, transcript, retained context, artifacts, the run-bound skill snapshot.
+**User-keyed resolution acts as the writer**: the token-exchange subject (and
+its cache family) with `session_owner` added for the broker; the
+provider-route resolver request (select and resolve, `session_owner` on the
+wire and in the selection cache key), so a participant's turn uses and bills
+the participant's own provider connection; external inference grants and
+usage receipts (the grant must name the writer, the receipt bills the
+writer); governance tiers, budgets and rate limits (keyed on the writer,
+events published to the partition); MCP credential injection, `_meta`
+identity stamps, connect/reconnect preparation, server visibility and the
+console source authorizer; A2A `user` metadata and forwarded identity
+headers; user-scope signed capability reconcile and use (a participant may
+use only a capability bound to itself); user prompt layer, LLM and limit
+overrides. The interactive
+OAuth driver refuses user-bound sources in a participant run
+(`ErrParticipantUnsupported`) instead of using the owner's stored token.
+
+Only a run's writer (or an admin) can steer it: the owner cannot steer a
+participant's run and a participant cannot steer anyone else's. Idempotency
+keys fold the participant in, so another writer reusing a key conflicts.
+
+The writer appears as `participant {user_id, speaker}` on session turn rows,
+as `ParticipantUserID` on `task.spawned` (the audit record of who wrote the
+turn), and in the model context: a quoted writer label before the user
+goal (rendered as a quoted display-name label, never as an instruction), and
+`speaker` on the current and retained historical requests.
+
+**Personal skills are hidden on participant turns (v1).** A participant's
+run snapshot excludes every personal skill — the user-scope rung (including
+the owner's user-layer personal skills) and the session's personal tier — so
+the skills list, skill bodies, search and skill tools see only shared,
+operator and published skills. The participant's own personal skills are not
+added either in v1. A participant's direct `artifacts.put` is pinned to its
+one session, and `artifacts.uploaded` names it (`ParticipantUserID`).
+
+**Known limits.** Governance budget and rate-limit events are published to
+the session partition without naming the participant. An MCP connection's
+preparation identity is taken from its first connect, so a shared
+connection first opened by a participant's run re-authenticates later
+reconnects as that participant (as it does today for whichever user
+connected first). Revocation is the issuer's: a participant bearer stays valid until
+it expires, and a cached participant credential until its exchange TTL. A
+retained window written by this version carries `speaker`; an older binary
+reading it rejects the unknown field (no migration, but no clean rollback of
+labelled windows). `sessions.list` lists only the caller's own partition, so
+an issuer lists shared sessions itself.
+
+**Why.** A session several people take part in must run each turn with the
+writer's own credentials and configuration while they read and extend one
+conversation. Keeping one storage partition preserves the isolation tuple and
+every storage `WHERE` clause; the writer is per-turn metadata, never a new
+isolation axis. No schema change; fleets on `migration_mode: verify` need no
+manual step.
+
+**Cross-references:** D-397, D-505, D-271, D-328.

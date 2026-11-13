@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:4b55a2c1fe8499e5af385a3e4374f9011f5a1bbd2134c5ef1ec0290cb66b5da2";
+export const WIRE_SURFACE_DIGEST = "sha256:cf4fc292db51eb7f15213b6746b7ab87169075b2356687eeb72df02004b0c13a";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -3197,6 +3197,11 @@ export interface SessionTurnHeader {
   as_of: string;
 }
 
+export interface SessionTurnParticipant {
+  user_id: string;
+  speaker?: string;
+}
+
 export interface SessionTurnPause {
   class?: string;
   reason?: string;
@@ -3242,6 +3247,7 @@ export interface SessionTurnRow {
   error_message?: string;
   agent: SessionTurnAgent;
   query: SessionTurnQuery;
+  participant?: SessionTurnParticipant;
   answer: SessionTurnAnswer;
   pause: SessionTurnPause;
   inputs?: SessionTurnAttachment[];

@@ -483,6 +483,15 @@ func AdmitEffectiveAgent(ctx context.Context, method string, id identity.Identit
 // the single-source lint forbids a Protocol method string
 // literal anywhere under internal/protocol/ outside the methods package
 // (CLAUDE.md §8).
+// participantForSpawn copies the verified request participant onto the
+// spawned task, or nil when the request carried none.
+func participantForSpawn(p identity.Participant, ok bool) *identity.Participant {
+	if !ok {
+		return nil
+	}
+	return &p
+}
+
 func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.StartResponse, error) {
 	method := methods.MethodStart
 
@@ -539,6 +548,14 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	// reopening a GC-reaped conversation is forbidden (RFC §6.9); the
 	// client must pick a new session id for a new conversation. A surface
 	// built without a SessionEnsurer skips this (control-only Runtime).
+	// A session participant (a writer acting inside another user's
+	// partition) never creates a session; the ensurer refuses an unknown
+	// one. A surface with no ensurer cannot prove the session exists, so a
+	// participant start fails closed there.
+	participant, hasParticipant := identity.ParticipantFrom(ctx)
+	if hasParticipant && participant.IsGuest(id) && s.sessions == nil {
+		return nil, mapSessionEnsureError(string(method), ErrSessionParticipantNoSession)
+	}
 	if s.sessions != nil {
 		if eerr := s.sessions.EnsureSession(ctx, id); eerr != nil {
 			return nil, mapSessionEnsureError(string(method), eerr)
@@ -648,6 +665,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		ProviderRoute:                providerRouteFromWire(sr.ProviderRoute),
 		LLMSettings:                  settings,
 		RunLimits:                    runLimitsFromWire(sr.RunLimits),
+		Participant:                  participantForSpawn(participant, hasParticipant),
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)
@@ -766,6 +784,9 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 	// caller-supplied string). A caller with no authority over the
 	// target run is rejected before the control reaches the inbox.
 	scope, ok := deriveSteeringScope(ctx, caller, q)
+	if ok && scope != steering.ScopeAdmin {
+		ok = s.callerWroteRun(ctx, caller, q)
+	}
 	if !ok {
 		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
 			"method %q: the verified caller is not authorised to steer run %q", string(method), q.RunID)
@@ -826,6 +847,40 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 		Method:          string(method),
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+// callerWroteRun narrows the owner tier in a multi-participant session: a
+// run belongs to the person who wrote it. The caller's acting user (the
+// seated participant, else the verified user) must equal the run's writer
+// (the task's participant, else the partition user). The partition owner
+// therefore cannot steer a participant's run and a participant cannot steer
+// anyone else's — steering another person's run would execute one person's
+// input under another person's integrations. A participant caller whose
+// target task cannot be read is refused; an ordinary caller keeps the
+// pre-participant behaviour when the task record is unavailable.
+func (s *ControlSurface) callerWroteRun(ctx context.Context, caller identity.Identity, run identity.Quadruple) bool {
+	acting := caller.UserID
+	callerParticipant, hasParticipant := identity.ParticipantFrom(ctx)
+	if hasParticipant {
+		acting = callerParticipant.UserID
+	}
+	guest := hasParticipant && callerParticipant.IsGuest(caller)
+	if s.tasks == nil {
+		return !guest
+	}
+	lookupCtx, err := identity.With(ctx, run.Identity)
+	if err != nil {
+		return false
+	}
+	task, err := s.tasks.Get(lookupCtx, tasks.TaskID(run.RunID))
+	if err != nil || task == nil {
+		return !guest
+	}
+	writer := task.Identity.UserID
+	if task.Participant != nil && task.Participant.UserID != "" {
+		writer = task.Participant.UserID
+	}
+	return acting == writer
 }
 
 // deriveSteeringScope maps a verified caller onto the steering privilege

@@ -170,6 +170,8 @@ func typeByName(name string) (reflect.Type, bool) {
 		return reflect.TypeOf(AppOpsRef{}), true
 	case "TurnRow":
 		return reflect.TypeOf(TurnRow{}), true
+	case "Participant":
+		return reflect.TypeOf(Participant{}), true
 	}
 	return nil, false
 }

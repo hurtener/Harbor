@@ -306,6 +306,9 @@ func (a *taskSnapshotAdapter) Task(ctx context.Context, id identity.Identity, ta
 		snap.QueryPresent = true
 		snap.Query = t.Query
 	}
+	if t.Participant != nil {
+		snap.Participant = &turns.Participant{UserID: t.Participant.UserID, Speaker: t.Participant.Speaker}
+	}
 	if strings.TrimSpace(t.AgentID) != "" {
 		snap.AgentPresent = true
 		snap.AgentBindingSource = turns.AgentBindingExplicit

@@ -66,8 +66,13 @@ const (
 // effective-Agent admission. None of its authority-bearing fields come from
 // an unverified request body.
 type ProviderRouteRequest struct {
-	TenantID                     string
-	UserID                       string
+	TenantID string
+	// UserID is the ACTING user: in a multi-participant session it is the
+	// turn's writer, never the session partition owner.
+	UserID string
+	// SessionOwner names the partition owner when UserID acts inside another
+	// user's session (a session participant); empty otherwise.
+	SessionOwner                 string
 	SessionID                    string
 	LogicalRunID                 string
 	EffectiveAgentID             string

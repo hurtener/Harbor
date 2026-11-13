@@ -284,6 +284,17 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	if err := tasks.ValidateRequest(req); err != nil {
 		return tasks.TaskHandle{}, err
 	}
+	// Work spawned from inside a participant's run (child tasks, tool
+	// tasks, virtual agents) keeps acting as that writer: inherit the
+	// seated participant when the request names none, so no descendant
+	// silently falls back to the partition user's southbound identity.
+	if req.Participant == nil {
+		if p, ok := identity.ParticipantFrom(ctx); ok {
+			req.Participant = &p
+		}
+	} else if err := identity.ValidateParticipant(*req.Participant); err != nil {
+		return tasks.TaskHandle{}, err
+	}
 	agentReachAdmission := tasks.CaptureAgentReachAdmission(ctx, req.Identity.Identity, req.AgentID)
 	propagate := req.PropagateOnCancel
 	if propagate == "" {
@@ -420,6 +431,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		ProviderRoute:                cloneProviderRoute(req.ProviderRoute),
 		LLMSettings:                  llm.CloneRunSettings(req.LLMSettings),
 		RunLimits:                    tasks.CloneRunLimits(req.RunLimits),
+		Participant:                  cloneParticipant(req.Participant),
 		CreatedAt:                    now,
 		UpdatedAt:                    now,
 		InputArtifactIDs:             inputArtifactIDs,
@@ -516,11 +528,12 @@ func (e *Engine) publishSpawnedLocked(ctx context.Context, t *tasks.Task) error 
 		parent = *t.ParentTaskID
 	}
 	return e.publish(ctx, t, tasks.EventTypeTaskSpawned, tasks.TaskSpawnedPayload{
-		TaskID:         t.ID,
-		Kind:           t.Kind,
-		ParentTaskID:   parent,
-		Priority:       t.Priority,
-		IdempotencyKey: t.IdempotencyKey,
+		TaskID:            t.ID,
+		Kind:              t.Kind,
+		ParentTaskID:      parent,
+		Priority:          t.Priority,
+		IdempotencyKey:    t.IdempotencyKey,
+		ParticipantUserID: participantUserID(t.Participant),
 	})
 }
 
@@ -590,6 +603,7 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
 	cp.RunLimits = tasks.CloneRunLimits(t.RunLimits)
+	cp.Participant = cloneParticipant(t.Participant)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -792,12 +806,28 @@ func (e *Engine) OldestRetainedAt(_ context.Context) (time.Time, bool, error) {
 // fields (Result / Error / ParentTaskID) are cloned; the immutable-slice
 // fields alias the stored slices (the registry never mutates them
 // in-place after Spawn).
+func participantUserID(p *identity.Participant) string {
+	if p == nil {
+		return ""
+	}
+	return p.UserID
+}
+
+func cloneParticipant(p *identity.Participant) *identity.Participant {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
+}
+
 func copyTask(t *tasks.Task) *tasks.Task {
 	cp := *t
 	cp.ToolAllowlist = cloneToolAllowlist(t.ToolAllowlist)
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
 	cp.RunLimits = tasks.CloneRunLimits(t.RunLimits)
+	cp.Participant = cloneParticipant(t.Participant)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -1630,6 +1660,16 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 	if req.VerifiedExecutionOperationID != "" {
 		h.Write([]byte{0x1F})
 		h.Write([]byte(req.VerifiedExecutionOperationID))
+	}
+	// fold the writer in so one idempotency key retried by a different
+	// participant (or with a different label) is a conflict, never a silent
+	// adoption of another person's turn. Gated on presence so ordinary
+	// spawns hash byte-identically.
+	if req.Participant != nil {
+		h.Write([]byte{0x1F, 0x50})
+		h.Write([]byte(req.Participant.UserID))
+		h.Write([]byte{0x1E})
+		h.Write([]byte(req.Participant.Speaker))
 	}
 	if admission != nil {
 		h.Write([]byte{0x1F})
