@@ -17,6 +17,18 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- **`tools.mcp_default_loading_mode`.** A deployment-wide default loading
+  mode (`always` | `deferred`) for the tools of every MCP connection,
+  boot-declared or runtime-attached, including restart re-attach. With
+  `deferred`, MCP tool schemas leave the per-call tool declarations and the
+  model loads them on demand through `tool_search` / `tool_get` from the
+  `<deferred_tools>` index, so a large attached catalog no longer costs its
+  full schema size on every call. It is the lowest loading-mode layer: boot
+  `tools.entries[].loading_mode` and agent-config `tool_exposure` loading
+  overrides still win. Unset keeps today's behaviour (`always`).
+
 ## [1.46.0] — 2026-11-12
 
 ### Added

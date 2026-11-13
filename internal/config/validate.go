@@ -2013,6 +2013,12 @@ func (c *Config) validateTools() error {
 			fmt.Sprintf("must be > 0 when set (got %d); omit the key to take the %d-byte default",
 				c.Tools.MCPArtifactEgressMaxBytes, DefaultMCPArtifactEgressMaxBytes))
 	}
+	switch c.Tools.MCPDefaultLoadingMode {
+	case "", "always", "deferred":
+	default:
+		return fieldError("tools.mcp_default_loading_mode",
+			fmt.Sprintf("must be one of [\"always\", \"deferred\"] or empty, got %q", c.Tools.MCPDefaultLoadingMode))
+	}
 	// Structural catalog cache bounds. Zero takes the default; a negative
 	// value is a mistake, not "unbounded", and the per-entry cap may not
 	// exceed the total budget.

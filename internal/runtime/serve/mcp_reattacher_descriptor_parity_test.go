@@ -9,6 +9,7 @@ import (
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // mcp_reattacher_descriptor_parity_test.go — the mechanical guard for the
@@ -210,5 +211,18 @@ func TestReattach_ThreadsTheDeploymentEgressCeiling(t *testing.T) {
 		t.Fatalf("the run-start re-attach passes ArtifactEgressMaxBytes=%d, want the "+
 			"deployment's lowered %d — a dropped ceiling silently reverts to the 8 MiB "+
 			"default across every restart", got, lowered)
+	}
+}
+
+// TestReattach_ThreadsTheDeploymentDefaultLoading — the MCP loading
+// default is attacher state; the run-start re-attach must carry it, or a
+// restart silently reverts every runtime-attached server to "always".
+func TestReattach_ThreadsTheDeploymentDefaultLoading(t *testing.T) {
+	t.Parallel()
+	a := NewMCPConnectionAttacher(nil, nil, nil, nil, identity.Identity{}, nil, nil, nil,
+		WithDefaultLoading(tools.LoadingDeferred))
+	var closers []func(context.Context) error
+	if got := a.reattachAttachDeps(reOwner(), &closers).DefaultLoading; got != tools.LoadingDeferred {
+		t.Fatalf("the run-start re-attach passes DefaultLoading=%q, want deferred", got)
 	}
 }

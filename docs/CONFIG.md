@@ -2629,6 +2629,30 @@ tools:
         summarize: [document]
 ```
 
+### tools.mcp_default_loading_mode
+
+The deployment-wide default loading mode for the tools of every MCP
+connection, boot-declared (`tools.mcp_servers[]`) and runtime-attached
+alike. `""` or `always` (the default) declares every MCP tool's full schema
+on every model call. `deferred` keeps MCP tools out of the per-call tool
+declarations: the model sees the bounded `<deferred_tools>` name index
+(`planner.deferred_tool_index`) and loads full schemas on demand through
+`tool_search` / `tool_get`. Enable both built-ins when you set `deferred`,
+or the deferred tools are unreachable.
+
+It is the lowest loading-mode layer. `tools.entries[].loading_mode` and the
+agent-config `tool_exposure` overrides (`server_loading_modes`,
+`tool_loading_modes`) still win, so individual servers or tools can be pinned
+back to `always`. MCP resource and prompt wrappers stay deferred either way.
+Loading is not capability-narrowing: a deferred tool keeps every identity,
+authority and approval gate. Restart-required.
+
+```yaml
+tools:
+  built_in: [tool_search, tool_get]
+  mcp_default_loading_mode: deferred
+```
+
 ### tools.mcp_add_connection
 
 Gates the admin-driven runtime add of a NEW MCP server connection over the
