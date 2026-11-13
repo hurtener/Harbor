@@ -17153,10 +17153,16 @@ differently, rejected or withdrawn. A claim left unfinalized for two minutes
 is resolved before another decision: finalized if its publish applied,
 released otherwise; a younger claim with a different target conflicts. The
 publish step also runs under a 60-second deadline, shorter than that window.
-Each claim fences its publish: before publishing, the claim's token becomes
-the candidate's live fence in the publication aggregate, and the publish
+Each claim fences its publish: before publishing, the claim's token (its
+fixed-width claim time, so tokens only increase) becomes the candidate's live
+fence in the publication aggregate — accepted only if it is the live token or
+newer than the current one, so a revoked token is permanent and an acceptance
+that paused before fencing while its claim was resolved can never publish;
+the accept also re-checks that its claim is still the recorded one, and the publish
 commits only while that token is still the fence, in the same
-compare-and-set; a publish the candidate already produced (the marker in any
+compare-and-set; only the candidate-marker Extra key is reserved
+(other underscore keys accepted by earlier releases keep working); a publish
+the candidate already produced (the marker in any
 revision, any generation, any admin or session) is returned instead of
 written again. Resolving a stale or failed claim is one atomic store step
 that either reports the revision it produced or revokes its fence, so a

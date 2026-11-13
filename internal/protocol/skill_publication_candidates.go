@@ -202,10 +202,26 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 	// already produced (any admin, any session, any generation) instead of
 	// writing again.
 	if err := s.store.FenceCandidate(ctx, caller, c.CandidateID, token); err != nil {
+		if stderrors.Is(err, publication.ErrCandidateFenced) {
+			// This acceptance was resolved (revoked) while it paused: it can
+			// never publish. Its claim was already released by that resolution.
+			return nil, mapPublicationError(method, err)
+		}
 		if stderrors.Is(err, publication.ErrConflict) {
 			return nil, mapPublicationError(method, publication.ErrClaimOutstanding)
 		}
 		return nil, mapPublicationError(method, err)
+	}
+	// The fence must belong to the claim that is still recorded: if a
+	// rejection, withdrawal or another acceptance resolved this claim while it
+	// paused, revoke what was just installed and stop.
+	if current, rerr := s.candidates.Read(ctx, caller, c.CandidateID, true); rerr != nil {
+		return nil, mapPublicationError(method, rerr)
+	} else if current.State != publication.CandidatePending || current.Claim == nil || !current.Claim.ClaimedAt.Equal(claim.ClaimedAt) {
+		if _, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID, token); rerr != nil {
+			return nil, mapPublicationError(method, rerr)
+		}
+		return nil, mapPublicationError(method, publication.ErrCandidateFenced)
 	}
 	skill := markCandidate(c.Skill, c.CandidateID)
 	key := publication.CandidateAcceptKey(c.CandidateID)
@@ -280,8 +296,9 @@ const StaleClaimAfter = 2 * time.Minute
 const AcceptPublishDeadline = 60 * time.Second
 
 // claimToken identifies one recorded acceptance for the publication fence.
+// Fixed width, so tokens compare (and only ever increase) as strings.
 func claimToken(claim publication.AcceptClaim) string {
-	return claim.ClaimedAt.UTC().Format(time.RFC3339Nano)
+	return claim.ClaimedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
 }
 
 // errStaleResolutionUnknown means a stale acceptance could not be proven

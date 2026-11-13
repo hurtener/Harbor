@@ -2,8 +2,10 @@ package publication
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/hurtener/Harbor/internal/state"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -410,14 +412,13 @@ func TestPublishRefusesReservedMarker(t *testing.T) {
 			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p", Name: "triage", Skill: planted, ExpectedAbsent: true}); !errors.Is(err, ErrInvalidRequest) {
 				t.Fatalf("planted marker on publish err=%v", err)
 			}
+			// Only the marker is reserved: other underscore keys earlier
+			// releases accepted keep working.
 			other := publicationSkill("triage", "v1")
-			other.Extra = map[string]any{"_publication.anything": "x"}
-			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p2", Name: "triage", Skill: other, ExpectedAbsent: true}); !errors.Is(err, ErrInvalidRequest) {
-				t.Fatalf("reserved key on publish err=%v", err)
-			}
-			clean, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p3", Name: "triage", Skill: publicationSkill("triage", "v1"), ExpectedAbsent: true})
+			other.Extra = map[string]any{"_publication.source": "existing metadata"}
+			clean, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p3", Name: "triage", Skill: other, ExpectedAbsent: true})
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("legacy underscore key on publish: %v", err)
 			}
 			if _, _, err := store.PublishSuccessor(ctx, admin, SuccessorRequest{IdempotencyKey: "s", PublicationID: clean.PublicationID, ExpectedGeneration: clean.Generation, ExpectedContentHash: clean.ContentHash, Skill: planted}); !errors.Is(err, ErrInvalidRequest) {
 				t.Fatalf("planted marker on successor err=%v", err)
@@ -434,5 +435,112 @@ func TestPublishRefusesReservedMarker(t *testing.T) {
 				t.Fatalf("resolve=%+v err=%v", res, err)
 			}
 		})
+	}
+}
+
+// Paused-accept regression at the store: a revoked token can never be
+// installed again, and tokens only move forward (memory and durable stores).
+func TestCandidateFenceRevokedTokenIsPermanent(t *testing.T) {
+	for name, store := range fenceStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			admin := publicationIdentity("tenant-a", "admin", "s-admin")
+			// A rejection resolves the claim before the accept fenced.
+			if res, err := store.ResolveCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:01.000000000Z"); err != nil || res.Applied {
+				t.Fatalf("resolve=%+v err=%v", res, err)
+			}
+			if err := store.FenceCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:01.000000000Z"); !errors.Is(err, ErrCandidateFenced) {
+				t.Fatalf("revoked token re-fenced: %v", err)
+			}
+			if err := store.FenceCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:00.000000000Z"); !errors.Is(err, ErrCandidateFenced) {
+				t.Fatalf("older token fenced: %v", err)
+			}
+			if err := store.FenceCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:02.000000000Z"); err != nil {
+				t.Fatalf("newer token: %v", err)
+			}
+			// Resolving an older token never moves a newer revoked fence back.
+			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:02.000000000Z"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:01.000000000Z"); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.FenceCandidate(ctx, admin, "cand-1", "2026-01-01T00:00:02.000000000Z"); !errors.Is(err, ErrCandidateFenced) {
+				t.Fatalf("revoked newer token re-fenced: %v", err)
+			}
+		})
+	}
+}
+
+func fenceStores(t *testing.T) map[string]Store {
+	t.Helper()
+	raw, err := stateinmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = raw.Close(context.Background()) })
+	durable, err := NewStateStore(raw, "rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "fences.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sq.Close(context.Background()) })
+	sqlite, err := NewStateStore(sq, "rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]Store{"memory": NewMemoryStore("rt"), "state-inmem": durable, "state-sqlite": sqlite}
+}
+
+// Upgrade: a publication aggregate persisted by an earlier release (no fence
+// map, an underscore Extra key such earlier releases accepted from callers)
+// keeps working: reads, successors and a candidate acceptance of it.
+func TestPublicationUpgradeFromLegacyRecord(t *testing.T) {
+	sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "legacy.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sq.Close(context.Background()) })
+	ctx := context.Background()
+	admin := publicationIdentity("tenant-a", "admin", "s-admin")
+	legacy := publicationSkill("weekly", "v1")
+	legacy.Extra = map[string]any{"_publication.source": "existing metadata"}
+	legacy.ContentHash = skills.CanonicalContentHash(legacy)
+	// A record shaped exactly as earlier releases persisted it: no
+	// candidate_fences, no candidate marker.
+	p := Publication{PublicationID: "pub-legacy", RevisionID: "rev-legacy", Name: "weekly", ContentHash: legacy.ContentHash, State: StateActive, Generation: 1, RuntimeID: "rt", Skill: legacy}
+	p.Revisions = []Revision{currentRevision(p)}
+	b, err := json.Marshal(map[string]any{"publications": []Publication{p}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sq.SaveIf(ctx, []state.SlotExpectation{{Identity: orgIdentity("tenant-a"), Kind: publicationOrgKind}}, state.StateRecord{ID: state.NewEventID(), Identity: orgIdentity("tenant-a"), Kind: publicationOrgKind, Bytes: b}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStateStore(sq, "rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(ctx, admin, "pub-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := publicationSkill("weekly", "v2")
+	next.Extra = map[string]any{"_publication.source": "existing metadata"}
+	succ, _, err := store.PublishSuccessor(ctx, admin, SuccessorRequest{IdempotencyKey: "s", PublicationID: got.PublicationID, ExpectedGeneration: got.Generation, ExpectedContentHash: got.ContentHash, Skill: next})
+	if err != nil || succ.Generation != 2 {
+		t.Fatalf("successor on legacy record=%+v err=%v", succ, err)
+	}
+	// A candidate whose snapshot carries the legacy key publishes too.
+	if err := store.FenceCandidate(ctx, admin, "cand-1", "t"); err != nil {
+		t.Fatal(err)
+	}
+	cand := publicationSkill("weekly", "v3")
+	cand.Extra = map[string]any{"_publication.source": "existing metadata", CandidateMarkerKey: "cand-1"}
+	if _, _, err := store.PublishSuccessor(ctx, admin, SuccessorRequest{IdempotencyKey: "c", PublicationID: succ.PublicationID, ExpectedGeneration: succ.Generation, ExpectedContentHash: succ.ContentHash, Skill: cand, Candidate: &CandidateFence{CandidateID: "cand-1", Token: "t"}}); err != nil {
+		t.Fatalf("candidate successor with legacy key: %v", err)
 	}
 }

@@ -597,7 +597,7 @@ func TestCandidates_RevokedStaleClaimCannotLandLater(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	staleToken := claimed.Claim.ClaimedAt.UTC().Format(time.RFC3339Nano)
+	staleToken := claimed.Claim.ClaimedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
 	if err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, staleToken); err != nil {
 		t.Fatal(err)
 	}
@@ -614,5 +614,55 @@ func TestCandidates_RevokedStaleClaimCannotLandLater(t *testing.T) {
 	pubs, _ := store.List(admin, publicationTestIdentity("admin"))
 	if len(pubs) != 1 || pubs[0].Name != "triage-new" {
 		t.Fatalf("publications=%+v want only the live acceptance", pubs)
+	}
+}
+
+// An acceptance that paused before fencing while a rejection resolved its
+// stale claim can never publish when it resumes.
+func TestCandidates_PausedAcceptCannotFenceAfterReject(t *testing.T) {
+	raw := publication.NewMemoryStore("runtime-a")
+	store, err := publication.NewAuthorizedStore(raw, auth.NewAgentReachAuthorizer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := func() time.Time { return time.Now().Add(-3 * time.Minute) }
+	candidates := publication.NewMemoryCandidateStoreWithClock("runtime-a", old)
+	snap := protocol.PersonalSkillSnapshotFunc(func(_ context.Context, _, name string) (skills.Skill, string, int, error) {
+		return skills.Skill{Name: name, Trigger: "when", Steps: []string{"v1"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser}, "", 0, nil
+	})
+	surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store, Candidates: candidates, Snapshots: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := candAdminCtx(t, "admin")
+	sub, err := surface.Dispatch(candUserCtx(t, "alice"), methods.MethodSkillsPublicationsCandidatesSubmit, &types.SkillPublicationCandidateSubmitRequest{Identity: candID("alice"), AgentID: "agent-a", Name: "triage", IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sub.(*types.SkillPublicationCandidateSubmitResponse).Candidate.CandidateID
+	// The accept claims, then pauses before installing its fence.
+	claimed, err := candidates.Claim(admin, publicationTestIdentity("admin"), id, 1, publication.AcceptClaim{Mode: publication.AcceptModeNew})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := claimed.Claim.ClaimedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
+	// Meanwhile a rejection resolves the stale claim and rejects.
+	if _, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesReject, &types.SkillPublicationCandidateRejectRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, DecisionNote: "no", IdempotencyKey: "r"}); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	// The accept resumes: its fence is refused and its publish never lands.
+	if err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, token); !errors.Is(err, publication.ErrCandidateFenced) {
+		t.Fatalf("resumed fence err=%v", err)
+	}
+	sk := skills.Skill{Name: "triage", Trigger: "when", Steps: []string{"v1"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser, Extra: map[string]any{publication.CandidateMarkerKey: id}}
+	if _, _, err := store.Publish(admin, publicationTestIdentity("admin"), publication.PublishRequest{IdempotencyKey: "late", Name: "triage", Skill: sk, ExpectedAbsent: true, Candidate: &publication.CandidateFence{CandidateID: id, Token: token}}); err == nil {
+		t.Fatal("paused accept published after reject")
+	}
+	if pubs, _ := store.List(admin, publicationTestIdentity("admin")); len(pubs) != 0 {
+		t.Fatalf("publications=%+v", pubs)
+	}
+	c, _ := candidates.Read(admin, publicationTestIdentity("admin"), id, true)
+	if c.State != publication.CandidateRejected {
+		t.Fatalf("candidate=%+v", c)
 	}
 }

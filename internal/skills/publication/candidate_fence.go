@@ -19,25 +19,20 @@ const CandidateMarkerKey = "_publication.candidate_id"
 
 const revokedFencePrefix = "revoked:"
 
-// reservedExtraPrefix is the reserved Extra namespace of publication
-// bookkeeping (CandidateMarkerKey). Only a fenced candidate publish may carry
-// it, and only naming its own candidate.
-const reservedExtraPrefix = "_publication."
-
-// checkReservedExtra refuses a body that plants publication bookkeeping: an
-// ordinary publish carries no reserved key, and a candidate publish carries
-// exactly its own marker.
+// checkReservedExtra refuses a body that plants the candidate marker: an
+// ordinary publish may not carry it, and a candidate publish carries exactly
+// its own. Only CandidateMarkerKey is reserved; any other underscore key
+// (including ones earlier releases accepted from callers) passes unchanged.
 func checkReservedExtra(skill skills.Skill, f *CandidateFence) error {
-	for key, value := range skill.Extra {
-		if !strings.HasPrefix(key, reservedExtraPrefix) {
-			continue
-		}
-		if f == nil || key != CandidateMarkerKey {
-			return fmt.Errorf("%w: extra key %q is reserved", ErrInvalidRequest, key)
-		}
-		if marker, _ := value.(string); marker != f.CandidateID {
-			return fmt.Errorf("%w: candidate marker does not name this candidate", ErrInvalidRequest)
-		}
+	value, ok := skill.Extra[CandidateMarkerKey]
+	if !ok {
+		return nil
+	}
+	if f == nil {
+		return fmt.Errorf("%w: extra key %q is reserved", ErrInvalidRequest, CandidateMarkerKey)
+	}
+	if marker, _ := value.(string); marker != f.CandidateID {
+		return fmt.Errorf("%w: candidate marker does not name this candidate", ErrInvalidRequest)
 	}
 	return nil
 }
@@ -101,12 +96,26 @@ func checkFence(fences map[string]string, f *CandidateFence) error {
 	return nil
 }
 
+// setFence installs token as the candidate's live fence. Tokens only ever
+// increase: a token is accepted only if it is the current live token (a
+// resume) or strictly greater than the current one, live or revoked. A
+// revoked token can therefore never be installed again — an acceptance that
+// paused before fencing while a rejection or another acceptance resolved its
+// claim can never publish afterwards.
 func setFence(fences map[string]string, candidateID, token string) error {
 	if strings.TrimSpace(candidateID) == "" || strings.TrimSpace(token) == "" {
 		return fmt.Errorf("%w: candidate fence is incomplete", ErrInvalidRequest)
 	}
 	current := fences[candidateID]
-	if current != "" && current != token && !strings.HasPrefix(current, revokedFencePrefix) {
+	if current == token {
+		return nil
+	}
+	if strings.HasPrefix(current, revokedFencePrefix) {
+		if token <= strings.TrimPrefix(current, revokedFencePrefix) {
+			return ErrCandidateFenced
+		}
+	} else if current != "" {
+		// A different live acceptance holds the fence.
 		return ErrConflict
 	}
 	fences[candidateID] = token
@@ -120,6 +129,10 @@ func resolveFence(pubs []Publication, fences map[string]string, candidateID, tok
 	current := fences[candidateID]
 	if current != "" && current != token && !strings.HasPrefix(current, revokedFencePrefix) {
 		return CandidateResolution{}, false, ErrConflict
+	}
+	if prev := strings.TrimPrefix(current, revokedFencePrefix); strings.HasPrefix(current, revokedFencePrefix) && prev > token {
+		// A newer acceptance was already revoked; never move the fence back.
+		return CandidateResolution{}, false, nil
 	}
 	changed := current != revokedFencePrefix+token
 	fences[candidateID] = revokedFencePrefix + token
