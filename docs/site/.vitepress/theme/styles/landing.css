@@ -108,22 +108,39 @@
   display: none;
 }
 
-/* Scroll-reveal — applied via the v-reveal directive */
-.landing [data-reveal] {
+/* Scroll-reveal — applied via the v-reveal directive. Gated on the root
+   `hb-reveal` class the directive sets, so without JS nothing is hidden. */
+.hb-reveal .landing [data-reveal] {
   opacity: 0;
   transform: translateY(14px);
   transition: opacity var(--hb-dur-slow) var(--hb-ease),
     transform var(--hb-dur-slow) var(--hb-ease);
   will-change: opacity, transform;
 }
-.landing [data-reveal].is-visible {
+.hb-reveal .landing [data-reveal].is-visible {
   opacity: 1;
   transform: none;
+}
+/* Staggered children: each direct child of a [data-stagger] container rises
+   in after the container, delayed by its --hb-i index (capped). */
+.hb-reveal .landing [data-reveal][data-stagger] > * {
+  opacity: 0;
+  transform: translateY(12px);
+}
+/* Transition only on the way in, so hiding below-the-fold children at mount
+   is instant rather than a fade-out. */
+.hb-reveal .landing [data-reveal][data-stagger].is-visible > * {
+  opacity: 1;
+  transform: none;
+  transition: opacity var(--hb-dur-slow) var(--hb-ease),
+    transform var(--hb-dur-slow) var(--hb-ease);
+  transition-delay: calc(min(var(--hb-i, 0), 8) * 70ms);
 }
 
 /* Respect reduced-motion: show everything immediately, kill transitions */
 @media (prefers-reduced-motion: reduce) {
-  .landing [data-reveal] {
+  .hb-reveal .landing [data-reveal],
+  .hb-reveal .landing [data-reveal][data-stagger] > * {
     opacity: 1;
     transform: none;
     transition: none;

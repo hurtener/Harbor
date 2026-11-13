@@ -535,6 +535,8 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeSkillPublicationRetired:             http.StatusConflict,
 	protoerrors.CodeSkillPublicationRuntimeMismatch:     http.StatusConflict,
 	protoerrors.CodeSkillPublicationIdempotencyConflict: http.StatusConflict,
+	protoerrors.CodeCandidatePendingExists:              http.StatusConflict,
+	protoerrors.CodeCandidateSupportFilesUnsupported:    http.StatusUnprocessableEntity,
 	protoerrors.CodeRenderAdmissionMissing:              http.StatusBadRequest,
 	protoerrors.CodeRenderAdmissionUnavailable:          http.StatusBadRequest,
 	protoerrors.CodeRenderAdmissionInvalid:              http.StatusBadRequest,
@@ -630,6 +632,8 @@ var errorCodeMatrix = []protoerrors.Code{
 	protoerrors.CodeSkillPublicationRetired,
 	protoerrors.CodeSkillPublicationRuntimeMismatch,
 	protoerrors.CodeSkillPublicationIdempotencyConflict,
+	protoerrors.CodeCandidatePendingExists,
+	protoerrors.CodeCandidateSupportFilesUnsupported,
 	// MCP Apps render-admission surface — the five typed admission
 	// outcomes + the ambiguous-authority refusal, exercised end-to-end by
 	// the AppsSurface / control-transport unit tests (the generic
@@ -794,10 +798,10 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// The canonical list currently contains 158 methods; keep the explicit
+	// The canonical list currently contains 166 methods; keep the explicit
 	// wantSet below in lockstep with it.
-	if len(got) != 158 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 158 (including explicit session-context reconciliation, admin-only runtime retention, the run-start prepare hint and the shared Agent-pack package import pair and personal-skill export)", len(got))
+	if len(got) != 166 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 166 (including explicit session-context reconciliation, admin-only runtime retention, the run-start prepare hint, the shared Agent-pack package import pair, personal-skill export and read, and the publication read and candidate verbs)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -952,6 +956,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentConfigUserReconcileLiveProfile:       {},
 		methods.MethodAgentConfigUserSkillsList:                 {},
 		methods.MethodAgentConfigUserSkillsExport:               {},
+		methods.MethodAgentConfigUserSkillsRead:                 {},
 		methods.MethodAgentConfigUserSkillsUpsert:               {},
 		methods.MethodAgentConfigUserSkillsDelete:               {},
 		methods.MethodAgentConfigUserSkillsImportValidate:       {},
@@ -970,6 +975,13 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodSkillsPublicationsUpdate:                  {},
 		methods.MethodSkillsPublicationsRemove:                  {},
 		methods.MethodSkillsPublicationsReferencesList:          {},
+		methods.MethodSkillsPublicationsRead:                    {},
+		methods.MethodSkillsPublicationsCandidatesSubmit:        {},
+		methods.MethodSkillsPublicationsCandidatesList:          {},
+		methods.MethodSkillsPublicationsCandidatesRead:          {},
+		methods.MethodSkillsPublicationsCandidatesAccept:        {},
+		methods.MethodSkillsPublicationsCandidatesReject:        {},
+		methods.MethodSkillsPublicationsCandidatesWithdraw:      {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -2055,8 +2067,8 @@ func runVersionHandshake(t *testing.T) {
 	// `sessions.delete` erasure surface (conditional via
 	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
 	// ProtocolVersion bump.)
-	if len(caps) != 19 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 19 (including run limits) at Protocol 0.1.0", len(caps))
+	if len(caps) != 21 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 21 (including run limits and the skill read/candidate pair) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
 		types.CapTaskControl:                   {},
@@ -2070,6 +2082,8 @@ func runVersionHandshake(t *testing.T) {
 		types.CapToolsConfigurationView:        {},
 		types.CapCallerMemory:                  {},
 		types.CapSkillPublications:             {},
+		types.CapSkillReads:                    {},
+		types.CapSkillPublicationCandidates:    {},
 		types.CapLLMProviderCatalog:            {},
 		types.CapLLMProviderRoute:              {},
 		types.CapRunLLMSettings:                {},

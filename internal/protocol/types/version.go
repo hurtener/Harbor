@@ -502,6 +502,15 @@ const (
 	// Protocol transport are wired together; references never imply
 	// cross-runtime portability or authority.
 	CapSkillPublications Capability = "skill_publications"
+	// CapSkillReads advertises the two body reads: a caller's own personal
+	// skill (`agent_config.user.skills.read`) and an organization
+	// publication revision (`skills.publications.read`).
+	CapSkillReads Capability = "skill_reads"
+	// CapSkillPublicationCandidates advertises the reviewed submission path
+	// (`skills.publications.candidates.*`): a caller freezes one of their own
+	// personal skills for organization-admin review, which an admin accepts
+	// as a new publication or a successor revision, or rejects.
+	CapSkillPublicationCandidates Capability = "skill_publication_candidates"
 )
 
 // canonicalCapabilities is the registered set — the universe of
@@ -529,6 +538,8 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapToolsConfigurationView:        {},
 	CapCallerMemory:                  {},
 	CapSkillPublications:             {},
+	CapSkillReads:                    {},
+	CapSkillPublicationCandidates:    {},
 	CapLLMProviderCatalog:            {},
 	CapLLMProviderRoute:              {},
 	CapLLMProviderRouteModelProfile:  {},

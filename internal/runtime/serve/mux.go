@@ -344,6 +344,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 	stateSnapshotsAvailable := in.Tasks != nil && in.Sessions != nil &&
 		in.Coordinator != nil && in.Artifacts != nil
 	publicationAvailable := in.PublicationStore != nil
+	skillCandidatesAvailable := false
 	if publicationAvailable {
 		if in.AgentReach == nil {
 			return nil, wrapErr("skill publications", fmt.Errorf("%w: signed Agent-reach authorizer is nil", ErrPublicationWiringMisconfigured))
@@ -351,11 +352,28 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		if strings.TrimSpace(in.PublicationRuntimeID) == "" {
 			return nil, wrapErr("skill publications", fmt.Errorf("%w: runtime/deployment ID is empty", ErrPublicationWiringMisconfigured))
 		}
-		skillPublications, pErr := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{
+		deps := protocol.SkillPublicationsDeps{
 			Store:      in.PublicationStore,
 			AgentReach: in.AgentReach,
 			RuntimeID:  in.PublicationRuntimeID,
-		})
+		}
+		// The reviewed-submission path needs the durable StateStore for the
+		// candidate aggregate and the personal-skill service to freeze the
+		// caller's own skill under verified identity and signed reach.
+		if in.State != nil && in.UserSkillImportService != nil {
+			candidates, cErr := publication.NewStateStoreCandidateStore(in.State, in.PublicationRuntimeID)
+			if cErr != nil {
+				return nil, wrapErr("skill publication candidates", cErr)
+			}
+			importService := in.UserSkillImportService
+			deps.Candidates = candidates
+			deps.Snapshots = protocol.PersonalSkillSnapshotFunc(func(ctx context.Context, agentID, name string) (skills.Skill, string, int, error) {
+				snap, err := importService.SnapshotPersonalSkill(ctx, agentID, name)
+				return snap.Skill, snap.PackageHash, snap.SupportFiles, err
+			})
+			skillCandidatesAvailable = true
+		}
+		skillPublications, pErr := protocol.NewSkillPublicationsSurface(deps)
 		if pErr != nil {
 			return nil, wrapErr("skill publications surface", pErr)
 		}
@@ -405,21 +423,23 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			}
 			return types.EffectiveRunCompletionHook{AgentID: agentID, State: "active", Tool: spec.Tool, TimeoutMS: timeout.Milliseconds()}, nil
 		},
-		ProviderRouteAvailable:          in.ProviderRouteAvailable,
-		Redactor:                        red,
-		Bus:                             bus,
-		DisplayName:                     in.DisplayName,
-		InstanceID:                      in.InstanceID,
-		ExternalGrant:                   in.ExternalGrantReadiness,
-		TopologyAvailable:               in.TopologyAvailable,
-		AgentConfigAvailable:            in.AgentConfig != nil,
-		MemoryBudgetAvailable:           in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil,
-		StateSnapshotsAvailable:         stateSnapshotsAvailable,
-		SessionLifecycleAvailable:       sessionLifecycleAvailable,
-		ToolAnnotationsAvailable:        toolAnnotationsAvailable,
-		ToolsConfigurationViewAvailable: in.Catalog != nil && in.AgentConfig != nil && in.MCPRegistry != nil && in.AgentResolver != nil && in.AgentReach != nil,
-		SkillPublicationsAvailable:      publicationAvailable,
-		ProviderCatalogAvailable:        in.ProviderCatalog != nil,
+		ProviderRouteAvailable:              in.ProviderRouteAvailable,
+		Redactor:                            red,
+		Bus:                                 bus,
+		DisplayName:                         in.DisplayName,
+		InstanceID:                          in.InstanceID,
+		ExternalGrant:                       in.ExternalGrantReadiness,
+		TopologyAvailable:                   in.TopologyAvailable,
+		AgentConfigAvailable:                in.AgentConfig != nil,
+		MemoryBudgetAvailable:               in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil,
+		StateSnapshotsAvailable:             stateSnapshotsAvailable,
+		SessionLifecycleAvailable:           sessionLifecycleAvailable,
+		ToolAnnotationsAvailable:            toolAnnotationsAvailable,
+		ToolsConfigurationViewAvailable:     in.Catalog != nil && in.AgentConfig != nil && in.MCPRegistry != nil && in.AgentResolver != nil && in.AgentReach != nil,
+		SkillPublicationsAvailable:          publicationAvailable,
+		SkillReadsAvailable:                 in.UserSkillImportService != nil && in.AgentConfig != nil,
+		SkillPublicationCandidatesAvailable: skillCandidatesAvailable,
+		ProviderCatalogAvailable:            in.ProviderCatalog != nil,
 	})
 	if err != nil {
 		return nil, wrapErr("posture surface", err)

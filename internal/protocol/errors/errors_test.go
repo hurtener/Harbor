@@ -62,6 +62,8 @@ var wantCodes = []protoerrors.Code{
 	protoerrors.CodeSkillPublicationRetired,
 	protoerrors.CodeSkillPublicationRuntimeMismatch,
 	protoerrors.CodeSkillPublicationIdempotencyConflict,
+	protoerrors.CodeCandidatePendingExists,
+	protoerrors.CodeCandidateSupportFilesUnsupported,
 }
 
 func TestErrorCodes_StableWireStrings(t *testing.T) {
@@ -112,6 +114,8 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 		protoerrors.CodeSkillPublicationRetired:             "skill_publication_retired",
 		protoerrors.CodeSkillPublicationRuntimeMismatch:     "skill_publication_runtime_mismatch",
 		protoerrors.CodeSkillPublicationIdempotencyConflict: "skill_publication_idempotency_conflict",
+		protoerrors.CodeCandidatePendingExists:              "candidate_pending_exists",
+		protoerrors.CodeCandidateSupportFilesUnsupported:    "candidate_support_files_unsupported",
 	}
 	for code, want := range wire {
 		if string(code) != want {

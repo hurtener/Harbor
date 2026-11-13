@@ -51,6 +51,10 @@ assert_grep_present 'MethodAgentConfigUserSkillsExport Method = "agent_config.us
   internal/protocol/methods/methods.go "user skills export method"
 assert_grep_present 'case "user/skills/export":' \
   internal/protocol/transports/stream/agentconfig_handler.go "user/skills/export route dispatch"
+assert_grep_present 'MethodAgentConfigUserSkillsRead Method = "agent_config.user.skills.read"' \
+  internal/protocol/methods/methods.go "user skills read method"
+assert_grep_present 'case "user/skills/read":' \
+  internal/protocol/transports/stream/agentconfig_handler.go "user/skills/read route dispatch"
 
 # --- Static: the drivers resolve the durable rung cross-session. ---
 assert_grep_present 'session = \? OR scope = \?' \
@@ -164,6 +168,28 @@ else
               ok "claim-free export returned the installed personal package ZIP artifact"
             else
               fail "installed personal-skill export expected a ZIP artifact: ${exported} (commit=${committed})"
+            fi
+            # The read returns the same skill as its canonical SKILL.md text.
+            readback=$(curl -s --max-time 5 -X POST -H "${AUTH}" -H 'X-Harbor-Session: sess-B' \
+              -H 'Content-Type: application/json' \
+              -d '{"agent_id":"harbor-dev-agent","name":"export-smoke-202"}' "$(api_url /v1/agent_config/user/skills/read)" || true)
+            if printf '%s' "${readback}" | jq -e '.name == "export-smoke-202" and (.document | contains("Verify portable export.")) and (.package_hash | startswith("v1:"))' >/dev/null 2>&1; then
+              ok "claim-free read returned the installed personal skill document"
+            elif printf '%s' "${readback}" | jq -e '.code == "unknown_method"' >/dev/null 2>&1; then
+              skip "phase 202: personal-skill read not implemented on this build"
+            else
+              fail "installed personal-skill read expected its document: ${readback}"
+            fi
+            # A legacy upsert-only row reads as a rendered document too.
+            legacy_read=$(curl -s --max-time 5 -X POST -H "${AUTH}" -H 'X-Harbor-Session: sess-B' \
+              -H 'Content-Type: application/json' \
+              -d '{"agent_id":"harbor-dev-agent","name":"durable-smoke-202"}' "$(api_url /v1/agent_config/user/skills/read)" || true)
+            if printf '%s' "${legacy_read}" | jq -e '.name == "durable-smoke-202" and (.document | length > 0)' >/dev/null 2>&1; then
+              ok "claim-free read renders a legacy upsert-only row"
+            elif printf '%s' "${legacy_read}" | jq -e '.code == "unknown_method"' >/dev/null 2>&1; then
+              skip "phase 202: personal-skill read not implemented on this build"
+            else
+              fail "legacy personal-skill read expected a document: ${legacy_read}"
             fi
           elif printf '%s' "${legacy}" | jq -e '.code == "unknown_method"' >/dev/null 2>&1; then
             skip "phase 202: personal-skill export not implemented on this build"

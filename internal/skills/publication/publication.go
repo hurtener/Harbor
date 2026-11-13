@@ -130,6 +130,10 @@ type PublishRequest struct {
 	Name           string
 	Skill          skills.Skill
 	ExpectedAbsent bool
+	// Candidate, when set, makes this a candidate acceptance's publish: it
+	// commits only under the candidate's live fence, and a publish the
+	// candidate already produced is returned instead of written again.
+	Candidate *CandidateFence
 }
 
 // SuccessorRequest publishes an immutable successor revision for an existing
@@ -140,6 +144,8 @@ type SuccessorRequest struct {
 	ExpectedGeneration  uint64
 	ExpectedContentHash string
 	Skill               skills.Skill
+	// Candidate fences a candidate acceptance's publish (see PublishRequest).
+	Candidate *CandidateFence
 }
 
 // RetireRequest terminally retires a publication. Retirement is not a grace
@@ -196,7 +202,58 @@ type Store interface {
 	Remove(ctx context.Context, caller identity.Quadruple, req RemoveRequest) (Receipt, error)
 	ListReferences(ctx context.Context, caller identity.Quadruple) ([]Reference, error)
 	Resolve(ctx context.Context, caller identity.Quadruple, agentID string) (skills.Skill, Metadata, error)
+	// Read returns one publication revision's body for human review. With
+	// AnyState false it serves only an active publication's current revision
+	// (the catalog ListAvailable exposes); AnyState true additionally serves
+	// retired publications and earlier revisions and is admin-only at the
+	// authorization edge.
+	Read(ctx context.Context, caller identity.Quadruple, req ReadRequest) (skills.Skill, Metadata, error)
+	// Revisions lists one publication's immutable revisions, oldest first,
+	// as content-free metadata (admin-only through AuthorizedStore).
+	Revisions(ctx context.Context, caller identity.Quadruple, publicationID string) ([]Metadata, error)
+	// FenceCandidate installs or resumes token (the acceptance's claim
+	// sequence number) as the candidate's live fence. A token at or below the
+	// revoked one, or below the live one, is ErrCandidateFenced; a newer token
+	// revokes the older live fence in the same write.
+	FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, token uint64) error
+	// ResolveCandidate atomically reports the revision the candidate's
+	// publish produced, or, if none, revokes the fence of the acceptance the
+	// caller saw (expected) and anything older. A live fence newer than
+	// expected is ErrConflict (re-read). Any error means "unknown": do not
+	// release the claim.
+	ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, expected uint64) (CandidateResolution, error)
 	Close(ctx context.Context) error
+}
+
+// ReadRequest names one publication revision to read. An empty RevisionID
+// means the current revision.
+type ReadRequest struct {
+	PublicationID string
+	RevisionID    string
+	AnyState      bool
+}
+
+// readPublication applies the shared Read visibility rule to one loaded
+// publication. Invisible revisions are ErrNotFound so existence never leaks.
+func readPublication(p Publication, req ReadRequest) (skills.Skill, Metadata, error) {
+	revisionID := strings.TrimSpace(req.RevisionID)
+	if !req.AnyState {
+		if p.State != StateActive || (revisionID != "" && revisionID != p.RevisionID) {
+			return skills.Skill{}, Metadata{}, ErrNotFound
+		}
+		revisionID = p.RevisionID
+	}
+	if revisionID == "" {
+		revisionID = p.RevisionID
+	}
+	rev, err := revisionFor(p, revisionID)
+	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	if err := validateRevisionIntegrity(p, rev); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	return cloneSkill(rev.Skill), revisionMetadata(p, rev), nil
 }
 
 // Sentinel errors. Callers should use errors.Is and never parse messages.
@@ -403,6 +460,7 @@ type MemoryStore struct {
 	closed  bool
 	clock   func() time.Time
 	pubs    map[string][]Publication
+	fences  map[string]map[string]fenceState
 	refs    map[string]Reference
 	ops     map[string]operation
 }
@@ -511,6 +569,17 @@ func (m *MemoryStore) Publish(ctx context.Context, caller identity.Quadruple, re
 	if err != nil {
 		return Metadata{}, Receipt{}, err
 	}
+	if err := checkReservedExtra(skill, req.Candidate); err != nil {
+		return Metadata{}, Receipt{}, err
+	}
+	if req.Candidate != nil {
+		if res, ok := candidateRevision(m.pubs[caller.TenantID], req.Candidate.CandidateID); ok {
+			return res.Publication, res.Receipt, nil
+		}
+		if err := checkFence(m.fencesFor(caller.TenantID), req.Candidate); err != nil {
+			return Metadata{}, Receipt{}, err
+		}
+	}
 	fingerprint := "publish\x00" + canonicalName(req.Name) + "\x00" + skill.ContentHash
 	opKey := opKey(caller, req.IdempotencyKey)
 	if prior, ok, err := m.checkOp(opKey, fingerprint); err != nil || ok {
@@ -598,6 +667,17 @@ func (m *MemoryStore) PublishSuccessor(ctx context.Context, caller identity.Quad
 	skill, err := validateSkill(req.Skill, "")
 	if err != nil {
 		return Metadata{}, Receipt{}, err
+	}
+	if err := checkReservedExtra(skill, req.Candidate); err != nil {
+		return Metadata{}, Receipt{}, err
+	}
+	if req.Candidate != nil {
+		if res, ok := candidateRevision(m.pubs[caller.TenantID], req.Candidate.CandidateID); ok {
+			return res.Publication, res.Receipt, nil
+		}
+		if err := checkFence(m.fencesFor(caller.TenantID), req.Candidate); err != nil {
+			return Metadata{}, Receipt{}, err
+		}
 	}
 	fingerprint := fmt.Sprintf("successor\x00%s\x00%d\x00%s\x00%s", req.PublicationID, req.ExpectedGeneration, req.ExpectedContentHash, skill.ContentHash)
 	opKey := opKey(caller, req.IdempotencyKey)
@@ -876,6 +956,54 @@ func (m *MemoryStore) Resolve(ctx context.Context, caller identity.Quadruple, ag
 	return cloneSkill(rev.Skill), revisionMetadata(p, rev), nil
 }
 
+// Read implements Store.Read.
+func (m *MemoryStore) Read(ctx context.Context, caller identity.Quadruple, req ReadRequest) (skills.Skill, Metadata, error) {
+	if err := validateCaller(caller); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return skills.Skill{}, Metadata{}, ErrStoreClosed
+	}
+	p, _, err := m.publication(caller, strings.TrimSpace(req.PublicationID))
+	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	return readPublication(p, req)
+}
+
+// Revisions implements Store.Revisions.
+func (m *MemoryStore) Revisions(ctx context.Context, caller identity.Quadruple, publicationID string) ([]Metadata, error) {
+	if err := validateCaller(caller); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return nil, ErrStoreClosed
+	}
+	p, _, err := m.publication(caller, strings.TrimSpace(publicationID))
+	if err != nil {
+		return nil, err
+	}
+	return revisionsMetadata(p), nil
+}
+
+func revisionsMetadata(p Publication) []Metadata {
+	out := make([]Metadata, 0, len(p.Revisions))
+	for _, rev := range p.Revisions {
+		out = append(out, revisionMetadata(p, rev))
+	}
+	return out
+}
+
 func (m *MemoryStore) Close(context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -906,6 +1034,11 @@ func NewStateStore(st state.StateStore, runtimeID string) (*StateStoreStore, err
 type durableAggregate struct {
 	Publications []Publication        `json:"publications"`
 	Operations   map[string]operation `json:"operations,omitempty"`
+	// CandidateFenceTokens maps a candidate to its integer acceptance fence;
+	// fenced publishes commit only under the live token. (Unreleased interim
+	// builds wrote string fences under another key; those are ignored, which
+	// leaves such a candidate unfenced — revoked and resolvable — never stuck.)
+	CandidateFenceTokens map[string]fenceState `json:"candidate_fence_tokens,omitempty"`
 }
 type durableReference struct {
 	Reference  Reference            `json:"reference"`
@@ -994,6 +1127,17 @@ func (d *StateStoreStore) Publish(ctx context.Context, c identity.Quadruple, r P
 	a, old, present, err := d.loadAggregate(ctx, c.TenantID)
 	if err != nil {
 		return Metadata{}, Receipt{}, err
+	}
+	if err := checkReservedExtra(skill, r.Candidate); err != nil {
+		return Metadata{}, Receipt{}, err
+	}
+	if r.Candidate != nil {
+		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {
+			return res.Publication, res.Receipt, nil
+		}
+		if err := checkFence(a.CandidateFenceTokens, r.Candidate); err != nil {
+			return Metadata{}, Receipt{}, err
+		}
 	}
 	fp := "publish\x00" + canonicalName(r.Name) + "\x00" + skill.ContentHash
 	opKey := durableOpKey(c, r.IdempotencyKey)
@@ -1166,6 +1310,17 @@ func (d *StateStoreStore) PublishSuccessor(ctx context.Context, c identity.Quadr
 	}
 	if !present {
 		return Metadata{}, Receipt{}, ErrNotFound
+	}
+	if err := checkReservedExtra(skill, r.Candidate); err != nil {
+		return Metadata{}, Receipt{}, err
+	}
+	if r.Candidate != nil {
+		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {
+			return res.Publication, res.Receipt, nil
+		}
+		if err := checkFence(a.CandidateFenceTokens, r.Candidate); err != nil {
+			return Metadata{}, Receipt{}, err
+		}
 	}
 	fp := fmt.Sprintf("successor\x00%s\x00%d\x00%s\x00%s", r.PublicationID, r.ExpectedGeneration, r.ExpectedContentHash, skill.ContentHash)
 	opKey := durableOpKey(c, r.IdempotencyKey)
@@ -1531,6 +1686,49 @@ func (d *StateStoreStore) Resolve(ctx context.Context, c identity.Quadruple, age
 	}
 	return cloneSkill(rev.Skill), revisionMetadata(p, rev), nil
 }
+
+// Read implements Store.Read.
+func (d *StateStoreStore) Read(ctx context.Context, c identity.Quadruple, req ReadRequest) (skills.Skill, Metadata, error) {
+	if err := validateCaller(c); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.checkOpen(ctx); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	a, _, _, err := d.loadPubs(ctx, c)
+	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	p, _, err := d.findPublication(a, strings.TrimSpace(req.PublicationID))
+	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	return readPublication(p, req)
+}
+
+// Revisions implements Store.Revisions.
+func (d *StateStoreStore) Revisions(ctx context.Context, c identity.Quadruple, publicationID string) ([]Metadata, error) {
+	if err := validateCaller(c); err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.checkOpen(ctx); err != nil {
+		return nil, err
+	}
+	a, _, _, err := d.loadPubs(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	p, _, err := d.findPublication(a, strings.TrimSpace(publicationID))
+	if err != nil {
+		return nil, err
+	}
+	return revisionsMetadata(p), nil
+}
+
 func (d *StateStoreStore) Close(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -172,6 +172,29 @@ type UserSkillExportClient interface {
 
 var _ UserSkillExportClient = (*client)(nil)
 
+// SkillReadClient is the additive body-read surface: a caller's own personal
+// skill and an organization publication revision. The concrete client
+// returned by New implements it.
+type SkillReadClient interface {
+	AgentConfigUserSkillsRead(context.Context, types.AgentConfigUserSkillsReadRequest) (types.AgentConfigUserSkillsReadResponse, error)
+	SkillPublicationsRead(context.Context, types.SkillPublicationReadRequest) (types.SkillPublicationReadResponse, error)
+}
+
+var _ SkillReadClient = (*client)(nil)
+
+// SkillPublicationCandidatesClient is the additive reviewed-submission
+// surface. The concrete client returned by New implements it.
+type SkillPublicationCandidatesClient interface {
+	SkillPublicationCandidatesSubmit(context.Context, types.SkillPublicationCandidateSubmitRequest) (types.SkillPublicationCandidateSubmitResponse, error)
+	SkillPublicationCandidatesList(context.Context, types.SkillPublicationCandidateListRequest) (types.SkillPublicationCandidateListResponse, error)
+	SkillPublicationCandidatesRead(context.Context, types.SkillPublicationCandidateReadRequest) (types.SkillPublicationCandidateReadResponse, error)
+	SkillPublicationCandidatesAccept(context.Context, types.SkillPublicationCandidateAcceptRequest) (types.SkillPublicationCandidateAcceptResponse, error)
+	SkillPublicationCandidatesReject(context.Context, types.SkillPublicationCandidateRejectRequest) (types.SkillPublicationCandidateRejectResponse, error)
+	SkillPublicationCandidatesWithdraw(context.Context, types.SkillPublicationCandidateWithdrawRequest) (types.SkillPublicationCandidateWithdrawResponse, error)
+}
+
+var _ SkillPublicationCandidatesClient = (*client)(nil)
+
 // RetentionClient is the optional admin-only retention read. It is a separate
 // interface so adding it does not change the method set of Client or
 // RuntimeClient that external implementations and test doubles satisfy. The
@@ -414,6 +437,8 @@ func routeFor(method methods.Method) string {
 		return "/v1/observability/query"
 	case method == methods.MethodAgentConfigUserSkillsExport:
 		return "/v1/agent_config/user/skills/export"
+	case method == methods.MethodAgentConfigUserSkillsRead:
+		return "/v1/agent_config/user/skills/read"
 	case method == methods.MethodAgentConfigUserSkillsImportValidate:
 		return "/v1/agent_config/user/skills/import_validate"
 	case method == methods.MethodAgentConfigUserSkillsImportCommit:
@@ -999,4 +1024,68 @@ func cloneIdentityPointer(scope *types.IdentityScope, seen map[*types.IdentitySc
 	}
 	clone := cloneIdentitySeen(scope, seen)
 	return &clone
+}
+
+// AgentConfigUserSkillsRead reads one caller-owned personal skill with its document and support manifest.
+func (c *client) AgentConfigUserSkillsRead(ctx context.Context, request types.AgentConfigUserSkillsReadRequest) (types.AgentConfigUserSkillsReadResponse, error) {
+	request.Identity = c.scope()
+	var out types.AgentConfigUserSkillsReadResponse
+	err := c.callMethod(ctx, methods.MethodAgentConfigUserSkillsRead, request, &out)
+	return out, err
+}
+
+// SkillPublicationsRead reads one organization publication revision body.
+func (c *client) SkillPublicationsRead(ctx context.Context, request types.SkillPublicationReadRequest) (types.SkillPublicationReadResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationReadResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsRead, request, &out)
+	return out, err
+}
+
+// SkillPublicationCandidatesSubmit freezes one of the caller's personal skills for organization review.
+func (c *client) SkillPublicationCandidatesSubmit(ctx context.Context, request types.SkillPublicationCandidateSubmitRequest) (types.SkillPublicationCandidateSubmitResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationCandidateSubmitResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsCandidatesSubmit, request, &out)
+	return out, err
+}
+
+// SkillPublicationCandidatesList lists publication candidates visible to the caller.
+func (c *client) SkillPublicationCandidatesList(ctx context.Context, request types.SkillPublicationCandidateListRequest) (types.SkillPublicationCandidateListResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationCandidateListResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsCandidatesList, request, &out)
+	return out, err
+}
+
+// SkillPublicationCandidatesRead reads one candidate's frozen body.
+func (c *client) SkillPublicationCandidatesRead(ctx context.Context, request types.SkillPublicationCandidateReadRequest) (types.SkillPublicationCandidateReadResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationCandidateReadResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsCandidatesRead, request, &out)
+	return out, err
+}
+
+// SkillPublicationCandidatesAccept accepts a pending candidate as a publication (admin).
+func (c *client) SkillPublicationCandidatesAccept(ctx context.Context, request types.SkillPublicationCandidateAcceptRequest) (types.SkillPublicationCandidateAcceptResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationCandidateAcceptResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsCandidatesAccept, request, &out)
+	return out, err
+}
+
+// SkillPublicationCandidatesReject rejects a pending candidate (admin).
+func (c *client) SkillPublicationCandidatesReject(ctx context.Context, request types.SkillPublicationCandidateRejectRequest) (types.SkillPublicationCandidateRejectResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationCandidateRejectResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsCandidatesReject, request, &out)
+	return out, err
+}
+
+// SkillPublicationCandidatesWithdraw withdraws the caller's own pending candidate.
+func (c *client) SkillPublicationCandidatesWithdraw(ctx context.Context, request types.SkillPublicationCandidateWithdrawRequest) (types.SkillPublicationCandidateWithdrawResponse, error) {
+	request.Identity = c.scope()
+	var out types.SkillPublicationCandidateWithdrawResponse
+	err := c.callMethod(ctx, methods.MethodSkillsPublicationsCandidatesWithdraw, request, &out)
+	return out, err
 }

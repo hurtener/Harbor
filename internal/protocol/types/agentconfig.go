@@ -2071,6 +2071,49 @@ type AgentConfigUserSkillsExportResponse struct {
 	ProtocolVersion string      `json:"protocol_version"`
 }
 
+// AgentConfigUserSkillsReadRequest reads exactly one caller-owned user-scope
+// skill on an Agent in the caller's signed reach, with the same authority as
+// export. SupportPath, when set, must name one manifest entry exactly.
+type AgentConfigUserSkillsReadRequest struct {
+	Identity    IdentityScope `json:"identity"`
+	AgentID     string        `json:"agent_id"`
+	Name        string        `json:"name"`
+	SupportPath string        `json:"support_path,omitempty"`
+}
+
+// AgentConfigUserSkillsReadResponse carries the logical skill, its canonical
+// SKILL.md document (the same bytes export writes at the archive root), the
+// support manifest, and optionally one support file's bounded text.
+type AgentConfigUserSkillsReadResponse struct {
+	Name            string                   `json:"name"`
+	PackageHash     string                   `json:"package_hash,omitempty"`
+	Skill           AgentConfigAgentPackItem `json:"skill"`
+	Document        string                   `json:"document"`
+	SupportFiles    []SkillSupportFileInfo   `json:"support_files,omitempty"`
+	SupportFile     *SkillSupportFileContent `json:"support_file,omitempty"`
+	UpdatedAt       string                   `json:"updated_at,omitempty"`
+	ProtocolVersion string                   `json:"protocol_version"`
+}
+
+// SkillSupportFileInfo is one support-manifest entry (no bytes).
+type SkillSupportFileInfo struct {
+	Path      string `json:"path"`
+	MIME      string `json:"mime"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// SkillSupportFileContent is one support file's bounded UTF-8 text. Binary is
+// true (and Text empty) for non-text media types or invalid UTF-8; Truncated
+// is true when the text was cut at the read bound.
+type SkillSupportFileContent struct {
+	Path      string `json:"path"`
+	MIME      string `json:"mime"`
+	SizeBytes int64  `json:"size_bytes"`
+	Text      string `json:"text,omitempty"`
+	Truncated bool   `json:"truncated"`
+	Binary    bool   `json:"binary"`
+}
+
 // AgentConfigUserSkillsUpsertRequest is the `agent_config.user.skills.upsert`
 // request — upserts a DURABLE personal skill at user scope (persists across
 // ALL of the caller's conversations). The skill scope is forced to

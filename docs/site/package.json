@@ -7,6 +7,8 @@
   "private": true,
   "scripts": {
     "dev": "vitepress dev",
+    "test": "node --test .vitepress/changelog.test.mjs .vitepress/facts.test.mjs",
+    "prebuild": "npm test",
     "build": "vitepress build",
     "preview": "vitepress preview"
   },

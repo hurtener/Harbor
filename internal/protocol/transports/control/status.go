@@ -142,8 +142,11 @@ func HTTPStatus(code protoerrors.Code) int {
 	case protoerrors.CodeSkillPublicationConflict,
 		protoerrors.CodeSkillPublicationRetired,
 		protoerrors.CodeSkillPublicationRuntimeMismatch,
-		protoerrors.CodeSkillPublicationIdempotencyConflict:
+		protoerrors.CodeSkillPublicationIdempotencyConflict,
+		protoerrors.CodeCandidatePendingExists:
 		return http.StatusConflict // 409
+	case protoerrors.CodeCandidateSupportFilesUnsupported:
+		return http.StatusUnprocessableEntity // 422
 	case protoerrors.CodeSkillPublicationNotFound:
 		return http.StatusNotFound // 404
 	case protoerrors.CodeRenderAdmissionMissing:
