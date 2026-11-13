@@ -1522,13 +1522,14 @@ type ToolsConfig struct {
 	// MCP tool schema in each model call (the historical default);
 	// "deferred" keeps them out of the per-call tool declarations so the
 	// model sees the bounded `<deferred_tools>` name index and loads full
-	// schemas on demand through `tool_search` / `tool_get` (both built-ins
-	// must be enabled for the tools to stay reachable).
+	// schemas on demand through `tool_search` / `tool_get`.
 	//
-	// It is the LOWEST loading-mode layer: `tools.entries[].loading_mode`
-	// and the agent-config tool-exposure loading overrides (per server or
-	// per tool) still win, so an operator can pin individual tools back to
-	// "always". Loading is not capability-narrowing; a deferred tool keeps
+	// It is the LOWEST loading-mode layer: the agent-config tool-exposure
+	// overrides (`tool_loading_modes`, `server_loading_modes`) still win,
+	// so an operator can pin individual tools back to "always".
+	// `tools.entries[].loading_mode` cannot reach MCP tools (entries apply
+	// before boot MCP attach; runtime attaches never see them). "deferred"
+	// requires an always-loaded `tool_search` in `tools.built_in`. Loading is not capability-narrowing; a deferred tool keeps
 	// every authority / approval gate. Optional. Restart-required.
 	MCPDefaultLoadingMode string `yaml:"mcp_default_loading_mode,omitempty"`
 

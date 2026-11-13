@@ -2637,13 +2637,17 @@ alike. `""` or `always` (the default) declares every MCP tool's full schema
 on every model call. `deferred` keeps MCP tools out of the per-call tool
 declarations: the model sees the bounded `<deferred_tools>` name index
 (`planner.deferred_tool_index`) and loads full schemas on demand through
-`tool_search` / `tool_get`. Enable both built-ins when you set `deferred`,
-or the deferred tools are unreachable.
+`tool_search` / `tool_get`. `deferred` requires `tool_search` in
+`tools.built_in`, itself always-loaded (not deferred by a
+`tools.entries[].loading_mode`); validation refuses it otherwise. Enable
+`tool_get` too so the model can read a full schema before calling.
 
-It is the lowest loading-mode layer. `tools.entries[].loading_mode` and the
-agent-config `tool_exposure` overrides (`server_loading_modes`,
-`tool_loading_modes`) still win, so individual servers or tools can be pinned
-back to `always`. MCP resource and prompt wrappers stay deferred either way.
+It is the lowest loading-mode layer. The agent-config `tool_exposure`
+overrides (`tool_loading_modes`, `server_loading_modes`) still win, so
+individual tools or servers can be pinned back to `always`.
+`tools.entries[].loading_mode` does not reach MCP tools: entries are applied
+before boot MCP attach and fail as unregistered, and runtime attaches never
+see them. MCP resource and prompt wrappers stay deferred either way.
 Loading is not capability-narrowing: a deferred tool keeps every identity,
 authority and approval gate. Restart-required.
 

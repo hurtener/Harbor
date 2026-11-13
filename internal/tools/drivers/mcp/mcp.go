@@ -171,8 +171,8 @@ type Config struct {
 	// DefaultLoading is the driver-default LoadingMode stamped on this
 	// provider's TOOL-form descriptors. Zero-valued → tools.LoadingAlways.
 	// It is the lowest layer of the pinned loading-mode precedence (see
-	// agentcfg.ToolExposure): boot `tools.entries[].loading_mode` and the
-	// agent-config loading overrides still win over it. Resource / prompt
+	// agentcfg.ToolExposure): the agent-config `tool_loading_modes` /
+	// `server_loading_modes` overrides win over it. Resource / prompt
 	// wrappers stay deferred regardless.
 	DefaultLoading tools.LoadingMode
 	// DefaultIdentity is the fallback identity stamped on
@@ -645,15 +645,6 @@ func (p *Provider) ValidateAppBinding(ctx context.Context, token, resourceURI st
 // New constructs a Provider. The Provider is NOT connected; the
 // caller MUST call Connect before Discover / Invoke /
 // SubscribeResource.
-// defaultLoading resolves the provider's driver-default LoadingMode for
-// TOOL-form descriptors: Config.DefaultLoading, or LoadingAlways when unset.
-func (p *Provider) defaultLoading() tools.LoadingMode {
-	if p.cfg.DefaultLoading == "" {
-		return tools.LoadingAlways
-	}
-	return p.cfg.DefaultLoading
-}
-
 func New(cfg Config) (*Provider, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -688,6 +679,15 @@ func New(cfg Config) (*Provider, error) {
 		clientOpts,
 	)
 	return p, nil
+}
+
+// defaultLoading resolves the provider's driver-default LoadingMode for
+// TOOL-form descriptors: Config.DefaultLoading, or LoadingAlways when unset.
+func (p *Provider) defaultLoading() tools.LoadingMode {
+	if p.cfg.DefaultLoading == "" {
+		return tools.LoadingAlways
+	}
+	return p.cfg.DefaultLoading
 }
 
 // hostCapabilities builds the client capabilities advertised during the MCP
@@ -1194,10 +1194,9 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	}
 	// Loading defaults every injected tool-form descriptor to the provider's
 	// DefaultLoading (LoadingAlways when unset) — the driver DEFAULT, not a
-	// dead end: the boot config's
-	// `tools.entries[].loading_mode` and, at runtime, the agent-config
-	// tool-exposure loading-mode overrides both sit ABOVE this default in
-	// the pinned precedence order (see agentcfg.ToolExposure godoc). Form
+	// dead end: the agent-config tool-exposure loading-mode overrides sit
+	// ABOVE this default in the pinned precedence order (see
+	// agentcfg.ToolExposure godoc). Form
 	// stays zero-valued (ToolFormTool) — only the resource/prompt wrappers
 	// below stamp a non-default Form.
 	appVisible, appOnly := appVisibilityFlags(t.Meta)

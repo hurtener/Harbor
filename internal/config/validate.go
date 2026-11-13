@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -2013,11 +2014,8 @@ func (c *Config) validateTools() error {
 			fmt.Sprintf("must be > 0 when set (got %d); omit the key to take the %d-byte default",
 				c.Tools.MCPArtifactEgressMaxBytes, DefaultMCPArtifactEgressMaxBytes))
 	}
-	switch c.Tools.MCPDefaultLoadingMode {
-	case "", "always", "deferred":
-	default:
-		return fieldError("tools.mcp_default_loading_mode",
-			fmt.Sprintf("must be one of [\"always\", \"deferred\"] or empty, got %q", c.Tools.MCPDefaultLoadingMode))
+	if err := validateMCPDefaultLoadingMode(c.Tools); err != nil {
+		return err
 	}
 	// Structural catalog cache bounds. Zero takes the default; a negative
 	// value is a mistake, not "unbounded", and the per-entry cap may not
@@ -3847,6 +3845,31 @@ func (c *Config) validateVirtualAgents() error {
 		seen[key] = struct{}{}
 		if _, err := p.ToProfile(c.VirtualAgents.Owner); err != nil {
 			return fieldError(fmt.Sprintf("virtual_agents.profiles[%d]", i), err.Error())
+		}
+	}
+	return nil
+}
+
+// validateMCPDefaultLoadingMode checks `tools.mcp_default_loading_mode`:
+// the closed loading-mode set, and — for "deferred" — an enabled,
+// always-loaded `tool_search` built-in, without which every deferred MCP
+// tool would be unreachable.
+func validateMCPDefaultLoadingMode(t ToolsConfig) error {
+	const field = "tools.mcp_default_loading_mode"
+	switch t.MCPDefaultLoadingMode {
+	case "", "always":
+		return nil
+	case "deferred":
+	default:
+		return fieldError(field,
+			fmt.Sprintf("must be one of [\"always\", \"deferred\"] or empty, got %q", t.MCPDefaultLoadingMode))
+	}
+	if !slices.Contains(t.BuiltIn, "tool_search") {
+		return fieldError(field, `"deferred" requires "tool_search" in tools.built_in, or deferred MCP tools are unreachable`)
+	}
+	for _, e := range t.Entries {
+		if e.Name == "tool_search" && e.LoadingMode == "deferred" {
+			return fieldError(field, `"deferred" requires an always-loaded "tool_search"; tools.entries sets it to "deferred"`)
 		}
 	}
 	return nil

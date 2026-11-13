@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.47.0] — 2026-11-13
+
 ### Added
 
 - **`tools.mcp_default_loading_mode`.** A deployment-wide default loading
@@ -25,9 +27,12 @@ Two versions move independently in Harbor (RFC §5.3):
   `deferred`, MCP tool schemas leave the per-call tool declarations and the
   model loads them on demand through `tool_search` / `tool_get` from the
   `<deferred_tools>` index, so a large attached catalog no longer costs its
-  full schema size on every call. It is the lowest loading-mode layer: boot
-  `tools.entries[].loading_mode` and agent-config `tool_exposure` loading
-  overrides still win. Unset keeps today's behaviour (`always`).
+  full schema size on every call. It is the lowest loading-mode layer: the
+  agent-config `tool_exposure` overrides (`tool_loading_modes`,
+  `server_loading_modes`) still win, so individual tools or servers can be
+  pinned back to `always`. `deferred` requires `tool_search` in
+  `tools.built_in`, always-loaded; validation refuses it otherwise. Unset
+  keeps today's behaviour (`always`).
 
 ## [1.46.0] — 2026-11-12
 

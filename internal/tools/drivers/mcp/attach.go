@@ -135,9 +135,9 @@ type AttachDeps struct {
 	ArtifactEgressMaxBytes int
 	// DefaultLoading is the deployment's driver-default LoadingMode for the
 	// connection's TOOL-form descriptors (`tools.mcp_default_loading_mode`).
-	// Zero leaves the driver on tools.LoadingAlways. Higher precedence layers
-	// (boot `tools.entries[].loading_mode`, agent-config loading overrides)
-	// still apply over it.
+	// Zero leaves the driver on tools.LoadingAlways. The agent-config
+	// `tool_loading_modes` / `server_loading_modes` overrides still apply
+	// over it.
 	DefaultLoading tools.LoadingMode
 }
 
