@@ -17162,11 +17162,20 @@ turn), and in the model context: a quoted writer label before the user
 goal (rendered as a quoted display-name label, never as an instruction), and
 `speaker` on the current and retained historical requests.
 
-**Known limits.** Skills still resolve for the partition: the run-bound
-skill snapshot, the owner's user-layer personal skills and the session's
-personal skills are visible to the model on a participant's turn (they are
-bound to the exact run quadruple). An issuer that must keep personal skills
-private should not share sessions that carry them. Revocation is the issuer's: a participant bearer stays valid until
+**Personal skills are hidden on participant turns (v1).** A participant's
+run snapshot excludes every personal skill — the user-scope rung (including
+the owner's user-layer personal skills) and the session's personal tier — so
+the skills list, skill bodies, search and skill tools see only shared,
+operator and published skills. The participant's own personal skills are not
+added either in v1. A participant's direct `artifacts.put` is pinned to its
+one session, and `artifacts.uploaded` names it (`ParticipantUserID`).
+
+**Known limits.** Governance budget and rate-limit events are published to
+the session partition without naming the participant. An MCP connection's
+preparation identity is taken from its first connect, so a shared
+connection first opened by a participant's run re-authenticates later
+reconnects as that participant (as it does today for whichever user
+connected first). Revocation is the issuer's: a participant bearer stays valid until
 it expires, and a cached participant credential until its exchange TTL. A
 retained window written by this version carries `speaker`; an older binary
 reading it rejects the unknown field (no migration, but no clean rollback of

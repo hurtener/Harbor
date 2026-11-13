@@ -73,6 +73,11 @@ type SessionSkillResolverConfig struct {
 	Personal   *DurableStore
 	Cutover    CutoverModeReader
 	Membership SessionSkillMembership
+	// ExcludePersonal hides every personal skill (the user-scope rung and the
+	// session's personal tier) from the run. Set for a turn written by a
+	// session participant in another user's session: the partition owner's
+	// personal skills are never exposed to another person's turn.
+	ExcludePersonal bool
 }
 
 // SessionSkillResolver is an immutable, per-run SkillReader projection. It
@@ -234,6 +239,10 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 			return nil, err
 		}
 	}
+	if cfg.ExcludePersonal {
+		delete(baseByScope, skills.ScopeUser)
+		user = nil
+	}
 	for name := range user {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -263,10 +272,12 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 		return nil, fmt.Errorf("agentcfg/sessionoverlay: resolve cutover mode: %w", err)
 	}
 	var session map[string]skills.Skill
-	switch mode {
-	case CutoverDualRead:
+	switch {
+	case cfg.ExcludePersonal:
+		session = map[string]skills.Skill{}
+	case mode == CutoverDualRead:
 		session, err = loadLegacySessionTier(ctx, cfg)
-	case CutoverStateOnly:
+	case mode == CutoverStateOnly:
 		session, err = loadOwnedSessionTier(ctx, cfg)
 	default:
 		return nil, fmt.Errorf("%w: unknown cutover mode %q", ErrInvalidSessionSkillResolver, mode)

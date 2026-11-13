@@ -248,6 +248,37 @@ type ArtifactUploadedPayload struct {
 	Source string `json:"source,omitempty"`
 	// Namespace is the logical bucket the artifact landed in.
 	Namespace string `json:"namespace,omitempty"`
+	// ParticipantUserID names the uploader when a session participant
+	// uploaded into another user's session (the audit record of who
+	// uploaded). Empty for an owner's upload.
+	ParticipantUserID string `json:"participant_user_id,omitempty"`
+}
+
+// guestParticipantUserID returns the seated participant when it acts inside
+// partitionUser's session, else "".
+func guestParticipantUserID(ctx context.Context, partitionUser string) string {
+	if p, ok := identity.ParticipantFrom(ctx); ok && p.UserID != "" && p.UserID != partitionUser {
+		return p.UserID
+	}
+	return ""
+}
+
+// participantScopeAllowed pins a session participant to its one session: the
+// requested scope must be exactly the verified partition's session. Ordinary
+// callers are unaffected.
+func participantScopeAllowed(ctx context.Context, tenant, user, session string) bool {
+	p, ok := identity.ParticipantFrom(ctx)
+	if !ok {
+		return true
+	}
+	verified, ok := identity.FromVerified(ctx)
+	if !ok {
+		return false
+	}
+	if !p.IsGuest(verified) {
+		return true
+	}
+	return tenant == verified.TenantID && user == verified.UserID && session == verified.SessionID
 }
 
 // Dispatch is the single transport-agnostic entry point for a Protocol
@@ -519,6 +550,10 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 			}
 		}
 	}
+	if !participantScopeAllowed(ctx, req.Scope.Tenant, req.Scope.User, req.Scope.Session) {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: a session participant may only use its one session's artifacts", m)
+	}
 
 	if len(req.Bytes) > s.maxBodyBytes {
 		return nil, protoerrors.Newf(protoerrors.CodeRequestTooLarge,
@@ -592,11 +627,12 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 		},
 		OccurredAt: s.clock(),
 		Payload: ArtifactUploadedPayload{
-			ArtifactID: ref.ID,
-			MimeType:   ref.MimeType,
-			SizeBytes:  ref.SizeBytes,
-			Source:     string(source),
-			Namespace:  ref.Namespace,
+			ArtifactID:        ref.ID,
+			MimeType:          ref.MimeType,
+			SizeBytes:         ref.SizeBytes,
+			Source:            string(source),
+			Namespace:         ref.Namespace,
+			ParticipantUserID: guestParticipantUserID(ctx, scope.UserID),
 		},
 	}
 	if err := s.bus.Publish(ctx, ev); err != nil {
@@ -690,6 +726,10 @@ func (s *ArtifactsSurface) handleGet(ctx context.Context, req *types.ArtifactsGe
 			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
 				"method %q: scope tenant does not match the verified identity", m)
 		}
+	}
+	if !participantScopeAllowed(ctx, req.Scope.Tenant, req.Scope.User, req.Scope.Session) {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: a session participant may only use its one session's artifacts", m)
 	}
 
 	ref, blob, err := s.readArtifact(ctx, scope, req.ID)

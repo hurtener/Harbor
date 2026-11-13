@@ -32,8 +32,9 @@ Two versions move independently in Harbor (RFC §5.3):
   grants and usage receipts, governance budgets and rate limits, MCP
   credential injection, connect preparation, `_meta` identity stamps and
   server visibility, A2A identity, user-scope signed capabilities and
-  user-layer configuration. Skills still resolve for the session partition
-  (known limit). A participant
+  user-layer configuration. Personal skills (the owner's and the session's)
+  are hidden on a participant's turn; a participant's `artifacts.put` is
+  pinned to its session and audited with `ParticipantUserID`. A participant
   bearer may call only `start` (existing sessions only), steering of its own
   runs, `events`, `sessions.turns.list/get` and `artifacts.get/put`. Only the
   writer of a run (or an admin) can steer it. The planner names the writer of

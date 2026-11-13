@@ -250,6 +250,7 @@ Payload `ArtifactUploadedPayload` — safe payload (delivered typed, verbatim).
 | `size_bytes` | `int64` |  |
 | `source` | `string` | optional (`omitempty`) |
 | `namespace` | `string` | optional (`omitempty`) |
+| `participant_user_id` | `string` | optional (`omitempty`) |
 
 ## `audit.admin_scope_used`
 

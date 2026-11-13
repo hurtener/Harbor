@@ -1064,13 +1064,18 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 		}
 	}
 	var resolver *sessionoverlay.SessionSkillResolver
+	// A session participant's turn never sees the partition owner's
+	// personal skills (user rung or session tier); shared and operator
+	// skills remain.
+	participant, hasParticipant := identity.ParticipantFrom(ctx)
 	resolver, err = sessionoverlay.NewSessionSkillResolver(ctx, sessionoverlay.SessionSkillResolverConfig{
-		Run:        q,
-		AgentID:    effectiveAgentID,
-		Base:       d.skillStore,
-		Personal:   d.sessionPersonalSkills,
-		Cutover:    d.sessionSkillCutover,
-		Membership: membership,
+		Run:             q,
+		AgentID:         effectiveAgentID,
+		Base:            d.skillStore,
+		Personal:        d.sessionPersonalSkills,
+		Cutover:         d.sessionSkillCutover,
+		Membership:      membership,
+		ExcludePersonal: hasParticipant && participant.IsGuest(q.Identity),
 	})
 	if err != nil {
 		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("build resolver: %w", err)
