@@ -202,6 +202,9 @@ type Store interface {
 	// retired publications and earlier revisions and is admin-only at the
 	// authorization edge.
 	Read(ctx context.Context, caller identity.Quadruple, req ReadRequest) (skills.Skill, Metadata, error)
+	// Revisions lists one publication's immutable revisions, oldest first,
+	// as content-free metadata (admin-only through AuthorizedStore).
+	Revisions(ctx context.Context, caller identity.Quadruple, publicationID string) ([]Metadata, error)
 	Close(ctx context.Context) error
 }
 
@@ -933,6 +936,34 @@ func (m *MemoryStore) Read(ctx context.Context, caller identity.Quadruple, req R
 	return readPublication(p, req)
 }
 
+// Revisions implements Store.Revisions.
+func (m *MemoryStore) Revisions(ctx context.Context, caller identity.Quadruple, publicationID string) ([]Metadata, error) {
+	if err := validateCaller(caller); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return nil, ErrStoreClosed
+	}
+	p, _, err := m.publication(caller, strings.TrimSpace(publicationID))
+	if err != nil {
+		return nil, err
+	}
+	return revisionsMetadata(p), nil
+}
+
+func revisionsMetadata(p Publication) []Metadata {
+	out := make([]Metadata, 0, len(p.Revisions))
+	for _, rev := range p.Revisions {
+		out = append(out, revisionMetadata(p, rev))
+	}
+	return out
+}
+
 func (m *MemoryStore) Close(context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1608,6 +1639,27 @@ func (d *StateStoreStore) Read(ctx context.Context, c identity.Quadruple, req Re
 		return skills.Skill{}, Metadata{}, err
 	}
 	return readPublication(p, req)
+}
+
+// Revisions implements Store.Revisions.
+func (d *StateStoreStore) Revisions(ctx context.Context, c identity.Quadruple, publicationID string) ([]Metadata, error) {
+	if err := validateCaller(c); err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.checkOpen(ctx); err != nil {
+		return nil, err
+	}
+	a, _, _, err := d.loadPubs(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	p, _, err := d.findPublication(a, strings.TrimSpace(publicationID))
+	if err != nil {
+		return nil, err
+	}
+	return revisionsMetadata(p), nil
 }
 
 func (d *StateStoreStore) Close(ctx context.Context) error {

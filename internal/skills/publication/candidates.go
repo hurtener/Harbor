@@ -61,8 +61,14 @@ const (
 )
 
 const (
-	candidateKind          = "skills.publications.candidates.v1"
-	maxCandidates          = 1024
+	candidateKind = "skills.publications.candidates.v1"
+	// maxPendingCandidates bounds a tenant's open review queue; only pending
+	// candidates count. maxPendingPerUser keeps one person from filling it.
+	maxPendingCandidates = 1024
+	maxPendingPerUser    = 64
+	// maxRetainedTerminal bounds decided candidates kept for history; the
+	// oldest are pruned first (publications themselves are unaffected).
+	maxRetainedTerminal    = 1024
 	maxCandidateNoteRunes  = 2000
 	maxCandidateListText   = 1024
 	candidateIDPrefix      = "cand"
@@ -254,6 +260,48 @@ type candidateOp struct {
 type candidateAggregate struct {
 	Candidates []Candidate            `json:"candidates"`
 	Operations map[string]candidateOp `json:"operations,omitempty"`
+	// Seq numbers candidates monotonically, so pruning never reuses an id.
+	Seq uint64 `json:"seq,omitempty"`
+}
+
+// pruneTerminal keeps at most maxRetainedTerminal decided candidates,
+// dropping the least recently updated and their idempotency records.
+func pruneTerminal(a *candidateAggregate) {
+	terminal := 0
+	for _, c := range a.Candidates {
+		if c.State != CandidatePending {
+			terminal++
+		}
+	}
+	excess := terminal - maxRetainedTerminal
+	if excess <= 0 {
+		return
+	}
+	order := make([]int, 0, terminal)
+	for i, c := range a.Candidates {
+		if c.State != CandidatePending {
+			order = append(order, i)
+		}
+	}
+	sort.SliceStable(order, func(x, y int) bool {
+		return a.Candidates[order[x]].UpdatedAt.Before(a.Candidates[order[y]].UpdatedAt)
+	})
+	drop := make(map[string]bool, excess)
+	for _, i := range order[:excess] {
+		drop[a.Candidates[i].CandidateID] = true
+	}
+	kept := a.Candidates[:0]
+	for _, c := range a.Candidates {
+		if !drop[c.CandidateID] {
+			kept = append(kept, c)
+		}
+	}
+	a.Candidates = kept
+	for key, op := range a.Operations {
+		if drop[op.CandidateID] {
+			delete(a.Operations, key)
+		}
+	}
 }
 
 // candidateBackend loads and saves one tenant's aggregate. token is an
@@ -447,12 +495,26 @@ func (s *candidateStore) Submit(ctx context.Context, caller identity.Quadruple, 
 			return CandidateMetadata{}, ErrCandidatePendingExists
 		}
 	}
-	if len(a.Candidates) >= maxCandidates {
-		return CandidateMetadata{}, fmt.Errorf("%w: candidate limit reached", ErrConflict)
+	pending, mine := 0, 0
+	for _, c := range a.Candidates {
+		if c.State == CandidatePending {
+			pending++
+			if c.SubmitterUser == caller.UserID {
+				mine++
+			}
+		}
 	}
+	if pending >= maxPendingCandidates || mine >= maxPendingPerUser {
+		return CandidateMetadata{}, fmt.Errorf("%w: pending candidate limit reached", ErrConflict)
+	}
+	pruneTerminal(&a)
+	if a.Seq < uint64(len(a.Candidates)) {
+		a.Seq = uint64(len(a.Candidates))
+	}
+	a.Seq++
 	now := s.clock().UTC()
 	c := Candidate{
-		CandidateID: newOpaqueID(candidateIDPrefix, caller.TenantID+"\x00"+caller.UserID+"\x00"+skill.Name, uint64(len(a.Candidates)+1)),
+		CandidateID: newOpaqueID(candidateIDPrefix, caller.TenantID+"\x00"+caller.UserID+"\x00"+skill.Name, a.Seq),
 		Name:        skill.Name, Title: clipListText(skill.Title), Description: clipListText(skill.Description),
 		SubmitterUser: caller.UserID, AgentID: agentID, PackageHash: strings.TrimSpace(req.PackageHash),
 		ContentHash: skill.ContentHash, TargetPublicationID: target, Note: note, State: CandidatePending,

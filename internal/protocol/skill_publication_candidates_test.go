@@ -439,3 +439,57 @@ func TestCandidates_SuccessorRetryWithFreshPredicatesResumes(t *testing.T) {
 		t.Fatalf("resumed=%+v", got)
 	}
 }
+
+// A committed successor whose finalize failed is recovered by a different
+// admin even after another successor advanced the publication: the durable
+// marker, not a caller-scoped receipt or the current generation, proves it.
+func TestCandidates_RecoveryAcrossAdminsAfterPublicationAdvanced(t *testing.T) {
+	raw := publication.NewMemoryStore("runtime-a")
+	store, err := publication.NewAuthorizedStore(raw, auth.NewAgentReachAuthorizer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := &flakyFinalize{CandidateStore: publication.NewMemoryCandidateStore("runtime-a")}
+	snap := protocol.PersonalSkillSnapshotFunc(func(_ context.Context, _, name string) (skills.Skill, string, int, error) {
+		return skills.Skill{Name: name, Trigger: "when", Steps: []string{"v2"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser}, "", 0, nil
+	})
+	surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store, Candidates: candidates, Snapshots: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1, a2 := candAdminCtx(t, "admin1"), candAdminCtx(t, "admin2")
+	pubResp, err := surface.Dispatch(a1, methods.MethodSkillsPublicationsPublish, &types.SkillPublicationPublishRequest{Identity: candID("admin1"), Name: "triage", Skill: types.SkillPublicationSkill{Name: "triage", Trigger: "when", Steps: []string{"v1"}}, IdempotencyKey: "p", ExpectedAbsent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := pubResp.(*types.SkillPublicationPublishResponse).Publication
+	sub, err := surface.Dispatch(candUserCtx(t, "alice"), methods.MethodSkillsPublicationsCandidatesSubmit, &types.SkillPublicationCandidateSubmitRequest{Identity: candID("alice"), AgentID: "agent-a", Name: "triage", IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sub.(*types.SkillPublicationCandidateSubmitResponse).Candidate.CandidateID
+	req := types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin1"), CandidateID: id, ExpectedGeneration: 1, Mode: "successor", PublicationID: pub.PublicationID, ExpectedPublicationGeneration: pub.Generation, ExpectedPublicationContentHash: pub.ContentHash, IdempotencyKey: "a"}
+	if _, err := surface.Dispatch(a1, methods.MethodSkillsPublicationsCandidatesAccept, &req); err == nil {
+		t.Fatal("first accept should fail at finalize")
+	}
+	// Someone else publishes another successor on top.
+	cur, _ := store.Get(a1, publicationTestIdentity("admin1"), pub.PublicationID)
+	if _, err := surface.Dispatch(a1, methods.MethodSkillsPublicationsSuccessor, &types.SkillPublicationSuccessorRequest{Identity: candID("admin1"), PublicationID: pub.PublicationID, ExpectedGeneration: cur.Generation, ExpectedContentHash: cur.ContentHash, Skill: types.SkillPublicationSkill{Name: "triage", Trigger: "when", Steps: []string{"v3"}}, IdempotencyKey: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	// A different admin retries with freshly read predicates.
+	cur, _ = store.Get(a2, publicationTestIdentity("admin2"), pub.PublicationID)
+	req.Identity, req.ExpectedPublicationGeneration, req.ExpectedPublicationContentHash = candID("admin2"), cur.Generation, cur.ContentHash
+	resp, err := surface.Dispatch(a2, methods.MethodSkillsPublicationsCandidatesAccept, &req)
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+	got := resp.(*types.SkillPublicationCandidateAcceptResponse)
+	if got.Candidate.State != "accepted" || got.Candidate.RevisionID == cur.RevisionID || got.Candidate.PriorContentHash != pub.ContentHash {
+		t.Fatalf("recovered=%+v (current %+v)", got.Candidate, cur)
+	}
+	revs, _ := store.Revisions(a2, publicationTestIdentity("admin2"), pub.PublicationID)
+	if len(revs) != 3 {
+		t.Fatalf("revisions=%d want 3 (no republish)", len(revs))
+	}
+}

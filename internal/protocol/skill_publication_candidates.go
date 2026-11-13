@@ -201,31 +201,40 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		receipt publication.Receipt
 		prior   string
 	)
-	switch claim.Mode {
-	case publication.AcceptModeNew:
-		skill.Name = claim.Name
-		meta, receipt, err = s.store.Publish(ctx, caller, publication.PublishRequest{IdempotencyKey: key, Name: claim.Name, Skill: skill, ExpectedAbsent: true})
-		if stderrors.Is(err, publication.ErrConflict) {
-			meta, receipt, err = s.adoptNew(ctx, caller, claim.Name, c.CandidateID, err)
+	// A publish this candidate already produced (any admin, any session,
+	// whatever the publication's current generation) is adopted from the
+	// durable marker instead of being published again.
+	if found, foundPrior, ok := s.findCandidateRevision(ctx, caller, c.CandidateID, claim); ok {
+		meta, prior = found, foundPrior
+		receipt = adoptedReceipt(claim, found, prior)
+	} else {
+		switch claim.Mode {
+		case publication.AcceptModeNew:
+			skill.Name = claim.Name
+			meta, receipt, err = s.store.Publish(ctx, caller, publication.PublishRequest{IdempotencyKey: key, Name: claim.Name, Skill: skill, ExpectedAbsent: true})
+		case publication.AcceptModeSuccessor:
+			current, gerr := s.store.Get(ctx, caller, claim.PublicationID)
+			if gerr != nil {
+				err = gerr
+				break
+			}
+			skill.Name = current.Name
+			prior = claim.ExpectedPublicationContentHash
+			meta, receipt, err = s.store.PublishSuccessor(ctx, caller, publication.SuccessorRequest{
+				IdempotencyKey: key, PublicationID: claim.PublicationID, ExpectedGeneration: claim.ExpectedPublicationGeneration,
+				ExpectedContentHash: claim.ExpectedPublicationContentHash, Skill: skill,
+			})
+			if err == nil && receipt.BeforeHash != "" {
+				prior = receipt.BeforeHash
+			}
 		}
-	case publication.AcceptModeSuccessor:
-		current, gerr := s.store.Get(ctx, caller, claim.PublicationID)
-		if gerr != nil {
-			return nil, mapPublicationError(method, gerr)
-		}
-		skill.Name = current.Name
-		prior = claim.ExpectedPublicationContentHash
-		meta, receipt, err = s.store.PublishSuccessor(ctx, caller, publication.SuccessorRequest{
-			IdempotencyKey: key, PublicationID: claim.PublicationID, ExpectedGeneration: claim.ExpectedPublicationGeneration,
-			ExpectedContentHash: claim.ExpectedPublicationContentHash, Skill: skill,
-		})
-		if err != nil && current.Generation == claim.ExpectedPublicationGeneration+1 && s.publishedBy(ctx, caller, current.PublicationID, c.CandidateID) {
-			// The claimed successor already applied (an earlier attempt by
-			// another caller): adopt it.
-			meta, receipt, err = current, publication.Receipt{Operation: "publish_successor", PublicationID: current.PublicationID, RevisionID: current.RevisionID, Generation: current.Generation, State: current.State, BeforeHash: prior, AfterHash: current.ContentHash}, nil
-		}
-		if err == nil && receipt.BeforeHash != "" {
-			prior = receipt.BeforeHash
+		if err != nil {
+			// A concurrent attempt may have published between the check and
+			// this publish: re-check the durable marker before deciding.
+			if found, foundPrior, ok := s.findCandidateRevision(ctx, caller, c.CandidateID, claim); ok {
+				meta, prior, err = found, foundPrior, nil
+				receipt = adoptedReceipt(claim, found, prior)
+			}
 		}
 	}
 	if err != nil {
@@ -280,7 +289,7 @@ func (s *SkillPublicationsSurface) clearStaleClaim(ctx context.Context, caller i
 		return publication.ErrClaimOutstanding
 	}
 	if privileged {
-		if meta, prior, ok := s.appliedClaim(ctx, caller, c, claim); ok {
+		if meta, prior, ok := s.findCandidateRevision(ctx, caller, c.CandidateID, claim); ok {
 			if _, ferr := s.candidates.FinalizeAccept(ctx, caller, c.CandidateID, publication.AcceptResult{
 				PublicationID: meta.PublicationID, RevisionID: meta.RevisionID, PriorContentHash: prior,
 				Receipt: publication.Receipt{Operation: "publish", PublicationID: meta.PublicationID, RevisionID: meta.RevisionID, Generation: meta.Generation, State: meta.State, BeforeHash: prior, AfterHash: meta.ContentHash},
@@ -297,19 +306,58 @@ func (s *SkillPublicationsSurface) clearStaleClaim(ctx context.Context, caller i
 	return s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.ClaimedAt)
 }
 
-// appliedClaim finds the publication a stale claim produced, if any.
-func (s *SkillPublicationsSurface) appliedClaim(ctx context.Context, caller identity.Quadruple, c publication.Candidate, claim publication.AcceptClaim) (publication.Metadata, string, bool) {
+// findCandidateRevision finds the publication revision this candidate's
+// claim produced, from the marker in the revision body. It is independent of
+// caller-scoped idempotency receipts and of the publication's current
+// generation, so any admin or session recovers an applied acceptance. prior is
+// the content hash of the revision it replaced (successor) or empty.
+func (s *SkillPublicationsSurface) findCandidateRevision(ctx context.Context, caller identity.Quadruple, candidateID string, claim publication.AcceptClaim) (publication.Metadata, string, bool) {
+	var ids []string
 	switch claim.Mode {
 	case publication.AcceptModeNew:
-		meta, _, err := s.adoptNew(ctx, caller, claim.Name, c.CandidateID, publication.ErrConflict)
-		return meta, "", err == nil
+		items, err := s.store.List(ctx, caller)
+		if err != nil {
+			return publication.Metadata{}, "", false
+		}
+		for _, item := range items {
+			if item.Name == strings.ToLower(strings.TrimSpace(claim.Name)) {
+				ids = append(ids, item.PublicationID)
+			}
+		}
 	case publication.AcceptModeSuccessor:
-		current, err := s.store.Get(ctx, caller, claim.PublicationID)
-		if err == nil && current.Generation == claim.ExpectedPublicationGeneration+1 && s.publishedBy(ctx, caller, current.PublicationID, c.CandidateID) {
-			return current, claim.ExpectedPublicationContentHash, true
+		ids = []string{claim.PublicationID}
+	}
+	for _, id := range ids {
+		revisions, err := s.store.Revisions(ctx, caller, id)
+		if err != nil {
+			continue
+		}
+		for i, rev := range revisions {
+			if claim.Mode == publication.AcceptModeNew && i > 0 {
+				break
+			}
+			body, _, err := s.store.Read(ctx, caller, publication.ReadRequest{PublicationID: id, RevisionID: rev.RevisionID, AnyState: true})
+			if err != nil {
+				continue
+			}
+			if marker, _ := body.Extra[candidateMarkerKey].(string); marker == candidateID {
+				prior := ""
+				if i > 0 {
+					prior = revisions[i-1].ContentHash
+				}
+				return rev, prior, true
+			}
 		}
 	}
 	return publication.Metadata{}, "", false
+}
+
+func adoptedReceipt(claim publication.AcceptClaim, meta publication.Metadata, prior string) publication.Receipt {
+	op := "publish"
+	if claim.Mode == publication.AcceptModeSuccessor {
+		op = "publish_successor"
+	}
+	return publication.Receipt{Operation: op, PublicationID: meta.PublicationID, RevisionID: meta.RevisionID, Generation: meta.Generation, State: meta.State, BeforeHash: prior, AfterHash: meta.ContentHash}
 }
 
 // candidateMarkerKey records, inside the published revision body, which
@@ -326,34 +374,6 @@ func markCandidate(skill skills.Skill, candidateID string) skills.Skill {
 	extra[candidateMarkerKey] = candidateID
 	skill.Extra = extra
 	return skill
-}
-
-// publishedBy reports whether the publication's current revision was
-// produced by the given candidate.
-func (s *SkillPublicationsSurface) publishedBy(ctx context.Context, caller identity.Quadruple, publicationID, candidateID string) bool {
-	body, _, err := s.store.Read(ctx, caller, publication.ReadRequest{PublicationID: publicationID, AnyState: true})
-	if err != nil {
-		return false
-	}
-	marker, _ := body.Extra[candidateMarkerKey].(string)
-	return marker == candidateID
-}
-
-// adoptNew resolves a name conflict on a resumed "new" acceptance: when the
-// existing publication of that name is at generation 1 and its body was
-// produced by this candidate, the claimed publish already applied and is
-// adopted. Anything else is a genuine conflict.
-func (s *SkillPublicationsSurface) adoptNew(ctx context.Context, caller identity.Quadruple, name, candidateID string, conflict error) (publication.Metadata, publication.Receipt, error) {
-	items, err := s.store.List(ctx, caller)
-	if err != nil {
-		return publication.Metadata{}, publication.Receipt{}, conflict
-	}
-	for _, item := range items {
-		if item.Name == strings.ToLower(strings.TrimSpace(name)) && item.Generation == 1 && s.publishedBy(ctx, caller, item.PublicationID, candidateID) {
-			return item, publication.Receipt{Operation: "publish", PublicationID: item.PublicationID, RevisionID: item.RevisionID, Generation: item.Generation, State: item.State, AfterHash: item.ContentHash}, nil
-		}
-	}
-	return publication.Metadata{}, publication.Receipt{}, conflict
 }
 
 func renderDocument(method methods.Method, skill skills.Skill) (string, *protoerrors.Error) {

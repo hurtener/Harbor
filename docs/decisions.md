@@ -17151,7 +17151,14 @@ advanced target. A publish that definitively did not apply (name clash,
 stale or missing target) releases the claim, so the candidate can be accepted
 differently, rejected or withdrawn. A claim left unfinalized for two minutes
 is resolved before another decision: finalized if its publish applied,
-released otherwise; a younger claim with a different target conflicts. The
+released otherwise; a younger claim with a different target conflicts.
+Whether a claim already published is decided only from durable state — the
+candidate marker in a publication revision, found at any generation by any
+admin or session — never from a caller-scoped idempotency receipt. Only
+pending candidates count toward the tenant queue bound (1,024), each person
+may hold at most 64 pending, and decided candidates beyond 1,024 are pruned
+oldest first; candidate ids are numbered monotonically so pruning never
+reuses one. The
 published body carries a runtime-private candidate marker (never projected on
 the wire), which is the proof a resumed acceptance uses to adopt a publish
 that already applied instead of publishing again; the publication store's own

@@ -205,6 +205,14 @@ func (s *AuthorizedStore) Read(ctx context.Context, caller identity.Quadruple, r
 	return s.store.Read(ctx, caller, req)
 }
 
+// Revisions lists a publication's revisions; admin-only.
+func (s *AuthorizedStore) Revisions(ctx context.Context, caller identity.Quadruple, publicationID string) ([]Metadata, error) {
+	if err := s.adminCaller(ctx, caller); err != nil {
+		return nil, err
+	}
+	return s.store.Revisions(ctx, caller, publicationID)
+}
+
 // Close delegates closure to the wrapped store.
 func (s *AuthorizedStore) Close(ctx context.Context) error {
 	if s == nil || s.store == nil {

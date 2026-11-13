@@ -284,3 +284,40 @@ func TestCandidateClaimReleaseAndOutstanding(t *testing.T) {
 		})
 	}
 }
+
+// Decided candidates never count toward the tenant quota, and only one
+// person's open requests can't fill it.
+func TestCandidateQuotaCountsOnlyPendingAndPrunesHistory(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryCandidateStore("rt")
+	alice := publicationIdentity("tenant-a", "alice", "s-alice")
+	seen := map[string]bool{}
+	for i := 0; i < maxRetainedTerminal+50; i++ {
+		c := submit(t, store, "alice", fmt.Sprintf("k-%d", i), "triage")
+		if seen[c.CandidateID] {
+			t.Fatalf("candidate id reused after pruning: %s", c.CandidateID)
+		}
+		seen[c.CandidateID] = true
+		if _, err := store.Decide(ctx, alice, DecideCandidateRequest{IdempotencyKey: fmt.Sprintf("w-%d", i), CandidateID: c.CandidateID, ExpectedGeneration: 1, Outcome: CandidateWithdrawn}, false); err != nil {
+			t.Fatalf("withdraw %d: %v", i, err)
+		}
+	}
+	// Another person can still submit.
+	submit(t, store, "bob", "k", "notes")
+	all, err := store.List(ctx, publicationIdentity("tenant-a", "admin", "s-admin"), ListCandidatesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) > maxRetainedTerminal+1 {
+		t.Fatalf("history not pruned: %d candidates", len(all))
+	}
+	// One person's open requests are capped.
+	for i := 0; i < maxPendingPerUser; i++ {
+		submit(t, store, "carol", fmt.Sprintf("p-%d", i), fmt.Sprintf("skill-%d", i))
+	}
+	sk := publicationSkill("one-more", "step")
+	if _, err := store.Submit(ctx, publicationIdentity("tenant-a", "carol", "s-carol"), SubmitCandidateRequest{IdempotencyKey: "over", AgentID: "agent-a", Skill: sk}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("per-user cap err=%v", err)
+	}
+	submit(t, store, "dave", "k", "notes")
+}
