@@ -1023,10 +1023,12 @@ top-level `structuredContent.code` has a closed compatibility mapping:
 `invalid_argument` → `invalid_argument`, `validation_failed` → `validation`,
 `forbidden_scope` / `scope_blocked` / `scope_mismatch` → `authorization`,
 `not_found` → `not_found`, and `document_too_large` → `tool_domain`.
-These deterministic codes stop after one invocation. The original structured
+These deterministic codes stop after one invocation. The error message is the
+code followed by the provider's bounded text content, so its repair detail
+reaches the planner; the text never affects the class. The original structured
 content, including any document outline, remains available; oversized-document
-failures also tell the planner to use smaller sections or reduce
-`max_chars`/`max_tokens` instead of repeating the same full read. A valid
+failures also tell the planner to read a smaller section or reduce the
+provider's read-size limits instead of repeating the same full read. A valid
 namespaced classification takes precedence. Unknown codes, nested codes,
 `retryable: true`, malformed retryability, and malformed explicit Harbor
 contracts retain the transient fallback; no prose is parsed.

@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.47.1] — 2026-11-13
+
 ### Fixed
 
 - `artifact_list` returns an empty array for empty listings and field-specific
@@ -26,8 +28,10 @@ Two versions move independently in Harbor (RFC §5.3):
   malformed calls. Nonpositive limits use 20 and positive limits remain capped
   at 50; malformed types and unknown fields still fail validation.
 - MCP deterministic structured error codes now stop unchanged calls after one
-  attempt even without the Harbor metadata extension; oversized-document
-  refusals retain their outline and guide the planner to smaller section reads.
+  attempt even without the Harbor metadata extension. The error message keeps
+  the provider's bounded text after the code, so repair detail still reaches
+  the planner; oversized-document refusals retain their outline and add
+  generic guidance to read a smaller section or reduce read-size limits.
 
 ## [1.47.0] — 2026-11-13
 

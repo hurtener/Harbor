@@ -152,3 +152,21 @@ func TestLowerCallToolResult_LegacyAndMalformedAreTransient(t *testing.T) {
 		}
 	}
 }
+
+// A provider that publishes only a recognized structured code keeps its
+// human-readable repair instructions in the planner-visible error.
+func TestLowerCallToolResult_CodeOnlyStructuredErrorKeepsProviderText(t *testing.T) {
+	const detail = "field section_id must name an existing section; available sections: intro, results"
+	_, err := lowerCallToolResult(&mcpsdk.CallToolResult{
+		IsError:           true,
+		StructuredContent: map[string]any{"code": "invalid_argument"},
+		Content:           []mcpsdk.Content{&mcpsdk.TextContent{Text: detail}},
+	})
+	var typed *tools.MCPToolResultError
+	if !errors.As(err, &typed) || typed.Class != tools.MCPToolErrorInvalidArgument || !typed.Recognized {
+		t.Fatalf("result error = %#v, want recognized invalid_argument", err)
+	}
+	if !strings.Contains(err.Error(), "invalid_argument") || !strings.Contains(err.Error(), detail) {
+		t.Fatalf("planner-visible error lost the provider repair detail: %q", err.Error())
+	}
+}
