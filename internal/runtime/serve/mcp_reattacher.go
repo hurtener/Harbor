@@ -302,6 +302,9 @@ func (a *MCPConnectionAttacher) reattachAttachDeps(owner toolauth.Owner, closers
 		// leaves mcpdrv.Attach on its documented default — a real ceiling,
 		// never an unbounded one.
 		ArtifactEgressMaxBytes: a.artifactEgressMaxBytes,
+		// The deployment's MCP loading default, carried like the add path so
+		// a restart re-attach loads the server's tools identically.
+		DefaultLoading: a.defaultLoading,
 	}
 }
 

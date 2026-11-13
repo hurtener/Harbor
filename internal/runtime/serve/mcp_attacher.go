@@ -166,6 +166,11 @@ type MCPConnectionAttacher struct {
 	// not set it still gets a real ceiling rather than an unbounded one.
 	// Set once at construction.
 	artifactEgressMaxBytes int
+	// defaultLoading is the deployment's `tools.mcp_default_loading_mode`,
+	// carried into every connection this attacher wires (add and re-attach)
+	// so a runtime-added server loads exactly like a boot-declared one.
+	// Zero leaves the driver on tools.LoadingAlways. Set once at construction.
+	defaultLoading tools.LoadingMode
 	// artifactStore is the runtime's identity-scoped store used by MCP typed
 	// content materialization. Set once and carried through both attach doors.
 	artifactStore artifacts.ArtifactStore
@@ -245,6 +250,14 @@ type reattachState struct {
 	// suppressed counts attempts skipped since the last EMITTED event, so the
 	// suppression is reported rather than invisible.
 	suppressed int
+}
+
+// WithDefaultLoading sets the deployment's driver-default LoadingMode
+// (`tools.mcp_default_loading_mode`) the attacher carries into every
+// connection it wires, on both the add and the restart re-attach door.
+// Validated at boot by the config validator; the driver re-validates.
+func WithDefaultLoading(mode tools.LoadingMode) MCPAttacherOption {
+	return func(a *MCPConnectionAttacher) { a.defaultLoading = mode }
 }
 
 // WithArtifactEgressMaxBytes sets the egress-substitution ceiling the
@@ -449,6 +462,7 @@ func (a *MCPConnectionAttacher) PrepareConnection(ctx context.Context, req agent
 		// config.DefaultMCPArtifactEgressMaxBytes — a real ceiling, never an
 		// unbounded one.
 		ArtifactEgressMaxBytes: a.artifactEgressMaxBytes,
+		DefaultLoading:         a.defaultLoading,
 	})
 	if err != nil {
 		release()

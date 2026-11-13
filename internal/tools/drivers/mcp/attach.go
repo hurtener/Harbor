@@ -133,6 +133,12 @@ type AttachDeps struct {
 	// an embedder that does not set it still gets a real ceiling rather
 	// than an unbounded one. Optional.
 	ArtifactEgressMaxBytes int
+	// DefaultLoading is the deployment's driver-default LoadingMode for the
+	// connection's TOOL-form descriptors (`tools.mcp_default_loading_mode`).
+	// Zero leaves the driver on tools.LoadingAlways. The agent-config
+	// `tool_loading_modes` / `server_loading_modes` overrides still apply
+	// over it.
+	DefaultLoading tools.LoadingMode
 }
 
 // ErrPreparationAuthRequired marks a private MCP prepare that observed a
@@ -434,6 +440,7 @@ func Prepare(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) (*
 		// byte-identical to a build without the feature.
 		ArtifactEgress:         egressMapping,
 		ArtifactEgressMaxBytes: egressMaxBytes,
+		DefaultLoading:         deps.DefaultLoading,
 		// Record any `WWW-Authenticate` OAuth step-up challenge on the
 		// registry state so an operator can inspect the advertised requirement
 		// Best-effort observability — never alters the call.

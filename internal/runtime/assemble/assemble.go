@@ -1129,6 +1129,8 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 			// artifact value on one outbound call. The per-connection mapping
 			// and eligibility ride ms itself.
 			ArtifactEgressMaxBytes: egressMaxBytes,
+			// The deployment's driver-default loading mode for MCP tools.
+			DefaultLoading: tools.LoadingMode(cfg.Tools.MCPDefaultLoadingMode),
 		}); err != nil {
 			return fmt.Errorf("mcp[%s]: %w", ms.Name, err)
 		}

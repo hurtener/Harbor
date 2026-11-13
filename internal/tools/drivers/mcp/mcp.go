@@ -168,6 +168,13 @@ type Config struct {
 	// at Discover time, so concurrent invocations of different tools
 	// never share or race this map.
 	ToolPolicies map[string]tools.ToolPolicy
+	// DefaultLoading is the driver-default LoadingMode stamped on this
+	// provider's TOOL-form descriptors. Zero-valued → tools.LoadingAlways.
+	// It is the lowest layer of the pinned loading-mode precedence (see
+	// agentcfg.ToolExposure): the agent-config `tool_loading_modes` /
+	// `server_loading_modes` overrides win over it. Resource / prompt
+	// wrappers stay deferred regardless.
+	DefaultLoading tools.LoadingMode
 	// DefaultIdentity is the fallback identity stamped on
 	// transport-side events (notifications that arrive without an
 	// inflight call). Required so the bus's ValidateEvent does not
@@ -395,6 +402,11 @@ func (c Config) validate() error {
 	}
 	if c.TransportMode != "" && !isValidMode(c.TransportMode) {
 		return fmt.Errorf("%w: unknown TransportMode %q", ErrInvalidConfig, c.TransportMode)
+	}
+	switch c.DefaultLoading {
+	case "", tools.LoadingAlways, tools.LoadingDeferred:
+	default:
+		return fmt.Errorf("%w: unknown DefaultLoading %q", ErrInvalidConfig, c.DefaultLoading)
 	}
 	mode := c.TransportMode
 	if mode == "" {
@@ -667,6 +679,15 @@ func New(cfg Config) (*Provider, error) {
 		clientOpts,
 	)
 	return p, nil
+}
+
+// defaultLoading resolves the provider's driver-default LoadingMode for
+// TOOL-form descriptors: Config.DefaultLoading, or LoadingAlways when unset.
+func (p *Provider) defaultLoading() tools.LoadingMode {
+	if p.cfg.DefaultLoading == "" {
+		return tools.LoadingAlways
+	}
+	return p.cfg.DefaultLoading
 }
 
 // hostCapabilities builds the client capabilities advertised during the MCP
@@ -1171,11 +1192,11 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	if override, ok := p.cfg.ToolPolicies[t.Name]; ok {
 		policy = override
 	}
-	// Loading defaults every injected tool-form descriptor to LoadingAlways —
-	// the driver DEFAULT, not a dead end: the boot config's
-	// `tools.entries[].loading_mode` and, at runtime, the agent-config
-	// tool-exposure loading-mode overrides both sit ABOVE this default in
-	// the pinned precedence order (see agentcfg.ToolExposure godoc). Form
+	// Loading defaults every injected tool-form descriptor to the provider's
+	// DefaultLoading (LoadingAlways when unset) — the driver DEFAULT, not a
+	// dead end: the agent-config tool-exposure loading-mode overrides sit
+	// ABOVE this default in the pinned precedence order (see
+	// agentcfg.ToolExposure godoc). Form
 	// stays zero-valued (ToolFormTool) — only the resource/prompt wrappers
 	// below stamp a non-default Form.
 	appVisible, appOnly := appVisibilityFlags(t.Meta)
@@ -1188,7 +1209,7 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 		Source:      p.source,
 		Transport:   tools.TransportMCP,
 		Policy:      policy,
-		Loading:     tools.LoadingAlways,
+		Loading:     p.defaultLoading(),
 		// AppVisible preserves the provider-authored `_meta.ui.visibility`
 		// declaration for every tool visible to a rendered App, including a
 		// mixed `["model", "app"]` declaration. AppOnly is the narrower

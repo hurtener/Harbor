@@ -1516,6 +1516,23 @@ type ToolsConfig struct {
 	// Optional. Restart-required.
 	MCPArtifactEgressMaxBytes int `yaml:"mcp_artifact_egress_max_bytes,omitempty"`
 
+	// MCPDefaultLoadingMode is the deployment-wide driver-default
+	// LoadingMode for every MCP connection's TOOL-form descriptors —
+	// boot-declared and runtime-attached alike. "" or "always" keeps every
+	// MCP tool schema in each model call (the historical default);
+	// "deferred" keeps them out of the per-call tool declarations so the
+	// model sees the bounded `<deferred_tools>` name index and loads full
+	// schemas on demand through `tool_search` / `tool_get`.
+	//
+	// It is the LOWEST loading-mode layer: the agent-config tool-exposure
+	// overrides (`tool_loading_modes`, `server_loading_modes`) still win,
+	// so an operator can pin individual tools back to "always".
+	// `tools.entries[].loading_mode` cannot reach MCP tools (entries apply
+	// before boot MCP attach; runtime attaches never see them). "deferred"
+	// requires an always-loaded `tool_search` in `tools.built_in`. Loading is not capability-narrowing; a deferred tool keeps
+	// every authority / approval gate. Optional. Restart-required.
+	MCPDefaultLoadingMode string `yaml:"mcp_default_loading_mode,omitempty"`
+
 	// MCPAppRenderAdmission is the narrow operator-facing switch for the
 	// HA-56 fresh render-admission surface (the opt-in
 	// `request_render_admission` `ui://` read authority that lets a

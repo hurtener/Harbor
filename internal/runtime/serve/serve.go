@@ -1060,6 +1060,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 			// attach path does, so a server attached over the control plane is
 			// bounded identically to one declared in YAML.
 			WithArtifactEgressMaxBytes(cfg.Tools.ResolvedMCPArtifactEgressMaxBytes()),
+			WithDefaultLoading(tools.LoadingMode(cfg.Tools.MCPDefaultLoadingMode)),
 			WithReattachGates(MCPAddStdioAllowlist(cfg),
 				cfg.Tools.AllowWireInjection || toolauth.AllowWireInjectionCaptured()))
 		closers = append(closers, attacher.Close)
