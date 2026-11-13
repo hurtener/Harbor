@@ -316,6 +316,14 @@ const (
 	// CodeSkillPublicationIdempotencyConflict marks reuse of one caller key
 	// with a divergent mutation fingerprint.
 	CodeSkillPublicationIdempotencyConflict Code = "skill_publication_idempotency_conflict"
+	// CodeCandidatePendingExists marks a publication-candidate submission
+	// refused because the submitter already has a pending candidate for the
+	// same skill name. Withdraw it or wait for a decision.
+	CodeCandidatePendingExists Code = "candidate_pending_exists"
+	// CodeCandidateSupportFilesUnsupported marks a publication-candidate
+	// submission refused because the skill carries support files, which
+	// organization publications cannot carry.
+	CodeCandidateSupportFilesUnsupported Code = "candidate_support_files_unsupported"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
@@ -365,6 +373,8 @@ var canonicalCodes = map[Code]struct{}{
 	CodeSkillPublicationRetired:             {},
 	CodeSkillPublicationRuntimeMismatch:     {},
 	CodeSkillPublicationIdempotencyConflict: {},
+	CodeCandidatePendingExists:              {},
+	CodeCandidateSupportFilesUnsupported:    {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

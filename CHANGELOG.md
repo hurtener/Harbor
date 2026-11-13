@@ -17,6 +17,26 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.51.0] — 2026-11-13
+
+### Added
+
+- **Skill body reads (D-508).** `agent_config.user.skills.read` returns a
+  caller's own personal skill as its canonical `SKILL.md` document with the
+  support-file manifest and, on request, one support file's bounded text
+  (256 KiB, or `binary`). `skills.publications.read` returns an organization
+  publication revision's body: admins read any revision, other callers only an
+  active publication's current revision. Advertised as `skill_reads`.
+- **Publication candidates (D-508).** `skills.publications.candidates.submit`,
+  `.list`, `.read`, `.accept`, `.reject` and `.withdraw` let a person freeze one
+  of their personal skills for organization-admin review; an admin accepts it
+  as a new publication or as a successor revision of an existing one, or
+  rejects it with a note. Acceptance goes through the ordinary publication
+  store and is retry-safe across admins (never publishes twice). Skills with
+  support files are refused (`candidate_support_files_unsupported`); one pending
+  candidate per person and name (`candidate_pending_exists`). Advertised as
+  `skill_publication_candidates`. Additive; no Protocol version bump.
+
 ## [1.50.0] — 2026-11-13
 
 ### Fixed

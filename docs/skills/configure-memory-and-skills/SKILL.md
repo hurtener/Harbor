@@ -369,6 +369,15 @@ contain the body. Only the authorized runtime resolver returns a body, and it
 fails closed on a retired, stale, foreign-runtime, wrong-hash, or unreachable
 reference.
 
+People can also propose their own personal skills for organization review
+(D-508): `skills.publications.candidates.submit` freezes a snapshot of the
+caller's skill, admins list and read the pending candidates, then `accept` one
+as a new publication or a successor revision (through the same publication
+store, so every invariant above applies) or `reject` it with a note. A skill
+with support files cannot become a publication yet and is refused at
+submission. `skills.publications.read` shows any caller the body of an active
+publication before they install it.
+
 Do not copy a publication into each user's skill triple, use a shared service
 identity, or treat `ScopeTenant`/`ScopeGlobal` as an implemented publication
 visibility shortcut. Do not place publication bodies in logs, events, audit

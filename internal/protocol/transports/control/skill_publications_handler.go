@@ -64,6 +64,20 @@ func decodeSkillPublicationsRequest(method methods.Method, body []byte) (any, *p
 		target = &types.SkillPublicationRemoveRequest{}
 	case methods.MethodSkillsPublicationsReferencesList:
 		target = &types.SkillPublicationReferencesListRequest{}
+	case methods.MethodSkillsPublicationsRead:
+		target = &types.SkillPublicationReadRequest{}
+	case methods.MethodSkillsPublicationsCandidatesSubmit:
+		target = &types.SkillPublicationCandidateSubmitRequest{}
+	case methods.MethodSkillsPublicationsCandidatesList:
+		target = &types.SkillPublicationCandidateListRequest{}
+	case methods.MethodSkillsPublicationsCandidatesRead:
+		target = &types.SkillPublicationCandidateReadRequest{}
+	case methods.MethodSkillsPublicationsCandidatesAccept:
+		target = &types.SkillPublicationCandidateAcceptRequest{}
+	case methods.MethodSkillsPublicationsCandidatesReject:
+		target = &types.SkillPublicationCandidateRejectRequest{}
+	case methods.MethodSkillsPublicationsCandidatesWithdraw:
+		target = &types.SkillPublicationCandidateWithdrawRequest{}
 	default:
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not a canonical skill-publication method", string(method))

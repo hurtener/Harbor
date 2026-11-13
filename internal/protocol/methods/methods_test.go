@@ -155,6 +155,7 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentConfigUserReconcileLiveProfile,
 	methods.MethodAgentConfigUserSkillsList,
 	methods.MethodAgentConfigUserSkillsExport,
+	methods.MethodAgentConfigUserSkillsRead,
 	methods.MethodAgentConfigUserSkillsUpsert,
 	methods.MethodAgentConfigUserSkillsDelete,
 	methods.MethodAgentConfigUserSkillsImportValidate,
@@ -173,6 +174,13 @@ var wantMethods = []methods.Method{
 	methods.MethodSkillsPublicationsUpdate,
 	methods.MethodSkillsPublicationsRemove,
 	methods.MethodSkillsPublicationsReferencesList,
+	methods.MethodSkillsPublicationsRead,
+	methods.MethodSkillsPublicationsCandidatesSubmit,
+	methods.MethodSkillsPublicationsCandidatesList,
+	methods.MethodSkillsPublicationsCandidatesRead,
+	methods.MethodSkillsPublicationsCandidatesAccept,
+	methods.MethodSkillsPublicationsCandidatesReject,
+	methods.MethodSkillsPublicationsCandidatesWithdraw,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -234,9 +242,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// reconciliation = 153, admin-only runtime retention = 154, and the
 	// run-start preparation hint (prepare) = 155, and the shared Agent-pack
 	// package import pair (agent_config.agent_packs.import_validate +
-	// import_commit) = 157, plus personal-skill export = 158.
-	if len(got) != 158 {
-		t.Fatalf("Methods() returned %d methods, want 158", len(got))
+	// import_commit) = 157, plus personal-skill export = 158, plus
+	// personal-skill read, publication read and the six candidate verbs = 166.
+	if len(got) != 166 {
+		t.Fatalf("Methods() returned %d methods, want 166", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -818,6 +827,7 @@ func TestIsAgentConfigSessionMethod_Lockstep(t *testing.T) {
 		methods.MethodAgentConfigSessionSkillsUpsert,
 		methods.MethodAgentConfigSessionSkillsDelete,
 		methods.MethodAgentConfigUserSkillsExport,
+		methods.MethodAgentConfigUserSkillsRead,
 	}
 	for _, m := range sessionMethods {
 		if !methods.IsAgentConfigSessionMethod(m) {

@@ -303,6 +303,26 @@ assert_grep_present \
     "internal/protocol/errors/errors.go" \
     "phase 250 runtime mismatch error is registered"
 assert_grep_present \
+    'skills.publications.read' \
+    "internal/protocol/methods/methods.go" \
+    "phase 250 publication body read is registered"
+assert_grep_present \
+    'skills.publications.candidates.accept' \
+    "internal/protocol/methods/methods.go" \
+    "phase 250 candidate acceptance is registered"
+assert_grep_present \
+    'candidate_support_files_unsupported' \
+    "internal/protocol/errors/errors.go" \
+    "phase 250 candidate support-file refusal is registered"
+assert_grep_present \
+    'TestE2E_SkillReadsAndPublicationCandidates' \
+    "test/integration/skill_publication_candidates_test.go" \
+    "phase 250 candidate end-to-end test exists"
+assert_grep_present \
+    'skills\.publications\.candidates\.submit' \
+    "docs/site/protocol/methods.md" \
+    "phase 250 generated methods reference includes candidate routes"
+assert_grep_present \
     'SkillPublicationPublishRequest' \
     "docs/site/protocol/types.md" \
     "phase 250 generated types reference includes publication DTOs"

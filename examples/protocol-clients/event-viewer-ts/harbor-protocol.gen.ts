@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:b220ace2fa5d74b7d39cf52bed8c6aa1039af3884d5b65cabd658d5a1e391a0d";
+export const WIRE_SURFACE_DIGEST = "sha256:4b55a2c1fe8499e5af385a3e4374f9011f5a1bbd2134c5ef1ec0290cb66b5da2";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -70,6 +70,7 @@ export type HarborMethod =
   | "agent_config.user.skills.import_commit"
   | "agent_config.user.skills.import_validate"
   | "agent_config.user.skills.list"
+  | "agent_config.user.skills.read"
   | "agent_config.user.skills.upsert"
   | "agents.deregister"
   | "agents.drain"
@@ -157,11 +158,18 @@ export type HarborMethod =
   | "sessions.turns.get"
   | "sessions.turns.list"
   | "skills.publications.available"
+  | "skills.publications.candidates.accept"
+  | "skills.publications.candidates.list"
+  | "skills.publications.candidates.read"
+  | "skills.publications.candidates.reject"
+  | "skills.publications.candidates.submit"
+  | "skills.publications.candidates.withdraw"
   | "skills.publications.get"
   | "skills.publications.install"
   | "skills.publications.list"
   | "skills.publications.publish"
   | "skills.publications.publish_successor"
+  | "skills.publications.read"
   | "skills.publications.references.list"
   | "skills.publications.remove"
   | "skills.publications.retire"
@@ -187,6 +195,8 @@ export type HarborErrorCode =
   | "agent_retired"
   | "agent_retirement_conflict"
   | "auth_rejected"
+  | "candidate_pending_exists"
+  | "candidate_support_files_unsupported"
   | "downstream_mcp_transport_failed"
   | "downstream_mcp_unauthorized"
   | "identity_required"
@@ -1499,6 +1509,24 @@ export interface AgentConfigUserSkillsListRequest {
 
 export interface AgentConfigUserSkillsListResponse {
   skills: AgentConfigSkillSummary[];
+  protocol_version: string;
+}
+
+export interface AgentConfigUserSkillsReadRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  name: string;
+  support_path?: string;
+}
+
+export interface AgentConfigUserSkillsReadResponse {
+  name: string;
+  package_hash?: string;
+  skill: AgentConfigAgentPackItem;
+  document: string;
+  support_files?: SkillSupportFileInfo[];
+  support_file?: SkillSupportFileContent;
+  updated_at?: string;
   protocol_version: string;
 }
 
@@ -3381,6 +3409,110 @@ export interface SkillPublicationAvailableResponse {
   protocol_version: string;
 }
 
+export interface SkillPublicationCandidate {
+  candidate_id: string;
+  name: string;
+  title?: string;
+  description?: string;
+  submitter_user: string;
+  agent_id: string;
+  package_hash?: string;
+  content_hash: string;
+  target_publication_id?: string;
+  note?: string;
+  state: string;
+  decision_note?: string;
+  decided_by?: string;
+  publication_id?: string;
+  revision_id?: string;
+  prior_content_hash?: string;
+  generation: number;
+  created_at: string;
+  updated_at: string;
+  runtime_id: string;
+}
+
+export interface SkillPublicationCandidateAcceptRequest {
+  identity: IdentityScope;
+  candidate_id: string;
+  expected_generation: number;
+  mode: string;
+  name?: string;
+  publication_id?: string;
+  expected_publication_generation?: number;
+  expected_publication_content_hash?: string;
+  decision_note?: string;
+  idempotency_key: string;
+}
+
+export interface SkillPublicationCandidateAcceptResponse {
+  candidate: SkillPublicationCandidate;
+  publication: SkillPublicationMetadata;
+  receipt: SkillPublicationReceipt;
+  protocol_version: string;
+}
+
+export interface SkillPublicationCandidateListRequest {
+  identity: IdentityScope;
+  state?: string;
+}
+
+export interface SkillPublicationCandidateListResponse {
+  candidates: SkillPublicationCandidate[];
+  protocol_version: string;
+}
+
+export interface SkillPublicationCandidateReadRequest {
+  identity: IdentityScope;
+  candidate_id: string;
+}
+
+export interface SkillPublicationCandidateReadResponse {
+  candidate: SkillPublicationCandidate;
+  skill: AgentConfigAgentPackItem;
+  document: string;
+  protocol_version: string;
+}
+
+export interface SkillPublicationCandidateRejectRequest {
+  identity: IdentityScope;
+  candidate_id: string;
+  expected_generation: number;
+  decision_note: string;
+  idempotency_key: string;
+}
+
+export interface SkillPublicationCandidateRejectResponse {
+  candidate: SkillPublicationCandidate;
+  protocol_version: string;
+}
+
+export interface SkillPublicationCandidateSubmitRequest {
+  identity: IdentityScope;
+  agent_id: string;
+  name: string;
+  target_publication_id?: string;
+  note?: string;
+  idempotency_key: string;
+}
+
+export interface SkillPublicationCandidateSubmitResponse {
+  candidate: SkillPublicationCandidate;
+  protocol_version: string;
+}
+
+export interface SkillPublicationCandidateWithdrawRequest {
+  identity: IdentityScope;
+  candidate_id: string;
+  expected_generation: number;
+  idempotency_key: string;
+}
+
+export interface SkillPublicationCandidateWithdrawResponse {
+  candidate: SkillPublicationCandidate;
+  protocol_version: string;
+}
+
 export interface SkillPublicationGetRequest {
   identity: IdentityScope;
   publication_id: string;
@@ -3436,6 +3568,20 @@ export interface SkillPublicationPublishRequest {
 export interface SkillPublicationPublishResponse {
   publication: SkillPublicationMetadata;
   receipt: SkillPublicationReceipt;
+  protocol_version: string;
+}
+
+export interface SkillPublicationReadRequest {
+  identity: IdentityScope;
+  publication_id: string;
+  revision_id?: string;
+}
+
+export interface SkillPublicationReadResponse {
+  publication: SkillPublicationMetadata;
+  revision_id: string;
+  skill: AgentConfigAgentPackItem;
+  document: string;
   protocol_version: string;
 }
 
@@ -3525,6 +3671,21 @@ export interface SkillPublicationUpdateResponse {
   reference: SkillPublicationReference;
   receipt: SkillPublicationReceipt;
   protocol_version: string;
+}
+
+export interface SkillSupportFileContent {
+  path: string;
+  mime: string;
+  size_bytes: number;
+  text?: string;
+  truncated: boolean;
+  binary: boolean;
+}
+
+export interface SkillSupportFileInfo {
+  path: string;
+  mime: string;
+  size_bytes: number;
 }
 
 export interface StartRequest {

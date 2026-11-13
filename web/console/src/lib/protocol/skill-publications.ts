@@ -168,3 +168,123 @@ export interface SkillPublicationUpdateResponse {
 	receipt: SkillPublicationReceipt;
 	protocol_version: string;
 }
+
+/** `skills.publications.read` — one publication revision's body. */
+export interface SkillPublicationReadRequest {
+	identity: IdentityScope;
+	publication_id: string;
+	revision_id?: string;
+}
+
+export interface SkillPublicationReadResponse {
+	publication: SkillPublicationMetadata;
+	revision_id: string;
+	skill: AgentConfigAgentPackItem;
+	document: string;
+	protocol_version: string;
+}
+
+/** Content-free projection of a frozen personal-skill candidate. */
+export interface SkillPublicationCandidate {
+	candidate_id: string;
+	name: string;
+	title?: string;
+	description?: string;
+	submitter_user: string;
+	agent_id: string;
+	package_hash?: string;
+	content_hash: string;
+	target_publication_id?: string;
+	note?: string;
+	state: string;
+	decision_note?: string;
+	decided_by?: string;
+	publication_id?: string;
+	revision_id?: string;
+	prior_content_hash?: string;
+	generation: number;
+	created_at: string;
+	updated_at: string;
+	runtime_id: string;
+}
+
+export interface SkillPublicationCandidateSubmitRequest {
+	identity: IdentityScope;
+	agent_id: string;
+	name: string;
+	target_publication_id?: string;
+	note?: string;
+	idempotency_key: string;
+}
+
+export interface SkillPublicationCandidateSubmitResponse {
+	candidate: SkillPublicationCandidate;
+	protocol_version: string;
+}
+
+export interface SkillPublicationCandidateListRequest {
+	identity: IdentityScope;
+	state?: string;
+}
+
+export interface SkillPublicationCandidateListResponse {
+	candidates: SkillPublicationCandidate[];
+	protocol_version: string;
+}
+
+export interface SkillPublicationCandidateReadRequest {
+	identity: IdentityScope;
+	candidate_id: string;
+}
+
+export interface SkillPublicationCandidateReadResponse {
+	candidate: SkillPublicationCandidate;
+	skill: AgentConfigAgentPackItem;
+	document: string;
+	protocol_version: string;
+}
+
+export interface SkillPublicationCandidateAcceptRequest {
+	identity: IdentityScope;
+	candidate_id: string;
+	expected_generation: number;
+	mode: string;
+	name?: string;
+	publication_id?: string;
+	expected_publication_generation?: number;
+	expected_publication_content_hash?: string;
+	decision_note?: string;
+	idempotency_key: string;
+}
+
+export interface SkillPublicationCandidateAcceptResponse {
+	candidate: SkillPublicationCandidate;
+	publication: SkillPublicationMetadata;
+	receipt: SkillPublicationReceipt;
+	protocol_version: string;
+}
+
+export interface SkillPublicationCandidateRejectRequest {
+	identity: IdentityScope;
+	candidate_id: string;
+	expected_generation: number;
+	decision_note: string;
+	idempotency_key: string;
+}
+
+export interface SkillPublicationCandidateRejectResponse {
+	candidate: SkillPublicationCandidate;
+	protocol_version: string;
+}
+
+export interface SkillPublicationCandidateWithdrawRequest {
+	identity: IdentityScope;
+	candidate_id: string;
+	expected_generation: number;
+	idempotency_key: string;
+}
+
+export interface SkillPublicationCandidateWithdrawResponse {
+	candidate: SkillPublicationCandidate;
+	protocol_version: string;
+}

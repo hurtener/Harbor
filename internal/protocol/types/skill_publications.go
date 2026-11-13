@@ -156,3 +156,156 @@ type SkillPublicationReferencesListResponse struct {
 	References      []SkillPublicationReference `json:"references,omitempty"`
 	ProtocolVersion string                      `json:"protocol_version"`
 }
+
+// SkillPublicationReadRequest reads the body of one organization
+// publication revision. An admin caller may name any revision of any
+// publication in the tenant; any other verified caller may read only an
+// active publication's current revision (exactly what
+// `skills.publications.available` lists). RevisionID is optional; when set
+// for a non-admin caller it must equal the current revision.
+type SkillPublicationReadRequest struct {
+	Identity      IdentityScope `json:"identity"`
+	PublicationID string        `json:"publication_id"`
+	RevisionID    string        `json:"revision_id,omitempty"`
+}
+
+// SkillPublicationReadResponse carries the reviewed structured body and its
+// canonical SKILL.md rendering. Publications carry no support files.
+type SkillPublicationReadResponse struct {
+	Publication     SkillPublicationMetadata `json:"publication"`
+	RevisionID      string                   `json:"revision_id"`
+	Skill           SkillPublicationSkill    `json:"skill"`
+	Document        string                   `json:"document"`
+	ProtocolVersion string                   `json:"protocol_version"`
+}
+
+// SkillPublicationCandidate is the content-free projection of a frozen,
+// immutable snapshot of one caller's personal skill submitted for
+// organization-admin review. Name, title and description are short listing
+// text (the same projection user-skill summaries expose); the body is
+// returned only by `skills.publications.candidates.read`.
+type SkillPublicationCandidate struct {
+	CandidateID         string `json:"candidate_id"`
+	Name                string `json:"name"`
+	Title               string `json:"title,omitempty"`
+	Description         string `json:"description,omitempty"`
+	SubmitterUser       string `json:"submitter_user"`
+	AgentID             string `json:"agent_id"`
+	PackageHash         string `json:"package_hash,omitempty"`
+	ContentHash         string `json:"content_hash"`
+	TargetPublicationID string `json:"target_publication_id,omitempty"`
+	Note                string `json:"note,omitempty"`
+	State               string `json:"state"`
+	DecisionNote        string `json:"decision_note,omitempty"`
+	DecidedBy           string `json:"decided_by,omitempty"`
+	PublicationID       string `json:"publication_id,omitempty"`
+	RevisionID          string `json:"revision_id,omitempty"`
+	PriorContentHash    string `json:"prior_content_hash,omitempty"`
+	Generation          uint64 `json:"generation"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
+	RuntimeID           string `json:"runtime_id"`
+}
+
+// SkillPublicationCandidateSubmitRequest freezes one of the caller's own
+// personal skills on an Agent in the caller's signed reach into a pending
+// candidate. A skill with support files is refused.
+type SkillPublicationCandidateSubmitRequest struct {
+	Identity            IdentityScope `json:"identity"`
+	AgentID             string        `json:"agent_id"`
+	Name                string        `json:"name"`
+	TargetPublicationID string        `json:"target_publication_id,omitempty"`
+	Note                string        `json:"note,omitempty"`
+	IdempotencyKey      string        `json:"idempotency_key"`
+}
+
+// SkillPublicationCandidateSubmitResponse returns the pending candidate.
+type SkillPublicationCandidateSubmitResponse struct {
+	Candidate       SkillPublicationCandidate `json:"candidate"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// SkillPublicationCandidateListRequest lists candidates. An admin caller
+// sees every candidate in the tenant; any other caller only their own.
+type SkillPublicationCandidateListRequest struct {
+	Identity IdentityScope `json:"identity"`
+	State    string        `json:"state,omitempty"`
+}
+
+// SkillPublicationCandidateListResponse lists candidates newest first.
+type SkillPublicationCandidateListResponse struct {
+	Candidates      []SkillPublicationCandidate `json:"candidates"`
+	ProtocolVersion string                      `json:"protocol_version"`
+}
+
+// SkillPublicationCandidateReadRequest reads one candidate's frozen body.
+// Only an admin or the submitter may read it.
+type SkillPublicationCandidateReadRequest struct {
+	Identity    IdentityScope `json:"identity"`
+	CandidateID string        `json:"candidate_id"`
+}
+
+// SkillPublicationCandidateReadResponse carries the frozen body and its
+// canonical SKILL.md rendering.
+type SkillPublicationCandidateReadResponse struct {
+	Candidate       SkillPublicationCandidate `json:"candidate"`
+	Skill           SkillPublicationSkill     `json:"skill"`
+	Document        string                    `json:"document"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// SkillPublicationCandidateAcceptRequest publishes a pending candidate as a
+// new publication (mode "new") or as an immutable successor revision of an
+// existing publication (mode "successor"). Admin only.
+type SkillPublicationCandidateAcceptRequest struct {
+	Identity                       IdentityScope `json:"identity"`
+	CandidateID                    string        `json:"candidate_id"`
+	ExpectedGeneration             uint64        `json:"expected_generation"`
+	Mode                           string        `json:"mode"`
+	Name                           string        `json:"name,omitempty"`
+	PublicationID                  string        `json:"publication_id,omitempty"`
+	ExpectedPublicationGeneration  uint64        `json:"expected_publication_generation,omitempty"`
+	ExpectedPublicationContentHash string        `json:"expected_publication_content_hash,omitempty"`
+	DecisionNote                   string        `json:"decision_note,omitempty"`
+	IdempotencyKey                 string        `json:"idempotency_key"`
+}
+
+// SkillPublicationCandidateAcceptResponse returns the accepted candidate and
+// the publication it produced.
+type SkillPublicationCandidateAcceptResponse struct {
+	Candidate       SkillPublicationCandidate `json:"candidate"`
+	Publication     SkillPublicationMetadata  `json:"publication"`
+	Receipt         SkillPublicationReceipt   `json:"receipt"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// SkillPublicationCandidateRejectRequest rejects a pending candidate. Admin
+// only.
+type SkillPublicationCandidateRejectRequest struct {
+	Identity           IdentityScope `json:"identity"`
+	CandidateID        string        `json:"candidate_id"`
+	ExpectedGeneration uint64        `json:"expected_generation"`
+	DecisionNote       string        `json:"decision_note"`
+	IdempotencyKey     string        `json:"idempotency_key"`
+}
+
+// SkillPublicationCandidateRejectResponse returns the rejected candidate.
+type SkillPublicationCandidateRejectResponse struct {
+	Candidate       SkillPublicationCandidate `json:"candidate"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}
+
+// SkillPublicationCandidateWithdrawRequest lets the submitter withdraw a
+// pending candidate.
+type SkillPublicationCandidateWithdrawRequest struct {
+	Identity           IdentityScope `json:"identity"`
+	CandidateID        string        `json:"candidate_id"`
+	ExpectedGeneration uint64        `json:"expected_generation"`
+	IdempotencyKey     string        `json:"idempotency_key"`
+}
+
+// SkillPublicationCandidateWithdrawResponse returns the withdrawn candidate.
+type SkillPublicationCandidateWithdrawResponse struct {
+	Candidate       SkillPublicationCandidate `json:"candidate"`
+	ProtocolVersion string                    `json:"protocol_version"`
+}

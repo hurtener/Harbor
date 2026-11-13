@@ -196,7 +196,44 @@ type Store interface {
 	Remove(ctx context.Context, caller identity.Quadruple, req RemoveRequest) (Receipt, error)
 	ListReferences(ctx context.Context, caller identity.Quadruple) ([]Reference, error)
 	Resolve(ctx context.Context, caller identity.Quadruple, agentID string) (skills.Skill, Metadata, error)
+	// Read returns one publication revision's body for human review. With
+	// AnyState false it serves only an active publication's current revision
+	// (the catalog ListAvailable exposes); AnyState true additionally serves
+	// retired publications and earlier revisions and is admin-only at the
+	// authorization edge.
+	Read(ctx context.Context, caller identity.Quadruple, req ReadRequest) (skills.Skill, Metadata, error)
 	Close(ctx context.Context) error
+}
+
+// ReadRequest names one publication revision to read. An empty RevisionID
+// means the current revision.
+type ReadRequest struct {
+	PublicationID string
+	RevisionID    string
+	AnyState      bool
+}
+
+// readPublication applies the shared Read visibility rule to one loaded
+// publication. Invisible revisions are ErrNotFound so existence never leaks.
+func readPublication(p Publication, req ReadRequest) (skills.Skill, Metadata, error) {
+	revisionID := strings.TrimSpace(req.RevisionID)
+	if !req.AnyState {
+		if p.State != StateActive || (revisionID != "" && revisionID != p.RevisionID) {
+			return skills.Skill{}, Metadata{}, ErrNotFound
+		}
+		revisionID = p.RevisionID
+	}
+	if revisionID == "" {
+		revisionID = p.RevisionID
+	}
+	rev, err := revisionFor(p, revisionID)
+	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	if err := validateRevisionIntegrity(p, rev); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	return cloneSkill(rev.Skill), revisionMetadata(p, rev), nil
 }
 
 // Sentinel errors. Callers should use errors.Is and never parse messages.
@@ -876,6 +913,26 @@ func (m *MemoryStore) Resolve(ctx context.Context, caller identity.Quadruple, ag
 	return cloneSkill(rev.Skill), revisionMetadata(p, rev), nil
 }
 
+// Read implements Store.Read.
+func (m *MemoryStore) Read(ctx context.Context, caller identity.Quadruple, req ReadRequest) (skills.Skill, Metadata, error) {
+	if err := validateCaller(caller); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return skills.Skill{}, Metadata{}, ErrStoreClosed
+	}
+	p, _, err := m.publication(caller, strings.TrimSpace(req.PublicationID))
+	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	return readPublication(p, req)
+}
+
 func (m *MemoryStore) Close(context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1531,6 +1588,28 @@ func (d *StateStoreStore) Resolve(ctx context.Context, c identity.Quadruple, age
 	}
 	return cloneSkill(rev.Skill), revisionMetadata(p, rev), nil
 }
+
+// Read implements Store.Read.
+func (d *StateStoreStore) Read(ctx context.Context, c identity.Quadruple, req ReadRequest) (skills.Skill, Metadata, error) {
+	if err := validateCaller(c); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := d.checkOpen(ctx); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	a, _, _, err := d.loadPubs(ctx, c)
+	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	p, _, err := d.findPublication(a, strings.TrimSpace(req.PublicationID))
+	if err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	return readPublication(p, req)
+}
+
 func (d *StateStoreStore) Close(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

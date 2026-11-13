@@ -191,6 +191,20 @@ func (s *AuthorizedStore) Resolve(ctx context.Context, caller identity.Quadruple
 	return s.store.Resolve(ctx, caller, agentID)
 }
 
+// Read returns one publication revision's body. Reading retired
+// publications or earlier revisions (AnyState) requires the verified admin
+// scope; any verified caller in the tenant may read the active catalog.
+func (s *AuthorizedStore) Read(ctx context.Context, caller identity.Quadruple, req ReadRequest) (skills.Skill, Metadata, error) {
+	if req.AnyState {
+		if err := s.adminCaller(ctx, caller); err != nil {
+			return skills.Skill{}, Metadata{}, err
+		}
+	} else if err := s.caller(ctx, caller); err != nil {
+		return skills.Skill{}, Metadata{}, err
+	}
+	return s.store.Read(ctx, caller, req)
+}
+
 // Close delegates closure to the wrapped store.
 func (s *AuthorizedStore) Close(ctx context.Context) error {
 	if s == nil || s.store == nil {

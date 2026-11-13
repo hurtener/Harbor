@@ -17,6 +17,48 @@ type (
 	RuntimeClient = internal.RuntimeClient
 	// UserSkillExportClient exports caller-owned personal skill ZIP artifacts.
 	UserSkillExportClient = internal.UserSkillExportClient
+	// SkillReadClient reads personal skill and publication bodies.
+	SkillReadClient = internal.SkillReadClient
+	// SkillPublicationCandidatesClient is the reviewed-submission surface.
+	SkillPublicationCandidatesClient = internal.SkillPublicationCandidatesClient
+	// AgentConfigUserSkillsReadRequest names one personal skill to read.
+	AgentConfigUserSkillsReadRequest = types.AgentConfigUserSkillsReadRequest
+	// AgentConfigUserSkillsReadResponse carries its document and manifest.
+	AgentConfigUserSkillsReadResponse = types.AgentConfigUserSkillsReadResponse
+	// SkillSupportFileInfo is one support-manifest entry.
+	SkillSupportFileInfo = types.SkillSupportFileInfo
+	// SkillSupportFileContent is one support file's bounded text.
+	SkillSupportFileContent = types.SkillSupportFileContent
+	// SkillPublicationReadRequest names one publication revision to read.
+	SkillPublicationReadRequest = types.SkillPublicationReadRequest
+	// SkillPublicationReadResponse carries the revision body.
+	SkillPublicationReadResponse = types.SkillPublicationReadResponse
+	// SkillPublicationCandidate is the content-free candidate projection.
+	SkillPublicationCandidate = types.SkillPublicationCandidate
+	// SkillPublicationCandidateSubmitRequest freezes one personal skill.
+	SkillPublicationCandidateSubmitRequest = types.SkillPublicationCandidateSubmitRequest
+	// SkillPublicationCandidateSubmitResponse returns the candidate.
+	SkillPublicationCandidateSubmitResponse = types.SkillPublicationCandidateSubmitResponse
+	// SkillPublicationCandidateListRequest lists candidates.
+	SkillPublicationCandidateListRequest = types.SkillPublicationCandidateListRequest
+	// SkillPublicationCandidateListResponse carries the listing.
+	SkillPublicationCandidateListResponse = types.SkillPublicationCandidateListResponse
+	// SkillPublicationCandidateReadRequest names one candidate.
+	SkillPublicationCandidateReadRequest = types.SkillPublicationCandidateReadRequest
+	// SkillPublicationCandidateReadResponse carries its frozen body.
+	SkillPublicationCandidateReadResponse = types.SkillPublicationCandidateReadResponse
+	// SkillPublicationCandidateAcceptRequest accepts a candidate.
+	SkillPublicationCandidateAcceptRequest = types.SkillPublicationCandidateAcceptRequest
+	// SkillPublicationCandidateAcceptResponse carries the publication.
+	SkillPublicationCandidateAcceptResponse = types.SkillPublicationCandidateAcceptResponse
+	// SkillPublicationCandidateRejectRequest rejects a candidate.
+	SkillPublicationCandidateRejectRequest = types.SkillPublicationCandidateRejectRequest
+	// SkillPublicationCandidateRejectResponse returns the candidate.
+	SkillPublicationCandidateRejectResponse = types.SkillPublicationCandidateRejectResponse
+	// SkillPublicationCandidateWithdrawRequest withdraws a candidate.
+	SkillPublicationCandidateWithdrawRequest = types.SkillPublicationCandidateWithdrawRequest
+	// SkillPublicationCandidateWithdrawResponse returns the candidate.
+	SkillPublicationCandidateWithdrawResponse = types.SkillPublicationCandidateWithdrawResponse
 	// AgentConfigUserSkillsExportRequest names one personal skill.
 	AgentConfigUserSkillsExportRequest = types.AgentConfigUserSkillsExportRequest
 	// AgentConfigUserSkillsExportResponse carries its portable artifact.

@@ -17110,3 +17110,56 @@ also count as completions in observability rollups.
 number is not the gateway's report, and must never call an incomplete total
 exact. "Exact" means "as reported by the model gateway for every call", not a
 provider invoice.
+
+## D-508 — Skill body reads and reviewed publication candidates
+
+**Date:** 2026-11-13
+
+**Decision.** Two additive body reads and a reviewed submission path join the
+skill surfaces.
+
+`agent_config.user.skills.read` has export's authority (verified caller, signed
+reach to an active Agent, no admin or `agent_config:user` scope) and reads only
+the caller's own user-rung skill. It returns the logical skill, the canonical
+`SKILL.md` document export would place at the archive root, the support
+manifest and the package hash; a named `support_path` adds that file's UTF-8
+text up to 256 KiB (`truncated`) or marks it `binary`. A legacy upsert-only
+skill is rendered from its stored body. It writes nothing.
+
+`skills.publications.read` returns one revision's body and rendering. With the
+verified admin scope any revision of any publication in the tenant is
+readable; any other verified caller reads only an active publication's current
+revision, the catalog `.available` already exposes and `.install` already
+admits. Everything else is not found, so existence never leaks.
+
+`skills.publications.candidates.*` lets a person freeze one of their own
+personal skills, read under the same authority as the personal read, as an
+immutable pending candidate in a per-tenant StateStore aggregate. Projections
+carry listing text only; the frozen body is read by the submitter or an admin.
+One pending candidate per person and name; idempotent submission per person
+and key. Skills with support files are refused at submission because
+publications carry no support files. Admins accept a candidate as a new
+publication or a successor revision, or reject it with a note; the submitter
+can withdraw. The candidate keeps the resulting publication and revision ids
+and, for a successor, the content hash it replaced.
+
+Acceptance spans two aggregates, so it is claim, publish, finalize: the claim
+records the exact acceptance on the pending candidate; the same request from
+any admin resumes it and anything else conflicts while it is outstanding. The
+published body carries a runtime-private candidate marker (never projected on
+the wire), which is the proof a resumed acceptance uses to adopt a publish
+that already applied instead of publishing again; the publication store's own
+name uniqueness and generation/hash compare-and-set keep a second publication
+from ever being created.
+
+**Why.** A reviewer and a person choosing a skill need to read it before
+deciding; until now bodies left the runtime only through composition or a ZIP
+export. A person who wrote a useful skill had no way to offer it to the
+organization except handing the file to an admin. The body stays in the
+runtime throughout, and publication semantics are unchanged.
+
+**Not covered.** Publishing skills with support files (publications would need
+package-backed revisions) and narrowing who may install a publication.
+
+**Cross-references:** D-430, D-500.
+

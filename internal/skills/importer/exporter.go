@@ -219,3 +219,11 @@ func yamlScalar(v string) string {
 	}
 	return string(out)
 }
+
+// RenderDocument renders a structured skill as its canonical SKILL.md
+// document (frontmatter plus canonical sections) with no attachments. It is
+// the read-only rendering used to show a stored body to a reviewer; it is a
+// pure function and safe for concurrent use.
+func RenderDocument(skill skills.Skill) ([]byte, error) {
+	return doExport(skill, ImportArtifacts{})
+}
