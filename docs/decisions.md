@@ -17059,9 +17059,10 @@ the target.
 
 Review round: the source packages are read and pinned before publication and
 installed from that pinned copy, so a later source replacement or removal cannot
-leave the published reference dangling; the install runs under the target
-agent's write lock and re-reads the active reference, so a target edit that
-landed first wins and no stale package is installed or kept.
+leave the published reference dangling. The whole copy (publication and
+installation) runs under the target agent's write lock, the lock every other
+pack mutation takes, so no other copy or pack edit can publish in between and
+the installer always acts on the current revision.
 
 **Why.** An operator copying an agent's skills onto another agent of the same
 runtime expects the whole skill, support files included. The installed package

@@ -9,11 +9,12 @@ package protocol_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
 	"github.com/hurtener/Harbor/internal/identity"
-	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	agentcfgprotocol "github.com/hurtener/Harbor/internal/runtime/agentcfg/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 )
@@ -223,23 +224,38 @@ func TestAgentPackCopy_SourceChangeAfterPublicationKeepsThePinnedPackage(t *test
 	}
 }
 
-// A target edit that lands after the copy published but before its install
-// wins: the install re-reads the active reference under the agent lock and
-// never installs (or keeps) a package nothing references.
-func TestAgentPackCopy_TargetEditBeforeInstallWins(t *testing.T) {
-	fx, hooked := newHookedCopyFixture(t)
-	hooked.hook = func() {
-		if _, err := fx.admin.AgentPacksRemove(context.Background(), prototypes.AgentConfigAgentPacksRemoveRequest{
-			Identity: wireScope(importUserA), AgentID: copyTargetAgentID, Name: "shared-guide",
-		}); err != nil {
-			t.Errorf("target edit: %v", err)
+// Concurrent copies (and any other pack edit) are serialized with the
+// install under the target lock: whatever wins, the installed package is the
+// one the active revision references, and nothing it needs is released.
+func TestAgentPackCopy_ConcurrentCopiesNeverStrandTheActiveReference(t *testing.T) {
+	fx := newPackImportFixture(t)
+	v1 := fx.validate(t, importUserA, packEntries("guide v1"))
+	if _, err := fx.admin.AgentPacksImportCommit(importCtx(importUserA, testAgentID), packCommitReq(importUserA, testAgentID, v1, false)); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	fx.seedCopyTarget(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _ = fx.copyPacks(t, fmt.Sprintf("concurrent-%d", i), []string{"shared-guide"})
+		}(i)
+	}
+	wg.Wait()
+	ctx := copyCtx(importUserA)
+	target, err := fx.admin.InspectEffective(ctx, copyTargetAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var referenced string
+	for _, item := range target.RevisionItems {
+		if item.PackID == "shared-guide" {
+			referenced = item.Item.PackageHash
 		}
 	}
-	// The copy reports the moved target; either way nothing stale remains.
-	if _, err := fx.copyPacks(t, "copy-race", []string{"shared-guide"}); err != nil && !errors.Is(err, agentcfgprotocol.ErrAgentPackCopyReplay) {
-		t.Fatalf("copy: %v", err)
-	}
-	if _, ok := fx.targetPackage(t); ok {
-		t.Fatal("a stale install left a package the target no longer references")
+	pkg, ok := fx.targetPackage(t)
+	if referenced == "" || !ok || pkg.PackageHash != referenced {
+		t.Fatalf("active reference %q, installed %+v (ok=%v)", referenced, pkg.PackageHash, ok)
 	}
 }

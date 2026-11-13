@@ -210,6 +210,15 @@ func (s *Service) CopySelected(ctx context.Context, req AgentPackCopyRequest) (A
 	// pinned holds the source packages read before publication, so a source
 	// change after it cannot leave the published reference dangling.
 	pinned := map[string]skills.InstalledPackage{}
+	// Publication and package installation run under the target agent's
+	// write lock (the lock every other pack mutation takes), so no other copy
+	// or pack edit can publish between them and no installer can act on a
+	// revision that is no longer current.
+	caller, err := verifiedPackCaller(ctx)
+	if err != nil {
+		return AgentPackCopyResult{}, err
+	}
+	defer s.lockAgent(caller.TenantID, strings.TrimSpace(req.TargetAgentID))()
 	result, err := s.copySelected(ctx, req, pinned)
 	if err != nil {
 		return AgentPackCopyResult{}, err
@@ -217,10 +226,6 @@ func (s *Service) CopySelected(ctx context.Context, req AgentPackCopyRequest) (A
 	// Every successful outcome (fresh, no-op or replay) ends by making each
 	// copied package-backed item resolvable on the target. A previous attempt
 	// that published but stopped before installing is repaired here.
-	caller, err := verifiedPackCaller(ctx)
-	if err != nil {
-		return AgentPackCopyResult{}, err
-	}
 	if err := s.installCopiedPackages(ctx, caller.TenantID, result.SourceAgentID, result.TargetAgentID, pinned); err != nil {
 		return AgentPackCopyResult{}, err
 	}
@@ -1066,10 +1071,8 @@ func (s *Service) installCopiedPackages(ctx context.Context, tenantID, sourceAge
 	if err != nil {
 		return err
 	}
-	// Serialize with every other pack mutation of the target (import,
-	// upsert, remove): the active reference read below cannot move before
-	// the install and the release that follow.
-	defer s.lockAgent(tenantID, targetAgentID)()
+	// The caller holds the target's write lock (see CopySelected): the active
+	// reference read below cannot move before the install and release.
 	active, set, err := s.registry.Active(ctx, targetQ, targetAgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return fmt.Errorf("agent pack copy: read target revision: %w", err)
