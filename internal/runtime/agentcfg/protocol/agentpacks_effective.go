@@ -207,6 +207,32 @@ func (s *Service) InspectEffective(ctx context.Context, agentID string) (AgentPa
 // fail before publication; server-stamped copies can be reconciled only while
 // their target body remains untouched.
 func (s *Service) CopySelected(ctx context.Context, req AgentPackCopyRequest) (AgentPackCopyResult, error) {
+	// pinned holds the source packages read before publication, so a source
+	// change after it cannot leave the published reference dangling.
+	pinned := map[string]skills.InstalledPackage{}
+	// Publication and package installation run under the target agent's
+	// write lock (the lock every other pack mutation takes), so no other copy
+	// or pack edit can publish between them and no installer can act on a
+	// revision that is no longer current.
+	caller, err := verifiedPackCaller(ctx)
+	if err != nil {
+		return AgentPackCopyResult{}, err
+	}
+	defer s.lockAgent(caller.TenantID, strings.TrimSpace(req.TargetAgentID))()
+	result, err := s.copySelected(ctx, req, pinned)
+	if err != nil {
+		return AgentPackCopyResult{}, err
+	}
+	// Every successful outcome (fresh, no-op or replay) ends by making each
+	// copied package-backed item resolvable on the target. A previous attempt
+	// that published but stopped before installing is repaired here.
+	if err := s.installCopiedPackages(ctx, caller.TenantID, result.SourceAgentID, result.TargetAgentID, pinned); err != nil {
+		return AgentPackCopyResult{}, err
+	}
+	return result, nil
+}
+
+func (s *Service) copySelected(ctx context.Context, req AgentPackCopyRequest, pinned map[string]skills.InstalledPackage) (AgentPackCopyResult, error) {
 	caller, err := verifiedPackCaller(ctx)
 	if err != nil {
 		return AgentPackCopyResult{}, err
@@ -270,6 +296,9 @@ func (s *Service) CopySelected(ctx context.Context, req AgentPackCopyRequest) (A
 	}
 	desired, err := reconcileCopiedPack(source, target, normalized.PackIDs, normalized.SourceAgentID, digest)
 	if err != nil {
+		return AgentPackCopyResult{}, err
+	}
+	if err := s.checkCopiedPackageSources(ctx, caller.TenantID, normalized.SourceAgentID, source, normalized.PackIDs, pinned); err != nil {
 		return AgentPackCopyResult{}, err
 	}
 	same, err := samePackPayload(target, desired)
@@ -371,14 +400,27 @@ func (s *Service) inspectEffective(ctx context.Context, caller identity.Identity
 			return AgentPackInspection{}, fmt.Errorf("%w: preserve active revision layer: %w", ErrAgentPacksInvalid, err)
 		}
 	}
+	// A revision-only item keeps its package reference: the skill body alone
+	// does not carry it, and a copy without it would leave the item's
+	// support files unresolvable.
+	packageHashes := make(map[string]string, len(out.RevisionItems))
+	for _, layer := range out.RevisionItems {
+		if layer.Item.PackageHash != "" {
+			packageHashes[layer.PackID] = layer.Item.PackageHash
+		}
+	}
 	for _, item := range tier.Items() {
-		out.Items = append(out.Items, AgentPackEffectiveItem{
+		effective := AgentPackEffectiveItem{
 			PackID:       skills.CanonicalPackName(item.Skill.Name),
 			Item:         skills.PackItemFromSkill(item.Skill),
 			Source:       item.Source,
 			SemanticHash: item.SemanticHash,
 			Editable:     item.Source == skills.OperatorTierSourceRevision,
-		})
+		}
+		if item.Source == skills.OperatorTierSourceRevision {
+			effective.Item.PackageHash = packageHashes[effective.PackID]
+		}
+		out.Items = append(out.Items, effective)
 	}
 	return out, nil
 }
@@ -408,9 +450,18 @@ func layerItemsFromPack(items []skills.AgentPackItem) ([]AgentPackLayerItem, err
 	if err != nil {
 		return nil, err
 	}
+	packageHashes := make(map[string]string, len(items))
+	for _, item := range items {
+		if item.PackageHash != "" {
+			packageHashes[skills.CanonicalPackName(item.Name)] = item.PackageHash
+		}
+	}
 	out := make([]AgentPackLayerItem, 0, len(skillsView))
 	for _, skill := range skillsView {
 		item := skills.PackItemFromSkill(skill)
+		// The package reference is not part of the skill body; keep it so a
+		// copy carries the exact package (and its support files).
+		item.PackageHash = packageHashes[skills.CanonicalPackName(item.Name)]
 		out = append(out, AgentPackLayerItem{PackID: skills.CanonicalPackName(item.Name), Item: item, SemanticHash: skills.CanonicalContentHash(skill)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PackID < out[j].PackID })
@@ -527,7 +578,7 @@ func copyPackOutcomes(source, target AgentPackInspection, selected []string) ([]
 			return nil, fmt.Errorf("%w: source pack %q", ErrAgentPackNotFound, packID)
 		}
 		outcome := AgentPackCopyOutcomeCopied
-		if targetItem, exists := effectiveItemByName(target.Items, packID); exists && targetItem.SemanticHash == sourceItem.SemanticHash {
+		if targetItem, exists := effectiveItemByName(target.Items, packID); exists && targetItem.SemanticHash == sourceItem.SemanticHash && targetItem.Item.PackageHash == sourceItem.Item.PackageHash {
 			outcome = AgentPackCopyOutcomeNoop
 		}
 		out = append(out, AgentPackCopyItemResult{PackID: packID, Outcome: outcome})
@@ -551,20 +602,18 @@ func reconcileCopiedPack(source, target AgentPackInspection, selected []string, 
 		if !ok {
 			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: source pack %q", ErrAgentPackNotFound, name)
 		}
-		if item.Item.PackageHash != "" {
-			// A package-backed item's support files are runtime-owned state
-			// of the SOURCE agent; copying only the body would leave a
-			// dangling package reference on the target. Import the package
-			// into the target agent instead.
-			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: source pack %q is package-backed; import the package into the target agent", ErrAgentPackCopyInvalid, name)
-		}
+		// A package-backed item keeps its exact PackageHash. Its support
+		// files are copied from the source agent's installed package into
+		// the target agent's own key after publication
+		// (installCopiedPackages), so the target never depends on the
+		// source agent's runtime state.
 		targetItem, targetEffective := effectiveItemByName(target.Items, name)
 		if targetEffective && !targetItem.Editable && targetItem.SemanticHash != item.SemanticHash {
 			return agentcfg.ConfigPayload{}, fmt.Errorf("%w: target boot-owned pack %q", ErrBootPackOwned, name)
 		}
 		if existing, exists := current[name]; exists {
 			existingHash := packItemSemanticHash(existing)
-			if existingHash == item.SemanticHash {
+			if existingHash == item.SemanticHash && existing.PackageHash == item.Item.PackageHash {
 				continue
 			}
 			origin, valid := parseCopiedOrigin(existing.OriginRef)
@@ -961,4 +1010,124 @@ func packCopyResult(record agentPackCopyRecord, target AgentPackInspection, chan
 		Changed:               changed,
 		Replayed:              replayed,
 	}
+}
+
+// packageStore returns the installed-package store the pack import and copy
+// share, or nil when this runtime wires none.
+func (s *Service) packageStore() skills.SkillStore {
+	if s.skills != nil {
+		return s.skills
+	}
+	if s.packageImport != nil {
+		return s.packageImport.store
+	}
+	return nil
+}
+
+// checkCopiedPackageSources refuses, before anything is reserved or
+// published, a selection whose package-backed source item has no installed
+// package at exactly its referenced hash on the source agent. Copying such an
+// item would publish a reference nothing can resolve.
+func (s *Service) checkCopiedPackageSources(ctx context.Context, tenantID, sourceAgentID string, source AgentPackInspection, selected []string, pinned map[string]skills.InstalledPackage) error {
+	items := make(map[string]AgentPackEffectiveItem, len(source.Items))
+	for _, item := range source.Items {
+		items[item.PackID] = item
+	}
+	for _, name := range selected {
+		item, ok := items[name]
+		if !ok || item.Item.PackageHash == "" {
+			continue
+		}
+		store := s.packageStore()
+		if store == nil {
+			return fmt.Errorf("%w: source pack %q is package-backed and this runtime has no package store", ErrAgentPackCopyInvalid, name)
+		}
+		sourceQ, err := agentcfg.AgentScope(tenantID, sourceAgentID)
+		if err != nil {
+			return err
+		}
+		winner, err := store.GetInstalledPackage(ctx, sourceQ, sourceAgentID, name)
+		if errors.Is(err, skills.ErrInstalledPackageNotFound) || (err == nil && winner.PackageHash != item.Item.PackageHash) {
+			return fmt.Errorf("%w: source pack %q references a package the source agent does not hold", ErrAgentPackCopyInvalid, name)
+		}
+		if err != nil {
+			return fmt.Errorf("agent pack copy: read source package %q: %w", name, err)
+		}
+		pinned[name] = winner
+	}
+	return nil
+}
+
+// installCopiedPackages makes every package-backed item that the target's
+// ACTIVE revision carries as a copy from sourceAgentID resolvable on the
+// target: the source agent's installed package at exactly the referenced
+// hash is written under the target agent's own key (skill re-keyed to the
+// target). It is idempotent, never overwrites a package a different item now
+// references, and ends by releasing target packages no item references. A
+// source that no longer holds the referenced hash fails closed: the item
+// stays unresolvable until the next copy carries the current package.
+func (s *Service) installCopiedPackages(ctx context.Context, tenantID, sourceAgentID, targetAgentID string, pinned map[string]skills.InstalledPackage) error {
+	targetQ, err := agentcfg.AgentScope(tenantID, targetAgentID)
+	if err != nil {
+		return err
+	}
+	// The caller holds the target's write lock (see CopySelected): the active
+	// reference read below cannot move before the install and release.
+	active, set, err := s.registry.Active(ctx, targetQ, targetAgentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return fmt.Errorf("agent pack copy: read target revision: %w", err)
+	}
+	if !set {
+		return nil
+	}
+	// pending are the copied package-backed items; a copy that deselected one
+	// still releases its package below.
+	var pending []skills.AgentPackItem
+	for _, item := range active.Payload.AgentPacks {
+		origin, ok := parseCopiedOrigin(item.OriginRef)
+		if item.PackageHash == "" || !ok || origin.SourceAgentID != sourceAgentID {
+			continue
+		}
+		pending = append(pending, item)
+	}
+	store := s.packageStore()
+	if store == nil {
+		if len(pending) == 0 {
+			return nil
+		}
+		return fmt.Errorf("%w: copied package-backed packs need a package store", ErrAgentPackCopyInvalid)
+	}
+	sourceQ, err := agentcfg.AgentScope(tenantID, sourceAgentID)
+	if err != nil {
+		return err
+	}
+	for _, item := range pending {
+		name := skills.CanonicalPackName(item.Name)
+		current, err := store.GetInstalledPackage(ctx, targetQ, targetAgentID, name)
+		found := err == nil
+		if err != nil && !errors.Is(err, skills.ErrInstalledPackageNotFound) {
+			return fmt.Errorf("agent pack copy: read target package %q: %w", name, err)
+		}
+		if found && current.PackageHash == item.PackageHash {
+			continue
+		}
+		unit, ok := pinned[name]
+		if !ok || unit.PackageHash != item.PackageHash {
+			unit, err = store.GetInstalledPackage(ctx, sourceQ, sourceAgentID, name)
+			if err != nil || unit.PackageHash != item.PackageHash {
+				return fmt.Errorf("%w: copied pack %q references a package the source agent no longer holds", ErrAgentPackCopyReplay, name)
+			}
+		}
+		unit.Skill.AgentID = targetAgentID
+		unit.Skill.ContentHash = skills.CanonicalContentHash(unit.Skill)
+		cond := skills.InstalledPackageCondition{ExpectedAbsent: true}
+		if found {
+			cond = skills.InstalledPackageCondition{ExpectedHash: current.PackageHash}
+		}
+		if _, err := store.PutInstalledPackage(ctx, targetQ, targetAgentID, unit, cond, found); err != nil {
+			return fmt.Errorf("agent pack copy: install copied package %q (retry the copy to repair): %w", name, err)
+		}
+	}
+	s.releaseUnreferencedPackages(ctx, tenantID, targetAgentID, false)
+	return nil
 }

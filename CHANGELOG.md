@@ -17,6 +17,17 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.49.0] — 2026-11-13
+
+### Fixed
+
+- **`agent_packs.copy` carries package-backed items (D-506).** A copied item
+  keeps its `package_hash`, and the target agent gets its own copy of the
+  installed package, so the item's support files resolve on the target.
+  Inspection now reports `package_hash` on revision items; before, the copy
+  silently dropped it. A support-file-only change is copied, and deselecting
+  an item releases its package. No migration.
+
 ## [1.48.0] — 2026-11-13
 
 ### Added
