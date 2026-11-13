@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -194,64 +195,67 @@ func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method m
 		return &types.SkillPublicationCandidateAcceptResponse{Candidate: candidateToWire(candidateMeta(c)), Publication: metadataToWire(meta), Receipt: receiptToWire(receipt), ProtocolVersion: types.ProtocolVersion}, nil
 	}
 	claim := *c.Claim
+	token := claimToken(claim)
+	// Fence the publish with this claim: the publication store commits it
+	// only while this token is the candidate's live fence, in the same
+	// compare-and-set as the publish, and returns the revision the candidate
+	// already produced (any admin, any session, any generation) instead of
+	// writing again.
+	if err := s.store.FenceCandidate(ctx, caller, c.CandidateID, token); err != nil {
+		if stderrors.Is(err, publication.ErrConflict) {
+			return nil, mapPublicationError(method, publication.ErrClaimOutstanding)
+		}
+		return nil, mapPublicationError(method, err)
+	}
 	skill := markCandidate(c.Skill, c.CandidateID)
 	key := publication.CandidateAcceptKey(c.CandidateID)
+	fence := &publication.CandidateFence{CandidateID: c.CandidateID, Token: token}
 	var (
 		meta    publication.Metadata
 		receipt publication.Receipt
 		prior   string
 	)
-	// A publish this candidate already produced (any admin, any session,
-	// whatever the publication's current generation) is adopted from the
-	// durable marker instead of being published again.
-	// The publish runs under a deadline shorter than staleClaimAfter, so a
-	// claim old enough to be resolved by another decision can no longer have
-	// a publish in flight.
+	// The publish runs under a deadline shorter than StaleClaimAfter; the
+	// fence, not the deadline, is what guarantees a resolved claim's publish
+	// never lands.
 	publishCtx, cancelPublish := context.WithTimeout(ctx, AcceptPublishDeadline)
 	defer cancelPublish()
-	if found, foundPrior, ok := s.findCandidateRevision(ctx, caller, c.CandidateID, claim); ok {
-		meta, prior = found, foundPrior
-		receipt = adoptedReceipt(claim, found, prior)
-	} else {
-		switch claim.Mode {
-		case publication.AcceptModeNew:
-			skill.Name = claim.Name
-			meta, receipt, err = s.store.Publish(publishCtx, caller, publication.PublishRequest{IdempotencyKey: key, Name: claim.Name, Skill: skill, ExpectedAbsent: true})
-		case publication.AcceptModeSuccessor:
-			current, gerr := s.store.Get(ctx, caller, claim.PublicationID)
-			if gerr != nil {
-				err = gerr
-				break
-			}
-			skill.Name = current.Name
-			prior = claim.ExpectedPublicationContentHash
-			meta, receipt, err = s.store.PublishSuccessor(publishCtx, caller, publication.SuccessorRequest{
-				IdempotencyKey: key, PublicationID: claim.PublicationID, ExpectedGeneration: claim.ExpectedPublicationGeneration,
-				ExpectedContentHash: claim.ExpectedPublicationContentHash, Skill: skill,
-			})
-			if err == nil && receipt.BeforeHash != "" {
-				prior = receipt.BeforeHash
-			}
+	switch claim.Mode {
+	case publication.AcceptModeNew:
+		skill.Name = claim.Name
+		meta, receipt, err = s.store.Publish(publishCtx, caller, publication.PublishRequest{IdempotencyKey: key, Name: claim.Name, Skill: skill, ExpectedAbsent: true, Candidate: fence})
+	case publication.AcceptModeSuccessor:
+		current, gerr := s.store.Get(ctx, caller, claim.PublicationID)
+		if gerr != nil {
+			err = gerr
+			break
 		}
-		if err != nil {
-			// A concurrent attempt may have published between the check and
-			// this publish: re-check the durable marker before deciding.
-			if found, foundPrior, ok := s.findCandidateRevision(ctx, caller, c.CandidateID, claim); ok {
-				meta, prior, err = found, foundPrior, nil
-				receipt = adoptedReceipt(claim, found, prior)
-			}
-		}
+		skill.Name = current.Name
+		meta, receipt, err = s.store.PublishSuccessor(publishCtx, caller, publication.SuccessorRequest{
+			IdempotencyKey: key, PublicationID: claim.PublicationID, ExpectedGeneration: claim.ExpectedPublicationGeneration,
+			ExpectedContentHash: claim.ExpectedPublicationContentHash, Skill: skill, Candidate: fence,
+		})
+	}
+	if err == nil {
+		prior = receipt.BeforeHash
 	}
 	if err != nil {
 		if definitivePublishFailure(err) {
-			// Nothing was published under this claim (an applied publish
-			// replays or is adopted above), so release it: the candidate can
-			// be accepted under another name or target, rejected or withdrawn.
-			if rerr := s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.ClaimedAt); rerr != nil {
+			// Release only once the store has PROVEN nothing applied (and
+			// revoked this claim's fence); otherwise keep the claim.
+			res, rerr := s.store.ResolveCandidate(ctx, caller, c.CandidateID, token)
+			if rerr != nil {
+				return nil, mapPublicationError(method, err)
+			}
+			if res.Applied {
+				meta, prior, receipt, err = res.Publication, res.PriorContentHash, res.Receipt, nil
+			} else if rerr := s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.ClaimedAt); rerr != nil {
 				return nil, mapPublicationError(method, rerr)
 			}
 		}
-		return nil, mapPublicationError(method, err)
+		if err != nil {
+			return nil, mapPublicationError(method, err)
+		}
 	}
 	final, err := s.candidates.FinalizeAccept(ctx, caller, c.CandidateID, publication.AcceptResult{
 		PublicationID: meta.PublicationID, RevisionID: meta.RevisionID, PriorContentHash: prior, Receipt: receipt,
@@ -274,6 +278,16 @@ const StaleClaimAfter = 2 * time.Minute
 // AcceptPublishDeadline bounds the publish step of an acceptance. It must stay
 // shorter than StaleClaimAfter so a stale claim never has a publish in flight.
 const AcceptPublishDeadline = 60 * time.Second
+
+// claimToken identifies one recorded acceptance for the publication fence.
+func claimToken(claim publication.AcceptClaim) string {
+	return claim.ClaimedAt.UTC().Format(time.RFC3339Nano)
+}
+
+// errStaleResolutionUnknown means a stale acceptance could not be proven
+// applied or not applied (for example a catalog read failed). The claim is
+// kept and the caller may retry.
+var errStaleResolutionUnknown = stderrors.New("protocol: stale acceptance could not be resolved; retry")
 
 // definitivePublishFailure reports whether a publish error proves the
 // publication store did not apply the claimed publish.
@@ -301,90 +315,34 @@ func (s *SkillPublicationsSurface) clearStaleClaim(ctx context.Context, caller i
 	if time.Since(claim.ClaimedAt) < staleClaimAfter {
 		return publication.ErrClaimOutstanding
 	}
-	if privileged {
-		if meta, prior, ok := s.findCandidateRevision(ctx, caller, c.CandidateID, claim); ok {
-			if _, ferr := s.candidates.FinalizeAccept(ctx, caller, c.CandidateID, publication.AcceptResult{
-				PublicationID: meta.PublicationID, RevisionID: meta.RevisionID, PriorContentHash: prior,
-				Receipt: publication.Receipt{Operation: "publish", PublicationID: meta.PublicationID, RevisionID: meta.RevisionID, Generation: meta.Generation, State: meta.State, BeforeHash: prior, AfterHash: meta.ContentHash},
-			}); ferr != nil {
-				return ferr
-			}
-			return publication.ErrConflict
-		}
-	} else {
-		// The submitter cannot read the catalog to prove the claim published
-		// nothing; an admin decision (accept or reject) resolves it.
+	if !privileged {
+		// The submitter cannot resolve the catalog side; an admin decision
+		// (accept or reject) resolves it.
 		return publication.ErrClaimOutstanding
+	}
+	// Atomically: the revision the claim produced, or a revoked fence so its
+	// publish can never land. Any error is "unknown": keep the claim.
+	res, err := s.store.ResolveCandidate(ctx, caller, c.CandidateID, claimToken(claim))
+	if err != nil {
+		return fmt.Errorf("%w: resolving a stale acceptance: %w", errStaleResolutionUnknown, err)
+	}
+	if res.Applied {
+		if _, ferr := s.candidates.FinalizeAccept(ctx, caller, c.CandidateID, publication.AcceptResult{
+			PublicationID: res.Publication.PublicationID, RevisionID: res.Publication.RevisionID, PriorContentHash: res.PriorContentHash, Receipt: res.Receipt,
+		}); ferr != nil {
+			return ferr
+		}
+		return publication.ErrConflict
 	}
 	return s.candidates.ReleaseClaim(ctx, caller, c.CandidateID, claim.ClaimedAt)
 }
-
-// findCandidateRevision finds the publication revision this candidate's
-// claim produced, from the marker in the revision body. It is independent of
-// caller-scoped idempotency receipts and of the publication's current
-// generation, so any admin or session recovers an applied acceptance. prior is
-// the content hash of the revision it replaced (successor) or empty.
-func (s *SkillPublicationsSurface) findCandidateRevision(ctx context.Context, caller identity.Quadruple, candidateID string, claim publication.AcceptClaim) (publication.Metadata, string, bool) {
-	var ids []string
-	switch claim.Mode {
-	case publication.AcceptModeNew:
-		items, err := s.store.List(ctx, caller)
-		if err != nil {
-			return publication.Metadata{}, "", false
-		}
-		for _, item := range items {
-			if item.Name == strings.ToLower(strings.TrimSpace(claim.Name)) {
-				ids = append(ids, item.PublicationID)
-			}
-		}
-	case publication.AcceptModeSuccessor:
-		ids = []string{claim.PublicationID}
-	}
-	for _, id := range ids {
-		revisions, err := s.store.Revisions(ctx, caller, id)
-		if err != nil {
-			continue
-		}
-		for i, rev := range revisions {
-			if claim.Mode == publication.AcceptModeNew && i > 0 {
-				break
-			}
-			body, _, err := s.store.Read(ctx, caller, publication.ReadRequest{PublicationID: id, RevisionID: rev.RevisionID, AnyState: true})
-			if err != nil {
-				continue
-			}
-			if marker, _ := body.Extra[candidateMarkerKey].(string); marker == candidateID {
-				prior := ""
-				if i > 0 {
-					prior = revisions[i-1].ContentHash
-				}
-				return rev, prior, true
-			}
-		}
-	}
-	return publication.Metadata{}, "", false
-}
-
-func adoptedReceipt(claim publication.AcceptClaim, meta publication.Metadata, prior string) publication.Receipt {
-	op := "publish"
-	if claim.Mode == publication.AcceptModeSuccessor {
-		op = "publish_successor"
-	}
-	return publication.Receipt{Operation: op, PublicationID: meta.PublicationID, RevisionID: meta.RevisionID, Generation: meta.Generation, State: meta.State, BeforeHash: prior, AfterHash: meta.ContentHash}
-}
-
-// candidateMarkerKey records, inside the published revision body, which
-// candidate produced it. It is runtime-private bookkeeping (underscore
-// prefix: never projected on the wire) and is the proof a resumed
-// acceptance uses to adopt a publish that already applied.
-const candidateMarkerKey = "_publication.candidate_id"
 
 func markCandidate(skill skills.Skill, candidateID string) skills.Skill {
 	extra := make(map[string]any, len(skill.Extra)+1)
 	for k, v := range skill.Extra {
 		extra[k] = v
 	}
-	extra[candidateMarkerKey] = candidateID
+	extra[publication.CandidateMarkerKey] = candidateID
 	skill.Extra = extra
 	return skill
 }

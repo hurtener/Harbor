@@ -130,6 +130,10 @@ type PublishRequest struct {
 	Name           string
 	Skill          skills.Skill
 	ExpectedAbsent bool
+	// Candidate, when set, makes this a candidate acceptance's publish: it
+	// commits only under the candidate's live fence, and a publish the
+	// candidate already produced is returned instead of written again.
+	Candidate *CandidateFence
 }
 
 // SuccessorRequest publishes an immutable successor revision for an existing
@@ -140,6 +144,8 @@ type SuccessorRequest struct {
 	ExpectedGeneration  uint64
 	ExpectedContentHash string
 	Skill               skills.Skill
+	// Candidate fences a candidate acceptance's publish (see PublishRequest).
+	Candidate *CandidateFence
 }
 
 // RetireRequest terminally retires a publication. Retirement is not a grace
@@ -205,6 +211,13 @@ type Store interface {
 	// Revisions lists one publication's immutable revisions, oldest first,
 	// as content-free metadata (admin-only through AuthorizedStore).
 	Revisions(ctx context.Context, caller identity.Quadruple, publicationID string) ([]Metadata, error)
+	// FenceCandidate makes token the candidate's live acceptance fence. It
+	// fails with ErrConflict while a different live token holds the fence.
+	FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID, token string) error
+	// ResolveCandidate atomically reports the revision the candidate's
+	// publish produced, or, if none, revokes token so that publish can never
+	// land. Any error means "unknown": the caller must not release the claim.
+	ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID, token string) (CandidateResolution, error)
 	Close(ctx context.Context) error
 }
 
@@ -443,6 +456,7 @@ type MemoryStore struct {
 	closed  bool
 	clock   func() time.Time
 	pubs    map[string][]Publication
+	fences  map[string]map[string]string
 	refs    map[string]Reference
 	ops     map[string]operation
 }
@@ -551,6 +565,14 @@ func (m *MemoryStore) Publish(ctx context.Context, caller identity.Quadruple, re
 	if err != nil {
 		return Metadata{}, Receipt{}, err
 	}
+	if req.Candidate != nil {
+		if res, ok := candidateRevision(m.pubs[caller.TenantID], req.Candidate.CandidateID); ok {
+			return res.Publication, res.Receipt, nil
+		}
+		if err := checkFence(m.fencesFor(caller.TenantID), req.Candidate); err != nil {
+			return Metadata{}, Receipt{}, err
+		}
+	}
 	fingerprint := "publish\x00" + canonicalName(req.Name) + "\x00" + skill.ContentHash
 	opKey := opKey(caller, req.IdempotencyKey)
 	if prior, ok, err := m.checkOp(opKey, fingerprint); err != nil || ok {
@@ -638,6 +660,14 @@ func (m *MemoryStore) PublishSuccessor(ctx context.Context, caller identity.Quad
 	skill, err := validateSkill(req.Skill, "")
 	if err != nil {
 		return Metadata{}, Receipt{}, err
+	}
+	if req.Candidate != nil {
+		if res, ok := candidateRevision(m.pubs[caller.TenantID], req.Candidate.CandidateID); ok {
+			return res.Publication, res.Receipt, nil
+		}
+		if err := checkFence(m.fencesFor(caller.TenantID), req.Candidate); err != nil {
+			return Metadata{}, Receipt{}, err
+		}
 	}
 	fingerprint := fmt.Sprintf("successor\x00%s\x00%d\x00%s\x00%s", req.PublicationID, req.ExpectedGeneration, req.ExpectedContentHash, skill.ContentHash)
 	opKey := opKey(caller, req.IdempotencyKey)
@@ -994,6 +1024,9 @@ func NewStateStore(st state.StateStore, runtimeID string) (*StateStoreStore, err
 type durableAggregate struct {
 	Publications []Publication        `json:"publications"`
 	Operations   map[string]operation `json:"operations,omitempty"`
+	// CandidateFences maps a candidate to its live (or revoked) acceptance
+	// token; fenced publishes commit only under the live one.
+	CandidateFences map[string]string `json:"candidate_fences,omitempty"`
 }
 type durableReference struct {
 	Reference  Reference            `json:"reference"`
@@ -1082,6 +1115,14 @@ func (d *StateStoreStore) Publish(ctx context.Context, c identity.Quadruple, r P
 	a, old, present, err := d.loadAggregate(ctx, c.TenantID)
 	if err != nil {
 		return Metadata{}, Receipt{}, err
+	}
+	if r.Candidate != nil {
+		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {
+			return res.Publication, res.Receipt, nil
+		}
+		if err := checkFence(a.CandidateFences, r.Candidate); err != nil {
+			return Metadata{}, Receipt{}, err
+		}
 	}
 	fp := "publish\x00" + canonicalName(r.Name) + "\x00" + skill.ContentHash
 	opKey := durableOpKey(c, r.IdempotencyKey)
@@ -1254,6 +1295,14 @@ func (d *StateStoreStore) PublishSuccessor(ctx context.Context, c identity.Quadr
 	}
 	if !present {
 		return Metadata{}, Receipt{}, ErrNotFound
+	}
+	if r.Candidate != nil {
+		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {
+			return res.Publication, res.Receipt, nil
+		}
+		if err := checkFence(a.CandidateFences, r.Candidate); err != nil {
+			return Metadata{}, Receipt{}, err
+		}
 	}
 	fp := fmt.Sprintf("successor\x00%s\x00%d\x00%s\x00%s", r.PublicationID, r.ExpectedGeneration, r.ExpectedContentHash, skill.ContentHash)
 	opKey := durableOpKey(c, r.IdempotencyKey)

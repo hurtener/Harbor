@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
@@ -499,5 +500,119 @@ func TestCandidates_RecoveryAcrossAdminsAfterPublicationAdvanced(t *testing.T) {
 func TestCandidates_PublishDeadlineIsShorterThanStaleWindow(t *testing.T) {
 	if protocol.AcceptPublishDeadline <= 0 || protocol.AcceptPublishDeadline >= protocol.StaleClaimAfter {
 		t.Fatalf("publish deadline %v must be positive and shorter than the stale window %v", protocol.AcceptPublishDeadline, protocol.StaleClaimAfter)
+	}
+}
+
+// unknownResolution makes every stale resolution fail (a catalog read error).
+type unknownResolution struct {
+	publication.Store
+	fail bool
+}
+
+func (u *unknownResolution) ResolveCandidate(ctx context.Context, caller identity.Quadruple, id, token string) (publication.CandidateResolution, error) {
+	if u.fail {
+		return publication.CandidateResolution{}, errors.New("simulated catalog read failure")
+	}
+	return u.Store.ResolveCandidate(ctx, caller, id, token)
+}
+
+// A stale claim whose publish applied is never released on an unknown
+// resolution: the reject fails (retryable), the claim stays, and once the
+// catalog answers, the applied acceptance is finalized instead of rejected.
+func TestCandidates_StaleResolutionNeverTreatsUnknownAsAbsent(t *testing.T) {
+	raw := publication.NewMemoryStore("runtime-a")
+	authorized, err := publication.NewAuthorizedStore(raw, auth.NewAgentReachAuthorizer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &unknownResolution{Store: authorized}
+	old := func() time.Time { return time.Now().Add(-3 * time.Minute) }
+	candidates := &flakyFinalize{CandidateStore: publication.NewMemoryCandidateStoreWithClock("runtime-a", old)}
+	snap := protocol.PersonalSkillSnapshotFunc(func(_ context.Context, _, name string) (skills.Skill, string, int, error) {
+		return skills.Skill{Name: name, Trigger: "when", Steps: []string{"v1"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser}, "", 0, nil
+	})
+	surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store, Candidates: candidates, Snapshots: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := candAdminCtx(t, "admin")
+	sub, err := surface.Dispatch(candUserCtx(t, "alice"), methods.MethodSkillsPublicationsCandidatesSubmit, &types.SkillPublicationCandidateSubmitRequest{Identity: candID("alice"), AgentID: "agent-a", Name: "triage", IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sub.(*types.SkillPublicationCandidateSubmitResponse).Candidate.CandidateID
+	// Publish applies, finalize "crashes": the claim is left behind, already stale.
+	if _, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, Mode: "new", IdempotencyKey: "a"}); err == nil {
+		t.Fatal("first accept should fail at finalize")
+	}
+	store.fail = true
+	reject := &types.SkillPublicationCandidateRejectRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, DecisionNote: "no", IdempotencyKey: "r"}
+	if _, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesReject, reject); err == nil {
+		t.Fatal("reject succeeded on an unknown resolution")
+	}
+	c, _ := candidates.Read(admin, publicationTestIdentity("admin"), id, true)
+	if c.State != publication.CandidatePending || c.Claim == nil {
+		t.Fatalf("claim released on unknown resolution: %+v", c)
+	}
+	// Once the catalog answers, the applied acceptance wins over the reject.
+	store.fail = false
+	if _, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesReject, reject); candCode(err) != protoerrors.CodeSkillPublicationConflict {
+		t.Fatalf("reject after recovery err=%v", err)
+	}
+	c, _ = candidates.Read(admin, publicationTestIdentity("admin"), id, true)
+	if c.State != publication.CandidateAccepted {
+		t.Fatalf("candidate=%+v want accepted", c)
+	}
+	pubs, _ := store.List(admin, publicationTestIdentity("admin"))
+	if len(pubs) != 1 || pubs[0].State != publication.StateActive {
+		t.Fatalf("publications=%+v", pubs)
+	}
+}
+
+// A stale claim that published nothing is released and its fence revoked, so
+// a late publish from it can never land after another acceptance.
+func TestCandidates_RevokedStaleClaimCannotLandLater(t *testing.T) {
+	raw := publication.NewMemoryStore("runtime-a")
+	store, err := publication.NewAuthorizedStore(raw, auth.NewAgentReachAuthorizer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := func() time.Time { return time.Now().Add(-3 * time.Minute) }
+	candidates := publication.NewMemoryCandidateStoreWithClock("runtime-a", old)
+	snap := protocol.PersonalSkillSnapshotFunc(func(_ context.Context, _, name string) (skills.Skill, string, int, error) {
+		return skills.Skill{Name: name, Trigger: "when", Steps: []string{"v1"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser}, "", 0, nil
+	})
+	surface, err := protocol.NewSkillPublicationsSurface(protocol.SkillPublicationsDeps{Store: store, Candidates: candidates, Snapshots: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := candAdminCtx(t, "admin")
+	sub, err := surface.Dispatch(candUserCtx(t, "alice"), methods.MethodSkillsPublicationsCandidatesSubmit, &types.SkillPublicationCandidateSubmitRequest{Identity: candID("alice"), AgentID: "agent-a", Name: "triage", IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sub.(*types.SkillPublicationCandidateSubmitResponse).Candidate.CandidateID
+	// An acceptance is claimed and fenced, then its process stalls before publishing.
+	claimed, err := candidates.Claim(admin, publicationTestIdentity("admin"), id, 1, publication.AcceptClaim{Mode: publication.AcceptModeNew})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleToken := claimed.Claim.ClaimedAt.UTC().Format(time.RFC3339Nano)
+	if err := store.FenceCandidate(admin, publicationTestIdentity("admin"), id, staleToken); err != nil {
+		t.Fatal(err)
+	}
+	// Another admin accepts under another name: the stale claim is resolved.
+	if _, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, Mode: "new", Name: "triage-new", IdempotencyKey: "b"}); err != nil {
+		t.Fatalf("accept after stale: %v", err)
+	}
+	// The stalled publish finally reaches the store: it never writes (it gets
+	// the candidate's live revision back, or is refused by the fence).
+	sk := skills.Skill{Name: "triage", Trigger: "when", Steps: []string{"v1"}, Origin: skills.OriginGenerated, Scope: skills.ScopeUser, Extra: map[string]any{publication.CandidateMarkerKey: id}}
+	if late, _, err := store.Publish(admin, publicationTestIdentity("admin"), publication.PublishRequest{IdempotencyKey: "late", Name: "triage", Skill: sk, ExpectedAbsent: true, Candidate: &publication.CandidateFence{CandidateID: id, Token: staleToken}}); err == nil && late.Name != "triage-new" {
+		t.Fatalf("stale publish landed: %+v", late)
+	}
+	pubs, _ := store.List(admin, publicationTestIdentity("admin"))
+	if len(pubs) != 1 || pubs[0].Name != "triage-new" {
+		t.Fatalf("publications=%+v want only the live acceptance", pubs)
 	}
 }

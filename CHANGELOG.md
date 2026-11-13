@@ -35,7 +35,10 @@ Two versions move independently in Harbor (RFC §5.3):
   store and is retry-safe across admins (never publishes twice); a failed
   publish (for example a name clash) releases the candidate for another
   decision instead of leaving it stuck, and an applied acceptance is recovered
-  by any admin from the published revision itself. Only pending candidates
+  by any admin from the published revision itself. Each acceptance's publish
+  is fenced in the publication store: once a stale acceptance is resolved, its
+  late publish can never land, and an unknown resolution keeps the candidate
+  rather than rejecting it. Only pending candidates
   count toward the per-tenant bound (64 per person); old decided candidates are
   pruned. Skills with
   support files are refused (`candidate_support_files_unsupported`); one pending

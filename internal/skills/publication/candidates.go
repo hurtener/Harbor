@@ -322,7 +322,16 @@ type candidateStore struct {
 // NewMemoryCandidateStore returns an in-memory CandidateStore bound to one
 // runtime/deployment.
 func NewMemoryCandidateStore(runtimeID string) CandidateStore {
-	return &candidateStore{backend: &memoryCandidateBackend{tenants: map[string][]byte{}}, runtime: strings.TrimSpace(runtimeID), clock: time.Now}
+	return NewMemoryCandidateStoreWithClock(runtimeID, time.Now)
+}
+
+// NewMemoryCandidateStoreWithClock is NewMemoryCandidateStore with an
+// injected clock (claims are timestamped with it), for deterministic tests.
+func NewMemoryCandidateStoreWithClock(runtimeID string, clock func() time.Time) CandidateStore {
+	if clock == nil {
+		clock = time.Now
+	}
+	return &candidateStore{backend: &memoryCandidateBackend{tenants: map[string][]byte{}}, runtime: strings.TrimSpace(runtimeID), clock: clock}
 }
 
 // NewStateStoreCandidateStore returns a durable CandidateStore over the

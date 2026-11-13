@@ -17152,11 +17152,18 @@ stale or missing target) releases the claim, so the candidate can be accepted
 differently, rejected or withdrawn. A claim left unfinalized for two minutes
 is resolved before another decision: finalized if its publish applied,
 released otherwise; a younger claim with a different target conflicts. The
-publish step runs under a 60-second deadline, shorter than that window, so a
-claim old enough to be resolved never has a publish in flight.
-Whether a claim already published is decided only from durable state — the
-candidate marker in a publication revision, found at any generation by any
-admin or session — never from a caller-scoped idempotency receipt. Only
+publish step also runs under a 60-second deadline, shorter than that window.
+Each claim fences its publish: before publishing, the claim's token becomes
+the candidate's live fence in the publication aggregate, and the publish
+commits only while that token is still the fence, in the same
+compare-and-set; a publish the candidate already produced (the marker in any
+revision, any generation, any admin or session) is returned instead of
+written again. Resolving a stale or failed claim is one atomic store step
+that either reports the revision it produced or revokes its fence, so a
+publish still in flight can never land afterwards; the claim is released
+only after that step proves nothing applied, and any lookup or store error
+is "unknown" — the claim is kept and the reject, withdraw or accept is
+refused retryably. Only
 pending candidates count toward the tenant queue bound (1,024), each person
 may hold at most 64 pending, and decided candidates beyond 1,024 are pruned
 oldest first; candidate ids are numbered monotonically so pruning never

@@ -321,3 +321,69 @@ func TestCandidateQuotaCountsOnlyPendingAndPrunesHistory(t *testing.T) {
 	}
 	submit(t, store, "dave", "k", "notes")
 }
+
+// A publish whose acceptance was revoked (its claim resolved as stale) can
+// never land, even if it reaches the store after a newer acceptance.
+func TestCandidateFenceRejectsARevokedPublish(t *testing.T) {
+	raw, err := stateinmem.New(config.StateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = raw.Close(context.Background()) })
+	durable, err := NewStateStore(raw, "rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, store := range map[string]Store{"memory": NewMemoryStore("rt"), "state": durable} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			admin := publicationIdentity("tenant-a", "admin", "s-admin")
+			if err := store.FenceCandidate(ctx, admin, "cand-1", "t1"); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.FenceCandidate(ctx, admin, "cand-1", "t2"); !errors.Is(err, ErrConflict) {
+				t.Fatalf("second live fence err=%v", err)
+			}
+			res, err := store.ResolveCandidate(ctx, admin, "cand-1", "t1")
+			if err != nil || res.Applied {
+				t.Fatalf("resolve=%+v err=%v", res, err)
+			}
+			if err := store.FenceCandidate(ctx, admin, "cand-1", "t2"); err != nil {
+				t.Fatalf("new fence after revoke: %v", err)
+			}
+			sk := publicationSkill("triage", "v1")
+			sk.Extra = map[string]any{CandidateMarkerKey: "cand-1"}
+			// The old acceptance's publish arrives late: refused at commit.
+			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "old", Name: "triage", Skill: sk, ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: "t1"}}); !errors.Is(err, ErrCandidateFenced) {
+				t.Fatalf("revoked publish err=%v", err)
+			}
+			if pubs, _ := store.List(ctx, admin); len(pubs) != 0 {
+				t.Fatalf("revoked publish landed: %+v", pubs)
+			}
+			// The live acceptance publishes once; a repeat by another caller is
+			// the same revision, never a second publication.
+			first, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "new", Name: "triage-2", Skill: withName(sk, "triage-2"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: "t2"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			other := publicationIdentity("tenant-a", "admin2", "s-admin2")
+			again, _, err := store.Publish(ctx, other, PublishRequest{IdempotencyKey: "new", Name: "triage-2", Skill: withName(sk, "triage-2"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: "t2"}})
+			if err != nil || again.PublicationID != first.PublicationID {
+				t.Fatalf("repeat=%+v err=%v", again, err)
+			}
+			// Once applied, resolution reports it and never revokes.
+			res, err = store.ResolveCandidate(ctx, admin, "cand-1", "t2")
+			if err != nil || !res.Applied || res.Publication.PublicationID != first.PublicationID {
+				t.Fatalf("applied resolve=%+v err=%v", res, err)
+			}
+			if pubs, _ := store.List(ctx, admin); len(pubs) != 1 {
+				t.Fatalf("publications=%+v", pubs)
+			}
+		})
+	}
+}
+
+func withName(sk skills.Skill, name string) skills.Skill {
+	sk.Name = name
+	return sk
+}
