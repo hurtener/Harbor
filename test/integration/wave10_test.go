@@ -408,8 +408,8 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 		t.Fatal("versioned memory budget must appear in the canonical capability set")
 	}
 	caps := h.Capabilities
-	if len(caps) != 18 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly 18 canonical capabilities including run-scoped tools", caps)
+	if len(caps) != 19 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly 19 canonical capabilities including run limits", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

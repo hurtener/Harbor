@@ -73,6 +73,7 @@ func (s *Service) SetLLMParams(ctx context.Context, req prototypes.AgentConfigSe
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
 		payload.Memory = active.Payload.Memory
+		payload.RunLimits = active.Payload.RunLimits.Clone()
 		payload.AgentPacks = copyAgentPackItems(active.Payload.AgentPacks)
 		// The ordered additive prompt blocks are a sibling section like any
 		// other: this verb replaces only its own, so the blocks survive.

@@ -1273,6 +1273,45 @@ fields use runtime/agent defaults, an empty reasoning value requests provider
 defaults, and `off` disables thinking. No preference is saved and no restart is
 needed. Governance and selected-model support remain authoritative.
 
+### Run limits
+
+Negotiate `run_limits_v1` on `runtime.info`. A run can be bounded by maximum
+active duration (time waiting on a pause is not counted) and maximum cumulative
+prompt plus completion tokens; each is optional and unset means no limit.
+
+- Runtime default: `runtime.run_limits.{max_duration, max_tokens}` in YAML.
+- Per agent: `agent_config.set_revision.payload.run_limits` with
+  `max_duration_seconds` and/or `max_tokens` (positive integers). A present
+  section replaces the runtime default; an omitted field means no limit for
+  that dimension, so `{"run_limits":{}}` removes both. Preserve sibling
+  sections and use `expected_content_hash` as for any revision. The
+  `agent_config.diff` response carries `run_limits` only when it changed.
+- Per run: `control.start` accepts
+  `{"run_limits":{"max_duration_seconds":600,"max_tokens":200000}}`, which can
+  only tighten the effective limit, never loosen or remove it. It is part of
+  Start's idempotency identity.
+
+When a run reaches a limit it emits `run.limit_reached` (payload `Limit` —
+`max_duration` or `max_tokens` — plus the configured values, elapsed time,
+tokens used and step count), makes one bounded call without tools that states
+what was done and what remains, and completes normally: `task.completed` with
+`result_inline.finish_reason` set to `limit_reached` and the partial answer.
+A limit never produces `task.failed`. A run with an output schema that stops at
+a limit completes without `answer_payload`; check `finish_reason` before
+reading it. Show the person that the limit was
+reached and let them continue in the next message.
+
+### Session artifact tools
+
+When the runtime lists them in `tools.built_in`, the model can call
+`artifact_search` (grep inside a stored text artifact; each match carries
+`line`, `byte_offset` for `artifact_fetch`, and context), `artifact_list`
+(newest-first, filter by `source` — `user_upload`, `tool`, `other` — by
+producing `tool` or by filename text, with `cursor` pagination) and
+`artifact_note` (add, replace or clear a note of at most 1024 bytes). A note
+change publishes `artifacts.note_set` with the artifact id and note size, never
+the note text. All three resolve on the session's isolation triple.
+
 ## Broker-bound manual App operations (candidate)
 
 Trusted host integrations may use the optional `app_operation` selector on

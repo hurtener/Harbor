@@ -1209,6 +1209,9 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 			llmsummarizer.WithTrajectoryMaxCalls(cfg.Memory.Summarizer.MaxCalls),
 			llmsummarizer.WithTrajectoryPromptExtension(cfg.Memory.Summarizer.Prompt),
 			llmsummarizer.WithTrajectoryHeavyOutputThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
+			// An exchange too large for one maintenance request part is
+			// clipped to a preview whose exact text stays reachable by ref.
+			llmsummarizer.WithTrajectoryArtifactStore(stack.Artifacts),
 		}
 		if route := cfg.Memory.Summarizer.ProviderRoute; route != nil {
 			summaryOptions = append(summaryOptions, llmsummarizer.WithTrajectoryProviderRoute(llm.ProviderRoute{
@@ -1221,7 +1224,7 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		if err != nil {
 			return fmt.Errorf("trajectory summariser: %w", err)
 		}
-		stack.Compression = planner.NewCompressionRunner(trajSumm)
+		stack.Compression = planner.NewCompressionRunner(trajSumm, planner.WithCompressionArtifactStore(stack.Artifacts))
 	}
 
 	// The RunLoop needs the planner plus the catalog band's Coordinator

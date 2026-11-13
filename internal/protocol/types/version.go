@@ -390,6 +390,10 @@ const (
 	CapRunLLMSettings Capability = "run_llm_settings_v1"
 	// CapRunScopedTools advertises the enforced, durable start.tool_allowlist restriction.
 	CapRunScopedTools Capability = "run_scoped_tools_v1"
+	// CapRunLimits advertises per-run limits: the agent-config run_limits
+	// section, start.run_limits (stricter-only), the run.limit_reached
+	// event and the limit_reached finish reason.
+	CapRunLimits Capability = "run_limits_v1"
 
 	// CapLLMProviderRoute advertises that this runtime is booted with the
 	// optional grant-free provider-route resolver and can safely accept the
@@ -530,6 +534,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapLLMProviderRouteModelProfile:  {},
 	CapRunLLMSettings:                {},
 	CapRunScopedTools:                {},
+	CapRunLimits:                     {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

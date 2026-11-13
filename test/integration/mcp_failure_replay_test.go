@@ -142,7 +142,7 @@ func roleToolBodies(req openAIRequestEnvelope) []string {
 	var out []string
 	for _, m := range req.Messages {
 		if m.Role == "tool" && m.Content != "" {
-			out = append(out, m.Content)
+			out = append(out, string(m.Content))
 		}
 	}
 	return out

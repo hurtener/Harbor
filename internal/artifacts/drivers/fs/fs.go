@@ -362,6 +362,74 @@ func (d *driver) Delete(_ context.Context, scope artifacts.ArtifactScope, id str
 	return true, nil
 }
 
+// SetNote implements artifacts.ArtifactStore. Every stored meta copy under
+// the triple is rewritten atomically with the new note; the blob is untouched.
+func (d *driver) SetNote(_ context.Context, scope artifacts.ArtifactScope, id, note string) (*artifacts.ArtifactRef, bool, error) {
+	if d.closed.Load() {
+		return nil, false, artifacts.ErrStoreClosed
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, false, err
+	}
+	if err := artifacts.ValidateNote(note); err != nil {
+		return nil, false, err
+	}
+	if id == "" {
+		return nil, false, nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	key := keyFor(scope, id)
+	ref, ok := d.index[key]
+	if !ok {
+		return nil, false, nil
+	}
+	tasks, err := d.taskDirs(ref.Scope)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, task := range tasks {
+		copyScope := ref.Scope
+		copyScope.TaskID = task
+		dir, derr := d.dirFor(copyScope, ref.Namespace)
+		if derr != nil {
+			return nil, false, derr
+		}
+		metaPath, jerr := d.safeJoin(dir, id+metaSuffix)
+		if jerr != nil {
+			return nil, false, jerr
+		}
+		raw, rerr := os.ReadFile(metaPath)
+		if errors.Is(rerr, fs.ErrNotExist) {
+			continue
+		}
+		if rerr != nil {
+			return nil, false, fmt.Errorf("artifacts/fs: read meta: %w", rerr)
+		}
+		var stored artifacts.ArtifactRef
+		if err := json.Unmarshal(raw, &stored); err != nil {
+			return nil, false, fmt.Errorf("artifacts/fs: decode meta: %w", err)
+		}
+		stored.Note = note
+		metaBytes, merr := json.Marshal(stored)
+		if merr != nil {
+			return nil, false, fmt.Errorf("artifacts/fs: marshal meta: %w", merr)
+		}
+		tmpMeta, jerr := d.safeJoin(dir, tmpPrefix+id+metaSuffix)
+		if jerr != nil {
+			return nil, false, jerr
+		}
+		if werr := writeFileAtomic(tmpMeta, metaPath, metaBytes); werr != nil {
+			return nil, false, fmt.Errorf("artifacts/fs: write meta: %w", werr)
+		}
+	}
+	ref.Note = note
+	d.index[key] = ref
+	out := ref
+	out.Source = cloneSource(ref.Source)
+	return &out, true, nil
+}
+
 // removeEveryCopy deletes `<task>/<namespace>/<id>` and its meta sibling
 // under every task directory of the artifact's session, so no copy
 // survives a Delete on the triple. Caller holds the write lock.

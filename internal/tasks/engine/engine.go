@@ -419,6 +419,7 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		ExternalGrant:                append([]byte(nil), req.ExternalGrant...),
 		ProviderRoute:                cloneProviderRoute(req.ProviderRoute),
 		LLMSettings:                  llm.CloneRunSettings(req.LLMSettings),
+		RunLimits:                    tasks.CloneRunLimits(req.RunLimits),
 		CreatedAt:                    now,
 		UpdatedAt:                    now,
 		InputArtifactIDs:             inputArtifactIDs,
@@ -588,6 +589,7 @@ func (e *Engine) Get(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) 
 	cp.ExternalGrant = append([]byte(nil), t.ExternalGrant...)
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
+	cp.RunLimits = tasks.CloneRunLimits(t.RunLimits)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -795,6 +797,7 @@ func copyTask(t *tasks.Task) *tasks.Task {
 	cp.ToolAllowlist = cloneToolAllowlist(t.ToolAllowlist)
 	cp.ProviderRoute = cloneProviderRoute(t.ProviderRoute)
 	cp.LLMSettings = llm.CloneRunSettings(t.LLMSettings)
+	cp.RunLimits = tasks.CloneRunLimits(t.RunLimits)
 	if t.Result != nil {
 		r := *t.Result
 		cp.Result = &r
@@ -1669,6 +1672,9 @@ func spawnRequestContentHash(req tasks.SpawnRequest, admission *tasks.AgentReach
 		}
 		h.Write([]byte("\x1fllm_settings\x1f"))
 		h.Write(settings)
+	}
+	if req.RunLimits != nil {
+		_, _ = fmt.Fprintf(h, "\x1frun_limits\x1f%d\x1e%d", req.RunLimits.MaxDurationSeconds, req.RunLimits.MaxTokens)
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))

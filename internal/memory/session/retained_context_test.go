@@ -168,9 +168,14 @@ func TestRetainedContext_WindowExpiryAndConcurrentSiblings(t *testing.T) {
 		t.Fatal("lost committed outcomes or invented complete execution")
 	}
 	// Reaching the detail bound is not permission to discard either sibling.
-	// Without a new checkpoint the terminal write must preserve both outcomes.
-	if err = third.Finish(t.Context(), c.Trajectory, "third", "THIRD-OUTCOME", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextCapacity) {
-		t.Fatalf("unsummarized history silently evicted: %v", err)
+	// Without a new checkpoint the settled turn still publishes (a maintenance
+	// failure never fails the run) and every earlier outcome is preserved.
+	if err = third.Finish(t.Context(), c.Trajectory, "third", "THIRD-OUTCOME", "complete"); err != nil {
+		t.Fatalf("settled turn without a checkpoint was refused: %v", err)
+	}
+	if record := string(loadHostRecord(t, store, identity.Quadruple{Identity: c.Quadruple.Identity}, retainedKind).Bytes); !strings.Contains(record, "FIRST-SAVE") ||
+		!strings.Contains(record, "SECOND-OUTCOME") || !strings.Contains(record, "THIRD-OUTCOME") {
+		t.Fatal("unsummarized history silently evicted")
 	}
 	now = now.Add(2 * time.Minute)
 	d := retainedBase("d", "s")
@@ -497,5 +502,48 @@ func TestRetainedContext_InvalidHistoricalBodyBlocksAdmission(t *testing.T) {
 				t.Fatalf("invalid history admitted: %v", err)
 			}
 		})
+	}
+}
+
+// While compaction keeps failing, a settled turn keeps its unsummarised tail,
+// but the detail window never grows beyond twice the configured turns: the
+// oldest turn moves to exact retained evidence and the window says context
+// is partial.
+func TestRetainedContext_FailingCompactionGrowthIsBounded(t *testing.T) {
+	store, redactor, _ := retainedStore(t, "inmem")
+	for i := range 6 {
+		base := retainedBase(fmt.Sprint("run-", i), "bounded")
+		r, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, time.Hour, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Apply(&base); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Finish(t.Context(), base.Trajectory, fmt.Sprint("request ", i), fmt.Sprint("answer ", i), "complete"); err != nil {
+			t.Fatalf("turn %d: %v", i, err)
+		}
+	}
+	base := retainedBase("probe", "bounded")
+	var window struct {
+		Turns   []json.RawMessage `json:"turns"`
+		Partial bool              `json:"partial"`
+	}
+	record := loadHostRecord(t, store, identity.Quadruple{Identity: base.Quadruple.Identity}, retainedKind)
+	if err := json.Unmarshal(record.Bytes, &window); err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Turns) > 2 || !window.Partial {
+		t.Fatalf("window grew without bound: turns=%d partial=%v", len(window.Turns), window.Partial)
+	}
+	next, err := sessionmemory.BeginRetainedRun(t.Context(), store, redactor, base.Quadruple, 1, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := next.Apply(&base); err != nil {
+		t.Fatalf("bounded window no longer loads: %v", err)
+	}
+	if text := encodeRetained(t, base); !strings.Contains(text, "answer 5") || !strings.Contains(text, `"historical_context_partial":true`) {
+		t.Fatal("bounded window lost the latest outcome or the partial notice")
 	}
 }

@@ -28,6 +28,7 @@ agent_config.retirement.completed
 agent_config.retirement.progress
 agent_config.retirement.started
 artifacts.deleted
+artifacts.note_set
 artifacts.uploaded
 audit.admin_scope_used
 audit.redaction_failed
@@ -108,6 +109,7 @@ planner.repair_guidance_injected
 planner.tool_declaration_collision
 run.hook_dispatched
 run.hook_failed
+run.limit_reached
 runs.overrides_set
 runtime.error
 runtime.run_cancelled

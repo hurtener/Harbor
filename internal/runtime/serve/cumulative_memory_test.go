@@ -44,6 +44,9 @@ func (c *servedCumulativeClient) Complete(ctx context.Context, req llm.CompleteR
 		if message.Content.Text != nil {
 			b.WriteString(*message.Content.Text)
 		}
+		for _, part := range message.Content.Parts {
+			b.WriteString(part.Text)
+		}
 	}
 	body := b.String()
 	c.mu.Lock()
@@ -129,8 +132,10 @@ func TestRetainedServer_RecoversAfterCompactionFailure(t *testing.T) {
 			client.mu.Lock()
 			client.failSummaries = 1
 			client.mu.Unlock()
-			if result := retainedServerTurn(t, env, id, "Inspect the same layout.", nil); result.Status != tasks.StatusFailed {
-				t.Fatalf("compactor failure hidden: %v", result.Status)
+			// A maintenance failure keeps the previous checkpoint; the turn
+			// completes because its request still fits.
+			if result := retainedServerTurn(t, env, id, "Inspect the same layout.", nil); result.Status != tasks.StatusComplete {
+				t.Fatalf("compactor failure failed the run: %v %+v", result.Status, result.Error)
 			}
 			result := retainedServerTurn(t, env, id, "Recall the original constraint without tools.", nil)
 			if result.Status != tasks.StatusComplete {

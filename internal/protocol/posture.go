@@ -346,6 +346,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 		types.CapCallerMemory,
 		types.CapRunLLMSettings,
 		types.CapRunScopedTools,
+		// Run limits are enforced by the run loop itself, so they are
+		// advertised wherever task control is.
+		types.CapRunLimits,
 	}
 	if topologyAvailable {
 		caps = append(caps, types.CapTopologySnapshot)

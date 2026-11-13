@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner/trajectory"
@@ -90,6 +91,7 @@ func DefaultTokenEstimator(tr *Trajectory) (int, error) {
 type CompressionRunner struct {
 	summariser Summariser
 	estimator  TokenEstimator
+	artifacts  artifacts.ArtifactStore
 }
 
 // CompressionOption configures a [CompressionRunner] at construction.

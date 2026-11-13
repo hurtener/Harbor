@@ -296,9 +296,13 @@ func (m *Materializer) completeSealProjection(ctx context.Context, sess *session
 	if err := m.updateTurn(ctx, sess, ts, u); err != nil {
 		return false, false, err
 	}
+	reason := turns.FinishGoal
+	if snap.CompletedFinishReason == turns.FinishLimitReached {
+		reason = turns.FinishLimitReached
+	}
 	row, err := m.sealTurn(ctx, sess, ts, turns.Seal{
 		Status:       turns.StatusComplete,
-		FinishReason: turns.FinishGoal,
+		FinishReason: reason,
 		EventSeq:     0,
 	})
 	if err != nil {

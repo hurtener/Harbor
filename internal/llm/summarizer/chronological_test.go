@@ -31,7 +31,7 @@ func TestTrajectoryChronological_ReceiptAndPriorNarrativeRemainExact(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := *client.seenCalls()[0].req.Messages[1].Content.Text
+	payload := userPayload(client.seenCalls()[0].req)
 	if !strings.Contains(payload, receipt) || !strings.Contains(payload, "Keep the approved navigation") {
 		t.Fatal("source, trailing metadata or previous constraints were omitted")
 	}
@@ -95,9 +95,11 @@ func TestTrajectoryChronological_RejectsIncompleteOrInvalidNarrative(t *testing.
 	}
 }
 
-func TestTrajectoryChronological_CapacityNeverClips(t *testing.T) {
+// A ceiling too small for the instructions themselves still refuses before
+// dispatch. Oversized exchanges are covered by the clipping tests.
+func TestTrajectoryChronological_TinyCeilingRefusesBeforeDispatch(t *testing.T) {
 	t.Parallel()
-	for _, threshold := range []int{1, 64, 4096, 16384} {
+	for _, threshold := range []int{1, 64} {
 		t.Run(fmt.Sprint(threshold), func(t *testing.T) {
 			c := newStubClient()
 			s, err := summarizer.NewTrajectorySummariser(c, summarizer.WithTrajectoryHeavyOutputThreshold(threshold))

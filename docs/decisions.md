@@ -16917,3 +16917,91 @@ no skill, membership, revision, proposal, or sharing mutation. Existing
 explicit reviewed validate/commit flow.
 
 **Cross-references:** D-345, D-422, D-499.
+
+## D-501 — Context maintenance is bounded by the model and never fails a run
+
+**Date:** 2026-11-12
+
+**Decision.** The trajectory summariser sends the header and every step as
+separate request parts, each below the heavy-output threshold, and bounds the
+whole maintenance request by the summariser model's resolved input allowance
+minus headroom (2%, at least 256 tokens). The aggregate byte budget applies
+only when no allowance is resolved. An exchange too large for one part is
+represented by a deterministic head preview (8 KiB, falling back to 512 bytes)
+plus a session-scoped reference to its exact rendered text, retained through
+the artifact store (content addressed, so retries do not duplicate it).
+
+A maintenance failure keeps the previous checkpoint. A request that still fits
+continues unchanged; one that does not has its oldest uncovered observations
+replaced, one at a time, by a bounded preview plus a retained reference until
+the rebuilt request fits. The latest exchange, failed exchanges and existing
+previews are never reduced; a live step's raw `Observation` is unchanged.
+Cancellation and missing identity stay terminal. A settled complete turn
+without a new checkpoint keeps its unsummarised tail (nothing is evicted)
+instead of being refused; the next admission compacts before its first
+decision. This supersedes the fail-the-run posture of D-462's maintenance
+failures and the "complete refuses without a checkpoint" rule.
+
+**Cross-references:** D-026, D-462.
+
+## D-502 — Per-run duration and token limits stop gracefully
+
+**Date:** 2026-11-12
+
+**Decision.** A run may be bounded by maximum active duration (time waiting on
+a pause is excluded) and maximum cumulative prompt plus completion tokens of
+every model call it makes, accounted by an outermost composed-client layer so
+maintenance counts. Each limit is optional. Sources: `runtime.run_limits`
+(runtime default), the agent-config `run_limits` section (present section is
+authoritative; an omitted field means no limit), and `start.run_limits`, which
+may only tighten the effective limit (per-dimension minimum), so a caller with
+start authority cannot loosen an operator's bound. Limits are checked at each
+step boundary; an in-flight model or tool call is never interrupted. On a
+limit the run loop emits `run.limit_reached` once, abandons pending tool calls
+and passes `Control.Finalize` to the planner, which makes one tool-free call
+with a bounded output to state what was done and what remains. The run
+completes with finish reason `limit_reached`; a planner that cannot answer is
+replaced by a deterministic partial answer. Capability: `run_limits_v1`. The
+agent-config diff carries `run_limits` only when it changed.
+
+**Cross-references:** D-280, D-461.
+
+## D-503 — Session artifacts can be searched, listed and annotated
+
+**Date:** 2026-11-12
+
+**Decision.** Three opt-in built-ins act on the current session's artifacts
+under the same isolation triple as `artifact_fetch`: `artifact_search`
+(grep-like; literal by default, optional RE2, case-insensitive, context lines,
+match cap, byte-offset continuation; text-like MIME types only; at most 16 MiB
+scanned per call), `artifact_list` (newest first, filters by source, producing
+tool and filename text, cursor pagination) and `artifact_note` (add, replace
+or clear a note of at most 1024 bytes; emits `artifacts.note_set`). Notes are
+mutable metadata on `ArtifactRef.Note`, persisted by every store driver
+(SQLite and PostgreSQL migration 0003, filesystem and S3 sidecar metadata),
+never part of the content address, and kept on a re-put of identical bytes.
+The session manifest renders notes with the untrusted-text escaping and points
+its overflow line at `artifact_list`; heavy-result previews mention
+`artifact_search`.
+
+**Cross-references:** D-347, D-352.
+
+## D-504 — Reduction collapses whole exchanges as a last resort; the retained window stays bounded
+
+**Date:** 2026-11-12
+
+**Decision.** Amends D-501 after review. When previews alone do not make a
+request fit, reduction collapses the oldest whole exchanges (call, arguments,
+preamble, result) into a context marker referencing the retained exchange,
+never the newest one; only when the newest exchange alone cannot fit does the
+request fail with the context-window error wrapping the maintenance error. The
+preparation layer never sends a message list that did not pass the candidate
+check. After two consecutive maintenance failures a run stops calling the
+summariser. While compaction keeps failing, the retained detail window is
+bounded at twice the configured recent turns: the oldest turn moves to exact
+retained evidence, the stale checkpoint is dropped and the window is marked
+partial. Evidence-store failures degrade to previews without references.
+Artifact helper hints appear only when the run can call that helper. The
+limit-stop final call keeps tool declarations with tool choice `none`.
+
+**Cross-references:** D-501, D-502, D-503.

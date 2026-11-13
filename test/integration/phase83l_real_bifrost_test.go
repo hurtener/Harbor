@@ -84,7 +84,7 @@ type openAIRequestEnvelope struct {
 
 type openAIChatMessageJSON struct {
 	Role      string          `json:"role"`
-	Content   string          `json:"content"`
+	Content   flexContent     `json:"content"`
 	ToolCalls json.RawMessage `json:"tool_calls"`
 }
 
@@ -556,7 +556,7 @@ func flattenMessages(msgs []openAIChatMessageJSON) string {
 	for _, m := range msgs {
 		b.WriteString(m.Role)
 		b.WriteString(":\n")
-		b.WriteString(m.Content)
+		b.WriteString(string(m.Content))
 		// Native tool-call replay carries the attempted tool name in the
 		// typed assistant tool_calls field, not in message content. Include
 		// that wire field so assertions cover both the catalog and rendered
@@ -569,4 +569,32 @@ func flattenMessages(msgs []openAIChatMessageJSON) string {
 		b.WriteString("\n---\n")
 	}
 	return b.String()
+}
+
+// flexContent accepts OpenAI message content as a string or as an array of
+// text parts (the shape multi-part requests use) and joins the text.
+type flexContent string
+
+func (c *flexContent) UnmarshalJSON(b []byte) error {
+	var text string
+	if err := json.Unmarshal(b, &text); err == nil {
+		*c = flexContent(text)
+		return nil
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(b, &parts); err != nil {
+		if string(b) == "null" {
+			*c = ""
+			return nil
+		}
+		return err
+	}
+	joined := ""
+	for _, p := range parts {
+		joined += p.Text
+	}
+	*c = flexContent(joined)
+	return nil
 }

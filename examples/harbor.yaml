@@ -308,6 +308,19 @@ llm:
 #     max_repetitions: 5            # REQUIRED >=1 when repeat_every > 0 (no unlimited value)
 #     max_title_len: 80             # rune bound [8,200] (default 80); auto output is clamped
 #     model: ""                     # empty = the run's effective model; else a model_profiles key
+#
+#   # Per-run limits — unset (or 0) means no limit; either or both may be set.
+#   # max_duration is active wall-clock time (time waiting on a pause is not
+#   # counted); max_tokens is cumulative prompt + completion tokens of every
+#   # model call in the run, including context maintenance. On reaching a
+#   # limit the run emits `run.limit_reached`, asks for one bounded final
+#   # answer without tools (what was done, what remains) and completes with
+#   # finish reason `limit_reached` — never a failure. A per-agent agent-config
+#   # `run_limits` section replaces this default; `start.run_limits` can only
+#   # tighten it for one run.
+#   run_limits:
+#     max_duration: 20m
+#     max_tokens: 0
 
 governance:
   repair_attempts: 3

@@ -17,6 +17,72 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.46.0] — 2026-11-12
+
+### Added
+
+- **Per-run limits.** Runs can be bounded by maximum active duration and
+  maximum cumulative prompt plus completion tokens, each optional:
+  `runtime.run_limits` (runtime default), the agent-config `run_limits`
+  section (per agent; an omitted field means no limit), and
+  `start.run_limits`, which can only tighten the effective limit. On reaching
+  a limit the run emits `run.limit_reached`, makes one bounded tool-free final
+  call that states what was done and what remains, and completes with finish
+  reason `limit_reached` — never a failure. Capability `run_limits_v1`
+  (D-502).
+- **Session artifact tools.** Opt-in built-ins `artifact_search` (grep-like
+  search inside a stored text artifact, with line numbers, byte offsets and
+  context), `artifact_list` (paginated, filterable listing of the session's
+  artifacts, including earlier large tool results) and `artifact_note` (add,
+  replace or clear a short note; emits `artifacts.note_set`). Notes persist in
+  every artifact store driver (forward migration 0003 for SQLite and
+  PostgreSQL) and appear in the session manifest and `artifact_list`. The
+  manifest's overflow line points at `artifact_list` and heavy-result previews
+  mention `artifact_search`, each only when that tool is enabled for the run.
+  Search matches the raw line and returns a window around the match plus its
+  `match_offset`; listing uses a keyset cursor (D-503).
+- Spawned child tasks inherit the caller's effective run limits as a
+  stricter-only request, and usage of retried or downgraded attempts counts
+  toward `max_tokens` when reported (D-502).
+
+### Fixed
+
+- Context maintenance no longer fails on a single large exchange. Each step is
+  its own request part below the heavy-output threshold, the request is
+  bounded by the summariser model's real input allowance, and an oversized
+  exchange becomes a deterministic preview plus a retained reference
+  (D-501).
+- A context-maintenance failure never fails the run: the previous checkpoint
+  is kept and a fitting request continues; a request that no longer fits has
+  its oldest observations reduced to previews with references, then its
+  oldest whole exchanges collapsed to referenced markers, until it fits (the
+  newest exchange is never reduced). After two consecutive failures a run
+  stops calling the summariser and relies on reduction. A session whose
+  retained history no longer fits recovers on its next turn; a completed turn
+  without a new checkpoint keeps its unsummarised history, bounded at twice
+  the configured recent turns (older detail moves to retained evidence and
+  the window is marked partial). A store failure while retaining evidence
+  degrades to a preview without a reference (D-501).
+
+### Known limitations
+
+- Run limits are checked between steps; durable-task recovery after a
+  restart starts the limit clock and token count afresh.
+- A run with an output schema that stops at a limit completes without
+  `answer_payload`; clients check `finish_reason`.
+- With `artifacts.heavy_output_threshold_bytes` below about 12 KiB, a
+  clipped maintenance preview can itself exceed one request part.
+
+### Action required
+
+- To use the artifact tools, list them in `tools.built_in` (for example
+  `artifact_fetch`, `artifact_search`, `artifact_list`, `artifact_note`).
+- Third-party `ArtifactStore` implementations must add `SetNote`.
+- Protocol clients that decode strictly must accept the new optional
+  `run_limits` fields (agent-config payload and diff, `start`), the
+  `run.limit_reached` and `artifacts.note_set` events, and the
+  `limit_reached` finish reason.
+
 ## [1.45.0] — 2026-11-10
 
 ### Added

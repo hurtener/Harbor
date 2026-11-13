@@ -562,13 +562,16 @@ const (
 	// FinishConstraintsConflict — the run terminated because a
 	// constraint conflict could not be resolved.
 	FinishConstraintsConflict FinishReason = "constraints_conflict"
+	// FinishLimitReached — the run stopped gracefully at a configured run
+	// limit and completed with a partial answer.
+	FinishLimitReached FinishReason = "limit_reached"
 )
 
 // Valid reports whether r is one of the declared finish reasons.
 func (r FinishReason) Valid() bool {
 	switch r {
 	case FinishGoal, FinishNoPath, FinishCancelled, FinishDeadlineExceeded,
-		FinishConstraintsConflict:
+		FinishConstraintsConflict, FinishLimitReached:
 		return true
 	}
 	return false

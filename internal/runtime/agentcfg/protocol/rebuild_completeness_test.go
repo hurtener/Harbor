@@ -72,6 +72,7 @@ func rcSeed(t *testing.T) agentcfg.ConfigPayload {
 		},
 		SignedOAuthMCPPairs: &pairs,
 		Memory:              &agentcfg.MemorySection{BudgetTokens: 64000},
+		RunLimits:           &agentcfg.RunLimitsSection{MaxDurationSeconds: func() *int64 { v := int64(1200); return &v }()},
 		LLMParams: &agentcfg.LLMParams{
 			Model:           strPtr("seed-model"),
 			Temperature:     f64(0.42),

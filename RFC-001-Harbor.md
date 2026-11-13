@@ -564,6 +564,15 @@ or cold execution relaunch is introduced. See
 [RFC 002](https://github.com/hurtener/Harbor/blob/9741c6bcc204b3a7c95f939183178dd9eeb5a2f6/RFC-002-Session-Context.md) and the
 [phase 268 plan](docs/plans/phase-268-portable-compaction.md).
 
+**Maintenance is bounded by the model and never fails a run (D-501).** Each
+maintenance step travels as its own request part below the heavy-output
+threshold, and the request is bounded by the summariser model's resolved input
+allowance; an oversized exchange is a deterministic preview plus a retained
+reference. A failed maintenance keeps the previous checkpoint: a fitting
+request continues, and one that no longer fits has its oldest observations
+reduced to previews with references until it fits. Only cancellation and
+missing identity remain terminal.
+
 ### 6.3 Steering and the unified pause/resume primitive
 
 **Same-run step tranches.** A configured finite tranche charges each
@@ -1696,6 +1705,14 @@ does any identity, task-id, or run-id disagreement.
 
 ### 6.10 Artifacts
 
+**Session artifact search, listing and notes (D-503).** The opt-in
+`artifact_search`, `artifact_list` and `artifact_note` built-ins let a model
+grep inside a stored text artifact, page and filter the session's artifacts
+(including earlier large tool results), and keep a short note on one. They
+resolve on the isolation triple like `artifact_fetch`. A note is mutable
+metadata on the ref, persisted by every driver and never part of the content
+address.
+
 **MCP App callback and tool-context contracts (settled).** MCP discovery
 preserves provider-authored `_meta.ui.visibility` declarations containing
 `app` in an internal per-server callback catalog alongside the planner
@@ -2791,6 +2808,17 @@ field; unavailable or unauthorized projections fail closed.
 **Non-goals (V1.10, settled).** No pre-run hook point (the next-message override surface covers pre-run shaping; further hook points are additive future decisions against D-280, which is why the firing contract is outcome-carried rather than outcome-encoded). No durable store capture of steering turns (the hook reads live state; durable capture is a named follow-up with its own retention/erasure questions). No generic webhook subsystem — one egress path. (Settled — D-280.)
 
 ---
+
+### 6.18 Run limits
+
+A run may be bounded by maximum active duration and maximum cumulative model
+tokens (D-502). The runtime default (`runtime.run_limits`) is replaced by an
+agent-config `run_limits` section and tightened, never loosened, by
+`start.run_limits`. Limits are enforced by the run loop at step boundaries.
+Reaching one emits `run.limit_reached` and asks the planner, through
+`Control.Finalize`, for one bounded answer without tools; the run completes
+with finish reason `limit_reached` and that partial answer, or a deterministic
+one. A limit never fails a run.
 
 ## 7. Console layer
 

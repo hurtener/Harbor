@@ -297,6 +297,10 @@ func (l *leakyStore) Delete(_ context.Context, _ artifacts.ArtifactScope, _ stri
 	return true, nil
 }
 
+func (l *leakyStore) SetNote(_ context.Context, _ artifacts.ArtifactScope, _, _ string) (*artifacts.ArtifactRef, bool, error) {
+	return nil, false, nil
+}
+
 func (l *leakyStore) List(_ context.Context, _ artifacts.ArtifactScope) ([]artifacts.ArtifactRef, error) {
 	return []artifacts.ArtifactRef{l.ref}, nil
 }

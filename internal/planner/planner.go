@@ -714,6 +714,22 @@ type ControlSignals struct {
 	// RedirectGoal is non-empty when a REDIRECT control event
 	// updated the goal between planner steps.
 	RedirectGoal string
+	// Finalize is set when the run reached a configured run limit. The
+	// Planner SHOULD return one Finish carrying a bounded final answer that
+	// states what was done and what remains, without calling tools. The
+	// Runtime stamps the terminal reason; a planner that cannot comply is
+	// replaced by a deterministic partial answer.
+	Finalize *FinalizeRequest
+}
+
+// FinalizeRequest asks the planner for a final answer without tools.
+type FinalizeRequest struct {
+	// Limit names the limit reached: RunLimitMaxDuration or RunLimitMaxTokens.
+	Limit string
+	// Instructions is runtime-authored guidance for the final answer.
+	Instructions string
+	// MaxOutputTokens bounds the final answer.
+	MaxOutputTokens int
 }
 
 // Budget carries the per-run hard caps the planner observes. The
@@ -721,6 +737,11 @@ type ControlSignals struct {
 // make budget-aware decisions (e.g. choose a cheaper model when
 // CostRemaining is low).
 type Budget struct {
+	// RunLimits are the run's effective limits. Spawned child tasks inherit
+	// them as a stricter-only request, so a child cannot outlast its caller's
+	// bound. The run loop enforces them; planners only read.
+	RunLimits RunLimits
+
 	// Deadline is the absolute wall-clock deadline for the run. Zero
 	// value means no deadline. The Runtime's ctx is set to expire at
 	// Deadline; the planner SHOULD honour ctx.Err() between long
@@ -813,6 +834,8 @@ type ArtifactManifestEntry struct {
 	// by the run loop from the artifact's `Source` map (canonical
 	// `source` key else the tool/producer/flow name else "unknown").
 	Provenance string
+	// Note is the artifact's short, untrusted annotation (empty for none).
+	Note string
 }
 
 // PlanningNudges are caller-provided nudges the planner MAY honour.
@@ -990,13 +1013,24 @@ const (
 	// constraint conflict could not be resolved (operator denied an
 	// approval; budget cap reached during a required tool call).
 	FinishConstraintsConflict FinishReason = "constraints_conflict"
+	// FinishLimitReached — the run stopped gracefully at a configured run
+	// limit (maximum duration or maximum cumulative tokens). The Payload is
+	// a partial answer stating what was done and what remains; the run
+	// completes with that answer rather than failing.
+	FinishLimitReached FinishReason = "limit_reached"
 )
+
+// FinishAnswersTurn reports whether a terminal reason completes the turn with
+// an answer: a satisfied goal, or a graceful stop at a run limit.
+func FinishAnswersTurn(r FinishReason) bool {
+	return r == FinishGoal || r == FinishLimitReached
+}
 
 // IsValidFinishReason reports whether r is one of the canonical
 // finish reasons.
 func IsValidFinishReason(r FinishReason) bool {
 	switch r {
-	case FinishGoal, FinishNoPath, FinishCancelled, FinishDeadlineExceeded, FinishConstraintsConflict:
+	case FinishGoal, FinishNoPath, FinishCancelled, FinishDeadlineExceeded, FinishConstraintsConflict, FinishLimitReached:
 		return true
 	default:
 		return false

@@ -51,6 +51,12 @@ var WithInputArtifacts = internal.WithInputArtifacts
 // suppressed; the validated answer arrives once, in the envelope.
 var WithOutputSchema = internal.WithOutputSchema
 
+// WithRunLimits tightens a RunOnce call's run limits (maximum active
+// duration, cumulative tokens). It narrows `runtime.run_limits` and never
+// loosens or removes a configured limit. A run that reaches a limit returns
+// an envelope with finish reason limit_reached and a partial answer.
+var WithRunLimits = internal.WithRunLimits
+
 // StreamEvent is one observation a WithStream sink receives while
 // RunOnce drives a run — a token delta, a planner-step boundary, or a
 // tool dispatch. Minimal by design: progress signals only, never raw

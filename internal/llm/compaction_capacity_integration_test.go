@@ -91,6 +91,9 @@ func TestCompactionCapacity_ChronologicalChunksFitSelectedModel(t *testing.T) {
 			if m.Content.Text != nil {
 				all += *m.Content.Text
 			}
+			for _, part := range m.Content.Parts {
+				all += part.Text
+			}
 		}
 	}
 	for i := range 6 {

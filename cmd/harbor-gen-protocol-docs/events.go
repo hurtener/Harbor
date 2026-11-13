@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/distributed" // payload home for distributed.bus_envelope (the shared bus-projection contract; prod already blank-imports the drivers)
 	"github.com/hurtener/Harbor/internal/events"
@@ -154,6 +155,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	// --- Protocol edge (artifacts surface + auth middleware + Console
 	// flows-page telemetry).
 	protocol.EventTypeArtifactUploaded: {Payloads: []reflect.Type{reflect.TypeOf(protocol.ArtifactUploadedPayload{})}},
+	artifacts.EventTypeArtifactNoteSet: {Payloads: []reflect.Type{reflect.TypeOf(artifacts.ArtifactNoteSetPayload{})}},
 	protocol.EventTypeArtifactDeleted:  {Payloads: []reflect.Type{reflect.TypeOf(protocol.ArtifactDeletedPayload{})}},
 	protoauth.EventTypeAuthRejected:    {Payloads: []reflect.Type{reflect.TypeOf(protoauth.AuthRejectedPayload{})}},
 	stream.EventTypeFlowsPageViewed:    {Payloads: []reflect.Type{reflect.TypeOf(stream.FlowsPageViewedPayload{})}},
@@ -196,6 +198,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	// --- Run-completion hook lifecycle.
 	steering.EventTypeRunHookDispatched: {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookDispatchedPayload{})}},
 	steering.EventTypeRunHookFailed:     {Payloads: []reflect.Type{reflect.TypeOf(steering.RunHookFailedPayload{})}},
+	steering.EventTypeRunLimitReached:   {Payloads: []reflect.Type{reflect.TypeOf(steering.RunLimitReachedPayload{})}},
 
 	// --- Session auto-naming.
 	steering.EventTypeSessionNamingFailed: {Payloads: []reflect.Type{reflect.TypeOf(steering.SessionNamingFailedPayload{})}},

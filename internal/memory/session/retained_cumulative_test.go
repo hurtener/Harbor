@@ -364,8 +364,23 @@ func TestRetainedCumulative_FailedRolloverPreservesCommittedState(t *testing.T) 
 					t.Fatal(err)
 				}
 				err = second.Finish(t.Context(), base.Trajectory, base.Query, "done", "complete")
-				if err == nil || (failure == "no summary" && !errors.Is(err, sessionmemory.ErrRetainedContextCapacity)) {
-					t.Fatalf("failed rollover silently evicted prior context: %v", err)
+				if failure == "no summary" {
+					// Without a new checkpoint the settled turn publishes and the
+					// earlier turn stays in the window: nothing is evicted.
+					if err != nil {
+						t.Fatalf("settled turn without a checkpoint was refused: %v", err)
+					}
+					var window struct {
+						Turns []json.RawMessage `json:"turns"`
+					}
+					after, loadErr := store.Load(t.Context(), q, retainedKind)
+					if loadErr != nil || json.Unmarshal(after.Bytes, &window) != nil || len(window.Turns) != 2 {
+						t.Fatalf("failed rollover evicted prior context: turns=%d err=%v", len(window.Turns), loadErr)
+					}
+					return
+				}
+				if err == nil {
+					t.Fatal("failed publication reported success")
 				}
 				if failure == "write failure" && wrapped.failures != 1 {
 					t.Fatalf("fixture did not fail at the atomic publication seam: %d failures, %v", wrapped.failures, err)

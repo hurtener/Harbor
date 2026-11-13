@@ -419,8 +419,15 @@ type RunSpec struct {
 	// Request-aware planners derive a zero TokenBudget from model capacity;
 	// standalone planners use a positive step-boundary target. Checkpoint
 	// publication shares TrajectoryMu with inspection, but generation does not
-	// hold that mutex. Compression errors stop the run explicitly.
+	// hold that mutex. A maintenance failure keeps the previous checkpoint and
+	// the run continues; cancellation and missing identity stay terminal.
 	Compression *planner.CompressionRunner
+
+	// Limits bounds this run's active duration and cumulative model tokens.
+	// The zero value means no limit. On reaching a limit the run asks the
+	// planner for one bounded final answer without tools and completes with
+	// FinishLimitReached; it never fails because of a limit.
+	Limits planner.RunLimits
 
 	// CompactBeforeFirstDecision applies the same compactor to an admitted
 	// session whose detailed-history storage window is full, even when its
@@ -532,6 +539,13 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		}
 	}
 
+	if err := spec.Limits.Validate(); err != nil {
+		return planner.Finish{}, fmt.Errorf("%w: %w", ErrRunLoopMisconfigured, err)
+	}
+	spec.Base.Budget.RunLimits = spec.Limits
+	// Every model call made under this run, including context maintenance,
+	// accumulates into one per-run usage total for the token limit.
+	ctx, runUsage := llm.WithRunUsage(ctx)
 	ctx, cancelExecution := context.WithCancel(ctx)
 	defer cancelExecution()
 	inbox, err := rl.registry.open(q, cancelExecution)
@@ -605,6 +619,8 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 	var steeringEntries []steeringEntry
 	initialGoal := spec.Base.Goal
 	runStartedAt := rl.clock.Now()
+	limitState := &runLimitState{limits: spec.Limits, startedAt: runStartedAt}
+	var maintenance maintenanceState
 
 	// outstandingToken is the run's current pause Token, "" when the run
 	// is not paused. It is per-run loop state — it lives on this
@@ -704,7 +720,10 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		// posture), never a silent unpark-and-continue. The wait
 		// honours ctx so a cancelled run unblocks loud.
 		if outstandingToken != "" {
+			pausedAt := rl.clock.Now()
 			timedOut, werr := rl.awaitResumeSignal(ctx, runCtx, inbox, q, outstandingToken)
+			// Time spent waiting on a pause is not active run time.
+			limitState.paused += max(rl.clock.Now().Sub(pausedAt), 0)
 			if werr != nil {
 				return planner.Finish{}, fmt.Errorf("steering: waiting for resume control on a paused run: %w", werr)
 			}
@@ -983,6 +1002,28 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			continue
 		}
 
+		// --- RUN LIMITS: checked at every step boundary. Once a limit is
+		// reached the run asks for one bounded final answer without tools
+		// (the planner sees Control.Finalize) and then completes. A pending
+		// tool-call queue is abandoned rather than dispatched.
+		if limitState.reached == "" && !sc.signals.Cancelled {
+			if limit := limitState.limits.Reached(limitState.active(rl.clock.Now()), runUsage.Total()); limit != "" {
+				limitState.reached = limit
+				limitState.reachedAt = limitState.active(rl.clock.Now())
+				limitState.tokensAtHit = runUsage.Total()
+				rl.emitRunLimitReached(runCtx, q, limitState, trajStepLen(spec.Base.Trajectory))
+			}
+		}
+		if limitState.reached != "" {
+			spec.Base.PendingToolCalls = nil
+			rc.PendingToolCalls = nil
+			rc.Control.Finalize = &planner.FinalizeRequest{
+				Limit:           limitState.reached,
+				Instructions:    fmt.Sprintf(limitFinalInstructions, limitName(limitState.reached), describeLimit(limitState.reached, limitState.limits)),
+				MaxOutputTokens: limitFinalOutputTokens,
+			}
+		}
+
 		// item 8: per-step closure that captures the planner's
 		// reasoning trace via the RunContext.OnReasoning side-channel.
 		// The runloop reads stepReasoning after Planner.Next returns and
@@ -1057,12 +1098,23 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 		if compactionEnabled {
 			if requestAware {
 				preparation.Compact = func(ctx context.Context, inputTokens, target int) (bool, error) {
-					return compressRequest(ctx, spec, rc, inputTokens, target)
+					return compressRequest(ctx, spec, rc, &maintenance, inputTokens, target)
 				}
-			} else {
+			} else if maintenance.failures < maxMaintenanceFailures {
 				compactionRC := rc
 				compactionRC.Budget.TokenBudget = preparation.InputTarget
-				if cerr := compressTrajectory(plannerCtx, spec, compactionRC); cerr != nil {
+				cerr := compressTrajectory(plannerCtx, spec, compactionRC)
+				switch {
+				case cerr == nil:
+					maintenance.failures = 0
+				case recoverableCompaction(plannerCtx, cerr):
+					// The previous checkpoint is retained; the request edge
+					// still enforces the hard input limit on the decision.
+					// Repeated failures stop maintenance for this run.
+					maintenance.failures++
+					rl.logger.WarnContext(runCtx, "steering: trajectory maintenance failed; continuing with the previous checkpoint",
+						slog.String("run_id", q.RunID), slog.Int("step", step))
+				default:
 					current := inbox.endAttempt(generation)
 					cancelAttempt()
 					if !current && runCtx.Err() == nil && onlyAttemptCancellation(cerr) {
@@ -1097,6 +1149,24 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (fin planner.Finish, e
 			continue
 		}
 		spec.CompactBeforeFirstDecision = false
+		if limitState.reached != "" {
+			// The final answer at a limit is never a further action: any
+			// non-answer or planner error becomes a deterministic partial
+			// answer, and cancellation stays cancellation.
+			if nerr != nil && !errors.Is(nerr, planner.ErrInvalidDecision) && runCtx.Err() != nil {
+				return planner.Finish{}, fmt.Errorf("steering: planner step %d: %w", step, nerr)
+			}
+			if nerr != nil {
+				rl.logger.WarnContext(runCtx, "steering: final answer at run limit failed; using a deterministic partial answer",
+					slog.String("run_id", q.RunID))
+				decision = nil
+			}
+			if !inbox.admitDecision(generation, true) {
+				carryInterruptedAttempt(&spec.Base, rc)
+				continue
+			}
+			return limitFinish(q, limitState, decision, spec.Base.Trajectory), nil
+		}
 		// A pending-call drain does not ask for another decision. Its results
 		// remain protected until the complete pending group has been presented.
 		if compactionEnabled && rc.Trajectory != nil && len(rc.PendingToolCalls) == 0 && (nerr == nil || errors.Is(nerr, planner.ErrInvalidDecision)) {

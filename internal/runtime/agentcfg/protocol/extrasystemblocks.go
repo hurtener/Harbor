@@ -157,6 +157,7 @@ func (s *Service) SetExtraSystemBlocks(ctx context.Context, req prototypes.Agent
 		payload.Hooks = active.Payload.Hooks
 		payload.Naming = active.Payload.Naming
 		payload.Memory = active.Payload.Memory
+		payload.RunLimits = active.Payload.RunLimits.Clone()
 		payload.AgentPacks = copyAgentPackItems(active.Payload.AgentPacks)
 		payload.OAuthProviders = active.Payload.OAuthProviders
 		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair

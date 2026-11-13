@@ -47,14 +47,13 @@ func TestRetainedCumulative_FailureCanSettleBeforeNextCompaction(t *testing.T) {
 				q := identity.Quadruple{Identity: base.Quadruple.Identity}
 				before := loadHostRecord(t, store, q, retainedKind)
 				if mode == "explicit recovery" {
-					if err := failed.Finish(t.Context(), interrupted.Trajectory, interrupted.Query, "unsaved answer", "complete"); !errors.Is(err, sessionmemory.ErrRetainedContextCapacity) {
-						t.Fatalf("expected original refusal: %v", err)
+					// A complete run settles without a new checkpoint too: the
+					// unsummarized tail is kept instead of refusing the outcome.
+					if err := failed.Finish(t.Context(), interrupted.Trajectory, interrupted.Query, "saved answer", "complete"); err != nil {
+						t.Fatalf("complete settlement refused behind full window: %v", err)
 					}
-					if after := loadHostRecord(t, store, q, retainedKind); string(after.Bytes) != string(before.Bytes) {
-						t.Fatal("failed publication changed committed state")
-					}
-					if err := sessionmemory.ReconcileRetainedRun(t.Context(), store, redactor, interrupted.Quadruple, 1, nil); err != nil {
-						t.Fatalf("settled recovery deadlocked behind full window: %v", err)
+					if after := loadHostRecord(t, store, q, retainedKind); string(after.Bytes) == string(before.Bytes) {
+						t.Fatal("complete settlement did not publish its outcome")
 					}
 				} else if err := failed.Finish(t.Context(), interrupted.Trajectory, interrupted.Query, "", mode); err != nil {
 					t.Fatalf("interrupted terminal record deadlocked behind full window: %v", err)

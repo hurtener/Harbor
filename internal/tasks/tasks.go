@@ -227,8 +227,12 @@ type Task struct {
 	// LLMSettings is immutable execution input, copied at Spawn and recovered
 	// with this task. It never enters the pending session override store.
 	LLMSettings *llm.RunSettings `json:",omitempty"`
-	CreatedAt   int64            // unix nanoseconds; matches sessions / events convention
-	UpdatedAt   int64            // unix nanoseconds
+	// RunLimits optionally tightens this task's run limits. It is copied at
+	// Spawn, recovered with the task, and can only narrow agent/runtime
+	// limits.
+	RunLimits *RunLimitsRequest `json:",omitempty"`
+	CreatedAt int64             // unix nanoseconds; matches sessions / events convention
+	UpdatedAt int64             // unix nanoseconds
 	// ToolCount is the running count of tool dispatches the runtime
 	// has performed against this task. Advanced exclusively through
 	// `TaskRegistry.IncrementToolCount` — never set directly by callers.
@@ -398,6 +402,9 @@ type SpawnRequest struct {
 	ProviderRoute *llm.ProviderRoute
 	// LLMSettings participates in task identity and is detached at acceptance.
 	LLMSettings *llm.RunSettings
+	// RunLimits optionally tightens this run's limits. It participates in
+	// task identity and is detached at acceptance.
+	RunLimits *RunLimitsRequest
 	// InputArtifactIDs are operator-uploaded multimodal inputs the
 	// task carries onto its first planner turn.
 	// Persisted onto `Task.InputArtifactIDs`; consumed by the run
@@ -1120,6 +1127,9 @@ func ValidateRequest(req SpawnRequest) error {
 	if err := llm.ValidateRunSettings(req.LLMSettings, req.ProviderRoute); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
+	if err := req.RunLimits.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+	}
 	if req.ProviderRoute != nil {
 		if err := llm.ValidateProviderRoute(*req.ProviderRoute); err != nil || req.ProviderRoute.RouteID == "" {
 			return fmt.Errorf("%w: invalid provider route", ErrInvalidRequest)
@@ -1255,4 +1265,38 @@ func MustFrom(ctx context.Context) TaskRegistry {
 func From(ctx context.Context) (TaskRegistry, bool) {
 	r, ok := ctx.Value(registryCtxKey).(TaskRegistry)
 	return r, ok
+}
+
+// MaxRunLimitSeconds bounds a requested run duration limit (thirty days).
+const MaxRunLimitSeconds = 30 * 24 * 60 * 60
+
+// RunLimitsRequest is a per-run request to tighten the effective run limits.
+// Zero fields leave a dimension as configured; set values are positive and
+// can only narrow the agent/runtime limit, never loosen or remove it.
+type RunLimitsRequest struct {
+	MaxDurationSeconds int64 `json:",omitempty"`
+	MaxTokens          int64 `json:",omitempty"`
+}
+
+// Validate rejects negative or out-of-range values.
+func (r *RunLimitsRequest) Validate() error {
+	if r == nil {
+		return nil
+	}
+	if r.MaxDurationSeconds < 0 || r.MaxDurationSeconds > MaxRunLimitSeconds {
+		return fmt.Errorf("run_limits.max_duration_seconds must be between 1 and %d", MaxRunLimitSeconds)
+	}
+	if r.MaxTokens < 0 {
+		return fmt.Errorf("run_limits.max_tokens must be positive")
+	}
+	return nil
+}
+
+// CloneRunLimits detaches a request from its caller.
+func CloneRunLimits(r *RunLimitsRequest) *RunLimitsRequest {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	return &out
 }

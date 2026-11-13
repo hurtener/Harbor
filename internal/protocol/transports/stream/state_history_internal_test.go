@@ -251,6 +251,10 @@ func (stubArtStore) Exists(_ context.Context, _ artifacts.ArtifactScope, _ strin
 func (stubArtStore) Delete(_ context.Context, _ artifacts.ArtifactScope, _ string) (bool, error) {
 	return false, nil
 }
+func (stubArtStore) SetNote(_ context.Context, _ artifacts.ArtifactScope, _, _ string) (*artifacts.ArtifactRef, bool, error) {
+	return nil, false, nil
+}
+
 func (stubArtStore) List(_ context.Context, _ artifacts.ArtifactScope) ([]artifacts.ArtifactRef, error) {
 	return nil, nil
 }

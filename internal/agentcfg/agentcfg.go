@@ -826,6 +826,9 @@ type ConfigPayload struct {
 	Hooks               *HooksSection        `json:"hooks,omitempty"`
 	Naming              *NamingSection       `json:"naming,omitempty"`
 	Memory              *MemorySection       `json:"memory,omitempty"`
+	// RunLimits, when non-nil, replaces the runtime-default per-run limits
+	// (maximum active duration and cumulative tokens) for subsequent runs.
+	RunLimits *RunLimitsSection `json:"run_limits,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent (nil) contributes nothing and
 	// leaves the system prompt byte-identical.
@@ -983,6 +986,8 @@ type Diff struct {
 	Naming NamingDiff
 	// Memory is the next-run working-input budget delta.
 	Memory MemoryDiff
+	// RunLimits is the per-run limit delta.
+	RunLimits RunLimitsDiff
 	// ExtraSystemBlocks is the structured delta of the ordered additive
 	// prompt blocks (added / removed / body-changed by name, plus the
 	// order-only reorder flag).
@@ -1148,6 +1153,7 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		memory := *p.Memory
 		out.Memory = &memory
 	}
+	out.RunLimits = p.RunLimits.Clone()
 	if p.Naming != nil {
 		// A non-nil naming section is ALWAYS preserved (model trimmed to the
 		// canonical "inherit the run's effective model" empty form) — section

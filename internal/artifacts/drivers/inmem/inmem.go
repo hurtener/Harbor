@@ -231,6 +231,34 @@ func (d *driver) Delete(_ context.Context, scope artifacts.ArtifactScope, id str
 	return true, nil
 }
 
+// SetNote implements artifacts.ArtifactStore.
+func (d *driver) SetNote(_ context.Context, scope artifacts.ArtifactScope, id, note string) (*artifacts.ArtifactRef, bool, error) {
+	if d.closed.Load() {
+		return nil, false, artifacts.ErrStoreClosed
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, false, err
+	}
+	if err := artifacts.ValidateNote(note); err != nil {
+		return nil, false, err
+	}
+	if id == "" {
+		return nil, false, nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	key := keyFor(scope, id)
+	ref, ok := d.refs[key]
+	if !ok {
+		return nil, false, nil
+	}
+	ref.Note = note
+	d.refs[key] = ref
+	out := ref
+	out.Source = cloneSource(ref.Source)
+	return &out, true, nil
+}
+
 // List implements artifacts.ArtifactStore. `filter.TenantID` is
 // required; every other empty field is a wildcard within that tenant.
 // `filter.TaskID` matches the stored provenance stamp and is

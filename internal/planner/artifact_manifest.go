@@ -51,6 +51,7 @@ func BuildArtifactManifest(refs []artifacts.ArtifactRef) []ArtifactManifestEntry
 			MIME:       ref.MimeType,
 			SizeBytes:  ref.SizeBytes,
 			Provenance: ResolveProvenance(ref.Source),
+			Note:       ref.Note,
 		})
 	}
 	return out
@@ -111,4 +112,46 @@ func artifactManifestCreatedAt(src map[string]any) time.Time {
 		return time.Unix(t, 0).UTC()
 	}
 	return time.Time{}
+}
+
+// Artifact source kinds used to filter a session's artifacts.
+const (
+	ArtifactSourceUserUpload = "user_upload"
+	ArtifactSourceTool       = "tool"
+	ArtifactSourceOther      = "other"
+)
+
+// ArtifactSourceKind classifies an artifact's origin from its Source map:
+// an operator upload, a stored tool result, or anything else.
+func ArtifactSourceKind(src map[string]any) string {
+	if s, ok := src["source"].(string); ok && (s == ArtifactSourceUserUpload || s == ArtifactSourceTool) {
+		return s
+	}
+	if t, ok := src["tool"].(string); ok && t != "" {
+		return ArtifactSourceTool
+	}
+	return ArtifactSourceOther
+}
+
+// ArtifactProducingTool returns the producing tool's name, if recorded.
+func ArtifactProducingTool(src map[string]any) string {
+	if t, ok := src["tool"].(string); ok {
+		return t
+	}
+	return ""
+}
+
+// ArtifactCreatedAt returns the artifact's recorded creation time (zero when
+// unknown), the same stamp the manifest orders by.
+func ArtifactCreatedAt(src map[string]any) time.Time {
+	return artifactManifestCreatedAt(src)
+}
+
+// HasTool reports whether a run's catalog view exposes the named tool.
+func HasTool(view ToolCatalogView, name string) bool {
+	if view == nil {
+		return false
+	}
+	_, ok := view.Resolve(name)
+	return ok
 }

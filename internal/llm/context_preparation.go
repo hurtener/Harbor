@@ -134,6 +134,12 @@ func (c *contextPreparationClient) Complete(ctx context.Context, req CompleteReq
 			if err != nil && (!errors.Is(err, ErrCompactionNoProgress) || estimated >= capacity || changed) {
 				return CompleteResponse{}, err
 			}
+			if changed && checked && checkedMessages == nil {
+				// The compactor changed the history but no rebuilt request ever
+				// passed the candidate check: never send an empty or unchecked
+				// message list.
+				return CompleteResponse{}, ErrContextWindowExceeded
+			}
 			if changed {
 				if !checked {
 					// Compatibility for custom callbacks that only rebuild after

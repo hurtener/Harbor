@@ -534,6 +534,9 @@ type AgentConfigPayload struct {
 	// Omission inherits YAML; present zero selects the effective model's safe
 	// input target. Requires agent_config_memory_v1 on runtime.info.
 	Memory *AgentConfigMemory `json:"memory,omitempty"`
+	// RunLimits, when non-nil, replaces the runtime-default per-run limits
+	// (maximum active duration and cumulative tokens) for subsequent runs.
+	RunLimits *AgentConfigRunLimits `json:"run_limits,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent contributes nothing and leaves
 	// the composed system prompt byte-identical.
@@ -742,17 +745,20 @@ type AgentConfigExtraSystemBlocksDiff struct {
 // run-lifecycle-hook delta, the session auto-naming policy delta, and the
 // additive prompt-block delta.
 type AgentConfigDiff struct {
-	FromRevisionID    string                           `json:"from_revision_id"`
-	ToRevisionID      string                           `json:"to_revision_id"`
-	Skills            AgentConfigSkillsDiff            `json:"skills"`
-	ToolExposure      AgentConfigToolExposureDiff      `json:"tool_exposure"`
-	PromptLayers      AgentConfigPromptLayersDiff      `json:"prompt_layers"`
-	Connections       AgentConfigConnectionsDiff       `json:"connections"`
-	OAuthProviders    AgentConfigOAuthProvidersDiff    `json:"oauth_providers"`
-	LLMParams         AgentConfigLLMParamsDiff         `json:"llm_params"`
-	Hooks             AgentConfigHooksDiff             `json:"hooks"`
-	Naming            AgentConfigNamingDiff            `json:"naming"`
-	Memory            AgentConfigMemoryDiff            `json:"memory"`
+	FromRevisionID string                        `json:"from_revision_id"`
+	ToRevisionID   string                        `json:"to_revision_id"`
+	Skills         AgentConfigSkillsDiff         `json:"skills"`
+	ToolExposure   AgentConfigToolExposureDiff   `json:"tool_exposure"`
+	PromptLayers   AgentConfigPromptLayersDiff   `json:"prompt_layers"`
+	Connections    AgentConfigConnectionsDiff    `json:"connections"`
+	OAuthProviders AgentConfigOAuthProvidersDiff `json:"oauth_providers"`
+	LLMParams      AgentConfigLLMParamsDiff      `json:"llm_params"`
+	Hooks          AgentConfigHooksDiff          `json:"hooks"`
+	Naming         AgentConfigNamingDiff         `json:"naming"`
+	Memory         AgentConfigMemoryDiff         `json:"memory"`
+	// RunLimits is present only when the run-limit section changed, so a
+	// client decoding an older diff shape is unaffected by unchanged limits.
+	RunLimits         *AgentConfigRunLimitsDiff        `json:"run_limits,omitempty"`
 	ExtraSystemBlocks AgentConfigExtraSystemBlocksDiff `json:"extra_system_blocks"`
 }
 

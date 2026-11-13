@@ -16,6 +16,11 @@ type (
 	// Planner is the swappable reasoning-policy interface (CLAUDE.md
 	// §1 property 3). Concretes implement Next(ctx, rc) (Decision, error).
 	Planner = internal.Planner
+	// RunLimits bounds one run's active duration and cumulative tokens.
+	RunLimits = internal.RunLimits
+	// FinalizeRequest asks a planner for one final answer without tools at
+	// a run limit (RunContext.Control.Finalize).
+	FinalizeRequest = internal.FinalizeRequest
 	// RequestContextPlanner opts into assembled-request context preparation.
 	RequestContextPlanner = internal.RequestContextPlanner
 	// RunContext is the per-step view the runtime projects for the
@@ -238,6 +243,9 @@ type (
 const (
 	// FinishGoal — the goal was achieved.
 	FinishGoal = internal.FinishGoal
+	// FinishLimitReached — the run stopped at a configured run limit and
+	// completed with a partial answer.
+	FinishLimitReached = internal.FinishLimitReached
 	// FinishNoPath — no step/decision path remains.
 	FinishNoPath = internal.FinishNoPath
 	// FinishCancelled — the run was cancelled.

@@ -819,6 +819,14 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 		allowed := append([]string{}, (*rc.ToolAllowlist)...)
 		req.ToolAllowlist = &allowed
 	}
+	// A child inherits its caller's effective run limits as a stricter-only
+	// request: it may be bounded further by its own agent, never loosened.
+	if limits := rc.Budget.RunLimits; !limits.IsZero() {
+		req.RunLimits = &tasks.RunLimitsRequest{
+			MaxDurationSeconds: int64((limits.MaxDuration + time.Second - 1) / time.Second),
+			MaxTokens:          limits.MaxTokens,
+		}
+	}
 	seen := make(map[string]struct{}, len(d.Spec.InputArtifactIDs))
 	for _, id := range d.Spec.InputArtifactIDs {
 		if _, ok := seen[id]; ok {

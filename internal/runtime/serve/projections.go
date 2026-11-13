@@ -360,6 +360,9 @@ func (a *taskSnapshotAdapter) Task(ctx context.Context, id identity.Identity, ta
 				Inline:   env.Answer,
 				Complete: turns.CompletenessComplete,
 			}
+			if env.FinishReason == string(turns.FinishLimitReached) {
+				snap.CompletedFinishReason = turns.FinishLimitReached
+			}
 		}
 	}
 

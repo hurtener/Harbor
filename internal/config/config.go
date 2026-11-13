@@ -687,6 +687,25 @@ type RuntimeConfig struct {
 	// `auto: false`) the runtime does no auto-naming. A per-agent
 	// agent-config `naming` section overrides this default at run start.
 	Naming RuntimeNamingConfig `yaml:"naming,omitempty"`
+	// RunLimits is the runtime-default per-run limit (`runtime.run_limits`).
+	// Absent or zero fields mean no limit. A per-agent agent-config
+	// `run_limits` section replaces this default at run start, and a single
+	// run may request only a stricter value.
+	RunLimits RuntimeRunLimitsConfig `yaml:"run_limits,omitempty"`
+}
+
+// MaxRunLimitDuration bounds a configured run duration limit.
+const MaxRunLimitDuration = 30 * 24 * time.Hour
+
+// RuntimeRunLimitsConfig bounds each run. MaxDuration is active wall-clock
+// time (time waiting on a pause is excluded); MaxTokens is the cumulative
+// prompt plus completion tokens of every model call the run makes. Either,
+// both or neither may be set; zero means no limit. On reaching a limit the
+// run stops gracefully with one bounded final answer (finish reason
+// limit_reached). Restart-required.
+type RuntimeRunLimitsConfig struct {
+	MaxDuration time.Duration `yaml:"max_duration,omitempty"`
+	MaxTokens   int64         `yaml:"max_tokens,omitempty"`
 }
 
 // RuntimeHooksConfig is the runtime's run-lifecycle hook block.

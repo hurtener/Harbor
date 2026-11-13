@@ -197,8 +197,10 @@ func TestRequestContext_RealBifrostRunLoop(t *testing.T) {
 			default:
 			}
 			if outcome == "bad summary" {
-				if err == nil || tr.Summary != nil || len(kinds) != 1 || kinds[0] != "summary" {
-					t.Fatalf("failed candidate reached decision: %v kinds=%v", err, kinds)
+				// A rejected candidate is never installed; the request still
+				// fits, so the run continues with the previous checkpoint.
+				if err != nil || fin.Reason != planner.FinishGoal || tr.Summary != nil || len(kinds) != 2 || kinds[0] != "summary" || kinds[1] != "decision" {
+					t.Fatalf("failed maintenance installed a candidate or failed the run: %v kinds=%v", err, kinds)
 				}
 				return
 			}
