@@ -268,6 +268,11 @@ Phase 60 (Protocol wire transport) is no longer a decision gate; it is a normal 
 
 JWT, asymmetric algorithms only (RS256/RS384/RS512/ES256/ES384/ES512). The triple `(tenant, user, session)` is in the JWT claims; the Protocol rejects any request without an identity scope. (Settled — `AGENTS.md` §7.) Extended scopes (`admin`, `console:fleet`) gate cross-session and cross-tenant subscriptions.
 
+**Read-only agent reach (D-505).** An optional `agent_read_reach` claim with
+the same strict shape lets `sessions.turns.list` and `sessions.turns.get`
+serve rows of the agents it names; it never authorizes selecting them, and a
+non-empty value requires a non-empty `session_reach`.
+
 **Agent reach is signed resource authority, not isolation (D-397).** Every
 bearer used on an agent-addressed data-plane operation carries a bounded,
 non-empty `agent_reach` claim naming the registration IDs it may address. The
