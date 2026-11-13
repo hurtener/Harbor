@@ -17070,3 +17070,43 @@ already lives in this runtime; copying it keeps the target independent of the
 source agent's later edits or retirement. No schema change, no new wire field.
 
 **Cross-references:** D-496.
+
+## D-507 — Turn usage keeps per-call provenance: reported is exact, everything else is estimated
+
+**Date:** 2026-11-13
+
+**Decision.** The durable turn materializer derives each cumulative usage
+measure's state from the provenance of the provider calls that fed it,
+instead of a fixed state.
+
+- **Tokens** are `exact` only while every contributing `llm.cost.recorded`
+  carried a driver report (`Usage.ReportPresent` without `Usage.Estimated`);
+  otherwise `estimated`.
+- **Cost** is `exact` only while every call of the turn carried a
+  gateway-reported cost (`Cost.ReportPresent` without `Cost.Estimated`). A
+  price-table backfill (`Cost.Estimated`), a call with no cost report, or a
+  provider attempt that ended without any cost record makes the turn's cost
+  incomplete: `costUnknown` is sticky for the turn and every known amount is
+  `estimated`.
+- **Errored attempts.** The safety wrapper now emits `llm.cost.recorded` for
+  an errored driver attempt whose driver still reported usage or cost (it was
+  billed with a known amount). An errored attempt with no report emits
+  nothing; the materializer sees an `llm.context.prepared` (one per driver
+  attempt, emitted by the same wrapper) without a following cost record when
+  the next attempt begins, and marks the cost incomplete. A request refused
+  for exceeding the context window (`CapacityExceeded`) never reaches the
+  provider and is not counted.
+- `estimated` is sticky for the turn. Values, arithmetic and the
+  zero-is-not-reported rule are unchanged. No wire or schema change.
+
+**Known limits.** The sticky flag lives in the materializer's in-memory turn
+state: a restart between an unknown call and a later reported one loses it
+unless a known amount already existed (that case is written as `estimated`
+immediately). An errored final attempt with no report, immediately followed by
+the terminal event, is not detected. Errored attempts that emit a cost record
+also count as completions in observability rollups.
+
+**Why.** Consumers that report usage need to say "estimated" only when the
+number is not the gateway's report, and must never call an incomplete total
+exact. "Exact" means "as reported by the model gateway for every call", not a
+provider invoice.

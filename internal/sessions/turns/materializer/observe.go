@@ -61,6 +61,7 @@ func recognizedType(t events.EventType) bool {
 		mcpdrv.EventTypeMCPAppAvailable,
 		pauseresume.EventTypePauseRequested,
 		pauseresume.EventTypePauseResumed,
+		llm.EventTypeContextPrepared,
 		llm.EventTypeCostRecorded:
 		return true
 	}
@@ -375,6 +376,8 @@ func (m *Materializer) dispatch(ctx context.Context, sess *sessionState, ev even
 		return m.applyPauseRequested(ctx, sess, ev, payload)
 	case pauseresume.EventTypePauseResumed:
 		return m.applyPauseResumed(ctx, sess, ev)
+	case llm.EventTypeContextPrepared:
+		return m.applyContextPrepared(ctx, sess, ev, payload)
 	case llm.EventTypeCostRecorded:
 		return m.applyCostRecorded(ctx, sess, ev, payload)
 	}
@@ -1446,8 +1449,29 @@ func costUSD(v any) (float64, error) {
 // checkpoint). A zero delta leaves the measure unchanged (the
 // canonical payload contract makes zero indistinguishable from
 // not-reported, so zero never becomes a fabricated exact claim).
-func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) (turns.Usage, error) {
+func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string, costUnknownSeen bool) (turns.Usage, bool, error) {
 	next := cur
+	// Provenance is per call and sticky per measure (D-507): a measure stays
+	// exact only while every contributing call was a driver report. Token
+	// counts are exact only with Usage.ReportPresent and without
+	// Usage.Estimated (Harbor's backfill). Cost is exact only with
+	// Cost.ReportPresent and without Cost.Estimated (price-table backfill).
+	// A call whose cost is unknown (no report, e.g. an errored attempt or a
+	// legacy record) makes the turn's cost incomplete: it is sticky for the
+	// turn (costUnknownSeen) and keeps every later known amount estimated.
+	tokensEstimated := fieldBool(usage, "Estimated") || !fieldBool(usage, "ReportPresent")
+	costReported := fieldBool(cost, "ReportPresent") && !fieldBool(cost, "Estimated")
+	costUnknown := costUnknownSeen
+	if !fieldBool(cost, "ReportPresent") && !fieldBool(cost, "Estimated") {
+		costUnknown = true
+	}
+	costEstimated := !costReported || costUnknown
+	measureState := func(prev turns.UsageMeasure, estimated bool) turns.UsageState {
+		if estimated || prev.State == turns.UsageEstimated {
+			return turns.UsageEstimated
+		}
+		return turns.UsageExact
+	}
 	addMeasure := func(prev turns.UsageMeasure, delta int64) (turns.UsageMeasure, error) {
 		if delta < 0 {
 			return turns.UsageMeasure{}, fmt.Errorf("materializer: cumulative usage delta %d is negative — corrupt arithmetic never wraps or is silently omitted", delta)
@@ -1466,7 +1490,7 @@ func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) 
 			return turns.UsageMeasure{}, fmt.Errorf("materializer: cumulative usage overflows int64 (%d + %d) — corrupt arithmetic never wraps or is silently omitted", acc, delta)
 		}
 		acc += delta
-		return turns.UsageMeasure{State: turns.UsageExact, Value: &acc}, nil
+		return turns.UsageMeasure{State: measureState(prev, tokensEstimated), Value: &acc}, nil
 	}
 	addField := func(key string, prev turns.UsageMeasure) (turns.UsageMeasure, error) {
 		delta, present, err := usageDelta(usage, key)
@@ -1481,78 +1505,119 @@ func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string) 
 
 	var err error
 	if next.PromptTokens, err = addField("PromptTokens", next.PromptTokens); err != nil {
-		return turns.Usage{}, err
+		return turns.Usage{}, false, err
 	}
 	if next.CompletionTokens, err = addField("CompletionTokens", next.CompletionTokens); err != nil {
-		return turns.Usage{}, err
+		return turns.Usage{}, false, err
 	}
 	if next.ReasoningTokens, err = addField("ReasoningTokens", next.ReasoningTokens); err != nil {
-		return turns.Usage{}, err
+		return turns.Usage{}, false, err
 	}
 	if next.CacheReadTokens, err = addField("CacheReadTokens", next.CacheReadTokens); err != nil {
-		return turns.Usage{}, err
+		return turns.Usage{}, false, err
 	}
 	if next.CacheWriteTokens, err = addField("CacheWriteTokens", next.CacheWriteTokens); err != nil {
-		return turns.Usage{}, err
+		return turns.Usage{}, false, err
 	}
 	if next.TotalTokens, err = addField("TotalTokens", next.TotalTokens); err != nil {
-		return turns.Usage{}, err
+		return turns.Usage{}, false, err
 	}
 	// Latency: the payload reports integer milliseconds; the projection
 	// accumulates exact integer nanoseconds. The ms→ns conversion must
 	// not overflow — a corruptly huge latency aborts loudly.
 	latencyMS, present, err := usageDelta(usage, "LatencyMS")
 	if err != nil {
-		return turns.Usage{}, err
+		return turns.Usage{}, false, err
 	}
 	if present {
 		if latencyMS > math.MaxInt64/int64(time.Millisecond) {
-			return turns.Usage{}, fmt.Errorf("materializer: latency %d ms overflows integer nanoseconds — corrupt arithmetic never wraps or is silently omitted", latencyMS)
+			return turns.Usage{}, false, fmt.Errorf("materializer: latency %d ms overflows integer nanoseconds — corrupt arithmetic never wraps or is silently omitted", latencyMS)
 		}
 		if next.LatencyNS, err = addMeasure(next.LatencyNS, latencyMS*int64(time.Millisecond)); err != nil {
-			return turns.Usage{}, err
+			return turns.Usage{}, false, err
 		}
 	}
 
 	// Cost: the float64 USD per-call total is converted to integer
-	// micro-dollars by rounding and accumulated as integers; the measure
-	// is honestly ESTIMATED (the source is approximate) and money is
-	// never accumulated in float64. The conversion and accumulation are
+	// micro-dollars by rounding and accumulated as integers; money is never
+	// accumulated in float64. The measure is EXACT when every contributing
+	// call carried the gateway's reported cost (Cost.ReportPresent without
+	// Cost.Estimated) and ESTIMATED once any call used the configured
+	// price-table backfill or carried a cost of unknown provenance. The conversion and accumulation are
 	// overflow-checked — corrupt cost arithmetic never wraps.
 	if v, ok := cost["TotalCost"]; ok && v != nil {
 		totalUSD, err := costUSD(v)
 		if err != nil {
-			return turns.Usage{}, err
+			return turns.Usage{}, false, err
 		}
 		if totalUSD > 0 {
 			if totalUSD > math.MaxInt64/1e6 {
-				return turns.Usage{}, fmt.Errorf("materializer: cost total %v overflows integer micro-dollars — corrupt arithmetic never wraps or is silently omitted", totalUSD)
+				return turns.Usage{}, false, fmt.Errorf("materializer: cost total %v overflows integer micro-dollars — corrupt arithmetic never wraps or is silently omitted", totalUSD)
 			}
 			micro := int64(math.Round(totalUSD * 1e6))
 			if micro < 0 {
 				// A float64 conversion wrap is impossible after the
 				// bound above, but the guard keeps the arithmetic
 				// fail-loud against a future bound regression.
-				return turns.Usage{}, fmt.Errorf("materializer: cost total %v overflows integer micro-dollars — corrupt arithmetic never wraps or is silently omitted", totalUSD)
+				return turns.Usage{}, false, fmt.Errorf("materializer: cost total %v overflows integer micro-dollars — corrupt arithmetic never wraps or is silently omitted", totalUSD)
 			}
 			acc := int64(0)
 			if next.CostMicroUSD.Value != nil {
 				acc = *next.CostMicroUSD.Value
 			}
 			if acc < 0 {
-				return turns.Usage{}, fmt.Errorf("materializer: cost accumulator is negative (%d) — corrupt arithmetic never wraps or is silently omitted", acc)
+				return turns.Usage{}, false, fmt.Errorf("materializer: cost accumulator is negative (%d) — corrupt arithmetic never wraps or is silently omitted", acc)
 			}
 			if micro > math.MaxInt64-acc {
-				return turns.Usage{}, fmt.Errorf("materializer: cumulative cost overflows integer micro-dollars (%d + %d) — corrupt arithmetic never wraps or is silently omitted", acc, micro)
+				return turns.Usage{}, false, fmt.Errorf("materializer: cumulative cost overflows integer micro-dollars (%d + %d) — corrupt arithmetic never wraps or is silently omitted", acc, micro)
 			}
 			acc += micro
-			next.CostMicroUSD = turns.UsageMeasure{State: turns.UsageEstimated, Value: &acc}
+			next.CostMicroUSD = turns.UsageMeasure{State: measureState(next.CostMicroUSD, costEstimated), Value: &acc}
 		}
+	}
+	if costUnknown && next.CostMicroUSD.Value != nil {
+		// A known amount next to an unknown call is incomplete.
+		next.CostMicroUSD.State = turns.UsageEstimated
 	}
 	if model != "" {
 		next.Model = model
 	}
-	return next, nil
+	return next, costUnknown, nil
+}
+
+// applyContextPrepared tracks provider attempts for cost provenance
+// (D-507). Every provider attempt is preceded by llm.context.prepared and a
+// reported attempt is followed by llm.cost.recorded. A new attempt while
+// the previous one never recorded a cost means that attempt errored with
+// no usable report: its spend is unknown, so the turn's cost becomes
+// incomplete (sticky costUnknown) and any known amount is estimated.
+func (m *Materializer) applyContextPrepared(ctx context.Context, sess *sessionState, ev events.Event, payload map[string]any) (bool, error) {
+	ts, ok := sess.rootTurn(runIDFromIdentity(ev.Identity))
+	if !ok || ts.terminal() {
+		return false, nil
+	}
+	missed := ts.awaitingCost
+	// A request refused for exceeding the context window never reaches
+	// the provider, so it is not awaiting a cost record.
+	ts.awaitingCost = !fieldBool(payload, "CapacityExceeded")
+	if !missed || ts.costUnknown {
+		return false, nil
+	}
+	ts.costUnknown = true
+	if ts.usage.CostMicroUSD.Value == nil || ts.usage.CostMicroUSD.State == turns.UsageEstimated {
+		return false, nil
+	}
+	candidate := ts.usage
+	candidate.CostMicroUSD.State = turns.UsageEstimated
+	if ev.Sequence <= sess.checkpoint {
+		ts.usage = candidate
+		return true, nil
+	}
+	if err := m.updateTurn(ctx, sess, ts, turns.Update{Usage: &candidate, EventSeq: ev.Sequence}); err != nil {
+		return false, err
+	}
+	ts.usage = candidate
+	return true, nil
 }
 
 // applyCostRecorded folds the per-call llm.cost.recorded event into the
@@ -1580,12 +1645,13 @@ func (m *Materializer) applyCostRecorded(ctx context.Context, sess *sessionState
 	// (negative / non-finite / overflowing deltas) fails loud here —
 	// the pass aborts without advancing the checkpoint and the corrupt
 	// event is never wrapped, clamped, or silently omitted.
-	candidate, err := accumulateUsage(ts.usage, usage, cost, fieldString(payload, "Model"))
+	candidate, costUnknown, err := accumulateUsage(ts.usage, usage, cost, fieldString(payload, "Model"), ts.costUnknown)
 	if err != nil {
 		return false, err
 	}
+	ts.awaitingCost = false
 	if ev.Sequence <= sess.checkpoint {
-		ts.usage = candidate
+		ts.usage, ts.costUnknown = candidate, costUnknown
 		return true, nil
 	}
 	err = m.updateTurn(ctx, sess, ts, turns.Update{
@@ -1595,7 +1661,7 @@ func (m *Materializer) applyCostRecorded(ctx context.Context, sess *sessionState
 	if err != nil {
 		return false, err
 	}
-	ts.usage = candidate
+	ts.usage, ts.costUnknown = candidate, costUnknown
 	return true, nil
 }
 

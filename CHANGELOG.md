@@ -17,6 +17,22 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.50.0] — 2026-11-13
+
+### Fixed
+
+- **Turn usage keeps per-call provenance (D-507).** Cost is `exact` only
+  while every call of the turn carried a cost reported by the model gateway;
+  Harbor's price-table backfill, a call with no cost report, or a provider
+  attempt that errored without one makes the turn's cost `estimated` for the
+  rest of the turn. Token measures are `exact` only when the driver reported
+  them. An errored attempt whose driver still reported usage or cost now
+  emits `llm.cost.recorded`, so its billed spend is counted. No wire or
+  schema change.
+- **Rollups count billed errored attempts.** Because an errored attempt that
+  reported cost now emits `llm.cost.recorded`, it adds its cost to usage
+  rollups and also counts toward `LLMCompletions`.
+
 ## [1.49.0] — 2026-11-13
 
 ### Fixed

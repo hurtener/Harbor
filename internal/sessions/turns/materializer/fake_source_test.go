@@ -313,6 +313,10 @@ func pauseResumedEv(id identity.Identity, runID string) events.Event {
 }
 
 func costRecordedEv(id identity.Identity, runID, model string, usage llm.Usage, totalCostUSD float64) events.Event {
+	// A driver-reported usage object (D-507: only reported tokens are exact).
+	if !usage.Estimated {
+		usage.ReportPresent = true
+	}
 	return events.Event{
 		Type:     llm.EventTypeCostRecorded,
 		Identity: testQuad(id, runID),
