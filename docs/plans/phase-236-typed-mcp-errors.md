@@ -6,6 +6,17 @@ Define Harbor's transport-neutral typed MCP error contract. Permanent errors sto
 
 Governance amendment (HA-54 planner-replay gap; Shipped (v1.28)): the classified outcome must survive the runloop's step recording and appear in the actual next ReAct prompt; a generic step error never masks the classified observation.
 
+Compatibility correction: providers may return a deterministic top-level
+structured `code` without the Harbor metadata extension. Only
+`invalid_argument`, `validation_failed`, `forbidden_scope`, `scope_blocked`,
+`scope_mismatch`, `not_found`, and `document_too_large` map to permanent
+classes. Valid explicit Harbor metadata wins; unknown or nested codes,
+malformed explicit classifications, and true or malformed `retryable` flags
+keep the transient fallback. Original structured outlines remain available,
+and oversized-document refusals carry guidance to read smaller sections or
+lower read limits. SDK driver tests assert one attempt for deterministic
+codes and four for the retained fallback; no text parser is introduced.
+
 ## RFC anchor
 
 - RFC §6.4

@@ -43,8 +43,8 @@ const (
 )
 
 const (
-	// MCPResultErrorNamespace is the only provider-authored namespace Harbor
-	// interprets in standard MCP result metadata or structured content.
+	// MCPResultErrorNamespace carries Harbor's explicit provider-authored
+	// classification in standard MCP result metadata or structured content.
 	MCPResultErrorNamespace  = "harbor"
 	MCPToolErrorMessageLimit = 512
 )
@@ -59,7 +59,7 @@ type MCPToolResultError struct {
 	// lowering. It lets callers retain planner/App projections while the
 	// policy consumes the error.
 	Result ToolResult
-	// Recognized records whether the provider supplied a valid namespaced
+	// Recognized records whether the provider supplied a recognized structural
 	// classification. Policy may still retry an unrecognized result as the
 	// legacy transient case, but lifecycle projection reports it honestly.
 	Recognized bool
@@ -111,9 +111,13 @@ func boundMCPErrorMessage(message string) string {
 	return message
 }
 
-// MCPResultErrorClassification extracts only the explicitly namespaced,
-// structural classification. It never searches human-readable text.
-func MCPResultErrorClassification(metadata map[string]any, structured any) (MCPToolErrorClass, string, bool) {
+// MCPResultErrorClassification prefers the explicitly namespaced classification,
+// then accepts a closed set of deterministic top-level structured error codes.
+// It never classifies from human-readable text or nested domain payloads.
+// providerText is the result's human-readable content: on the structured-code
+// compatibility path it is carried, bounded, into the derived message so the
+// planner keeps the provider's repair detail; it never affects the class.
+func MCPResultErrorClassification(metadata map[string]any, structured any, providerText string) (MCPToolErrorClass, string, bool) {
 	if class, message, ok := mcpResultErrorObject(metadata[MCPResultErrorNamespace]); ok {
 		return class, message, true
 	}
@@ -121,8 +125,72 @@ func MCPResultErrorClassification(metadata map[string]any, structured any) (MCPT
 		if class, message, found := mcpResultErrorObject(object[MCPResultErrorNamespace]); found {
 			return class, message, true
 		}
+		// An explicitly supplied but invalid Harbor contract must not acquire
+		// a different meaning from the compatibility fallback.
+		_, metadataContract := metadata[MCPResultErrorNamespace]
+		_, structuredContract := object[MCPResultErrorNamespace]
+		if !metadataContract && !structuredContract {
+			return mcpStructuredErrorCode(object, providerText)
+		}
 	}
 	return MCPToolErrorTransient, "", false
+}
+
+// mcpStructuredErrorCode handles providers that publish a typed code without
+// the Harbor extension. Unknown codes and explicit retryability retain the
+// legacy fallback; no prose, HTTP status, or successful result is interpreted.
+func mcpStructuredErrorCode(object map[string]any, providerText string) (MCPToolErrorClass, string, bool) {
+	if raw, exists := object["retryable"]; exists {
+		retryable, ok := raw.(bool)
+		if !ok || retryable {
+			return MCPToolErrorTransient, "", false
+		}
+	}
+	code, _ := object["code"].(string)
+	var class MCPToolErrorClass
+	switch code {
+	case "invalid_argument":
+		class = MCPToolErrorInvalidArgument
+	case "validation_failed":
+		class = MCPToolErrorValidation
+	case "forbidden_scope", "scope_blocked", "scope_mismatch":
+		class = MCPToolErrorAuthorization
+	case "not_found":
+		class = MCPToolErrorNotFound
+	case "document_too_large":
+		return MCPToolErrorToolDomain, mcpCodeMessage(code, providerText, documentTooLargeGuidance), true
+	default:
+		return MCPToolErrorTransient, "", false
+	}
+	return class, mcpCodeMessage(code, providerText, ""), true
+}
+
+// documentTooLargeGuidance is the fixed repair hint appended to a
+// `document_too_large` code. Generic on purpose: providers name their read
+// limits differently, and some have none.
+const documentTooLargeGuidance = "read a smaller section using the provider's outline/section selectors or reduce the provider's read-size limits; do not repeat the same full-document read"
+
+// mcpCodeMessage builds the bounded message for a code-classified result:
+// the stable code, then the provider's own text (trimmed to the room the
+// fixed guidance leaves), then the guidance. The provider text is carried
+// verbatim for the planner and never inspected.
+func mcpCodeMessage(code, providerText, guidance string) string {
+	message := code
+	tail := ""
+	if guidance != "" {
+		tail = " — " + guidance
+	}
+	text := strings.TrimSpace(providerText)
+	if text != "" && text != code {
+		room := MCPToolErrorMessageLimit - len(message) - len(": ") - len(tail)
+		if room > 0 {
+			if len(text) > room {
+				text = strings.ToValidUTF8(text[:room], "")
+			}
+			message += ": " + text
+		}
+	}
+	return message + tail
 }
 
 func mcpResultErrorObject(raw any) (MCPToolErrorClass, string, bool) {

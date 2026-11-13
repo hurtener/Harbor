@@ -838,7 +838,15 @@ standard result contract. `invalid_argument`, validation, and deterministic
 tool-domain failures are permanent for the unchanged invocation; transport
 and provider failures remain retryable under `ToolPolicy`. Missing, malformed,
 unknown, or legacy metadata follows an explicit compatibility fallback and is
-never inferred from text. Bounded content and structured content remain
+never inferred from text. Without the explicit Harbor extension, only the
+closed top-level structured codes `invalid_argument`, `validation_failed`,
+`forbidden_scope`, `scope_blocked`, `scope_mismatch`, `not_found`, and
+`document_too_large` classify an `IsError` as permanent. An explicit valid
+Harbor classification takes precedence; unknown or nested codes, malformed
+explicit classifications, and true or malformed `retryable` flags retain the
+transient fallback. Oversized-document failures include bounded guidance to
+read smaller sections or lower read limits, while preserving the returned
+outline. Bounded content and structured content remain
 available to planner/model and App consumers. The same classification is
 projected as optional, non-secret metadata on `tool.failed` and
 `tool.policy_exhausted`: class, reason, attempt, and configured budget. An

@@ -1018,7 +1018,21 @@ prompt: the typed class, retry-policy outcome, bounded message, and retained
 bounded result content render as fields, and a generic `Step.Error` never
 masks them. Raw tool arguments are redacted on every failed-replay shape — no
 raw args, secrets, or unbounded provider output reach the observation or the
-prompt. A legacy unclassified `IsError` keeps the generic safe fallback: its
+prompt. For providers without the Harbor extension, an `IsError` result's
+top-level `structuredContent.code` has a closed compatibility mapping:
+`invalid_argument` → `invalid_argument`, `validation_failed` → `validation`,
+`forbidden_scope` / `scope_blocked` / `scope_mismatch` → `authorization`,
+`not_found` → `not_found`, and `document_too_large` → `tool_domain`.
+These deterministic codes stop after one invocation. The error message is the
+code followed by the provider's bounded text content, so its repair detail
+reaches the planner; the text never affects the class. The original structured
+content, including any document outline, remains available; oversized-document
+failures also tell the planner to read a smaller section or reduce the
+provider's read-size limits instead of repeating the same full read. A valid
+namespaced classification takes precedence. Unknown codes, nested codes,
+`retryable: true`, malformed retryability, and malformed explicit Harbor
+contracts retain the transient fallback; no prose is parsed.
+A legacy unclassified `IsError` keeps the generic safe fallback: its
 lowered text is preserved, policy treats it as transient, and the generic
 render remains. The terminal projection is observable on the stream as
 `tool.failed` (`ErrorClass` / `ErrorMessage` / `Attempts`) and
@@ -1311,6 +1325,16 @@ producing `tool` or by filename text, with `cursor` pagination) and
 `artifact_note` (add, replace or clear a note of at most 1024 bytes). A note
 change publishes `artifacts.note_set` with the artifact id and note size, never
 the note text. All three resolve on the session's isolation triple.
+
+For `artifact_list`, use `{}` for the first unfiltered page. Omit unused fields
+or use empty strings for unused string fields (blank strings also mean unset);
+do not send `null`. The only nonempty `source` values are `user_upload`, `tool`
+and `other`; omit `source` to include all origins. Send `limit` as a JSON integer,
+not a quoted number: omitted or nonpositive values use 20, and values above 50
+are capped at 50. To continue, copy the returned `next_cursor` string exactly
+into `cursor`. A cursor is neither a page number nor an artifact ref. Invalid
+JSON types or unknown argument names fail validation before the tool runs;
+invalid source values and cursor strings return a field-specific `error`.
 
 ## Broker-bound manual App operations (candidate)
 
