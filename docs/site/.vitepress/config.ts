@@ -10,6 +10,7 @@
 // hard-coding the repo name in the config.
 import { defineConfig } from "vitepress";
 import { loadRelease } from "./changelog.mjs";
+import { loadFacts } from "./facts.mjs";
 
 const base = process.env.DOCS_BASE ?? "/";
 
@@ -17,6 +18,9 @@ const base = process.env.DOCS_BASE ?? "/";
 // landing page as __HARBOR_RELEASE__. Throws (failing the build) when the
 // changelog has no parseable released heading.
 const release = loadRelease();
+// Counts the landing page quotes (methods, CLI subcommands, skills, recipes),
+// read from the tree so they cannot drift; throws when one cannot be read.
+const facts = loadFacts();
 
 // Canonical in-repo docs (RFC, glossary, decisions, skills, recipes)
 // are mirrored into pages via `<!--@include: …-->` stubs — the repo
@@ -49,7 +53,10 @@ export default defineConfig({
     "Harbor — a Go-native runtime for durable, steerable, event-driven AI agents.",
   cleanUrls: true,
   vite: {
-    define: { __HARBOR_RELEASE__: JSON.stringify(release) },
+    define: {
+      __HARBOR_RELEASE__: JSON.stringify(release),
+      __HARBOR_FACTS__: JSON.stringify(facts),
+    },
   },
   // Default to the dark, navy theme so the docs match the landing's mood; the
   // light/dark toggle stays available for readers who prefer it.

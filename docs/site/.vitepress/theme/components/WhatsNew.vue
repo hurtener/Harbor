@@ -14,9 +14,15 @@ import Section from "./Section.vue";
       <ul class="hb-new__list">
         <li v-for="b in w.bullets" :key="b.title">
           <h3>{{ b.title }}</h3>
-          <p>{{ b.body }}</p>
+          <p v-if="b.body">{{ b.body }}</p>
         </li>
       </ul>
+      <dl v-if="w.earlier.length" class="hb-new__earlier">
+        <div v-for="e in w.earlier" :key="e.version">
+          <dt>{{ e.version }}</dt>
+          <dd>{{ e.summary }}</dd>
+        </div>
+      </dl>
       <a class="hb-btn hb-btn--ghost" :href="withBase(w.cta.link)">{{ w.cta.label }} →</a>
     </div>
   </Section>
@@ -77,9 +83,37 @@ import Section from "./Section.vue";
   line-height: 1.58;
   color: var(--hb-fg-muted);
 }
+.hb-new__earlier {
+  margin: 0 0 var(--hb-space-6);
+  padding-top: var(--hb-space-5);
+  border-top: 1px solid var(--hb-border);
+  display: grid;
+  gap: var(--hb-space-2);
+}
+.hb-new__earlier div {
+  display: flex;
+  gap: var(--hb-space-4);
+  align-items: baseline;
+}
+.hb-new__earlier dt {
+  flex: none;
+  min-width: 4.5rem;
+  font: 600 0.8rem var(--hb-font-mono);
+  color: var(--hb-accent-bright);
+}
+.hb-new__earlier dd {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--hb-fg-muted);
+}
 @media (max-width: 760px) {
   .hb-new__list {
     grid-template-columns: 1fr;
+  }
+  .hb-new__earlier div {
+    flex-direction: column;
+    gap: 0;
   }
 }
 </style>

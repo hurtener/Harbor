@@ -18,13 +18,16 @@ source "scripts/smoke/common.sh"
 LANDING="docs/site/.vitepress/theme/landingSpec.ts"
 HOTRELOAD_TEST="cmd/harbor/cmd_dev_hot_reload_test.go"
 
-# Landing surface reflects the current canonical method count (110), not 109.
+# Landing surface quotes the canonical method count derived at build time
+# from the generated methods.md (.vitepress/facts.mjs), never a literal.
 assert_grep_present 'canonical Protocol methods' "${LANDING}" \
     "landing: canonical-methods stat present"
-assert_grep_present '"110", label: "canonical Protocol methods"' "${LANDING}" \
-    "landing: canonical-methods stat reads 110"
-assert_grep_present '110 canonical methods' "${LANDING}" \
-    "landing: Protocol section reads 110 canonical methods"
+assert_grep_present 'String\(facts\.protocolMethods\), label: "canonical Protocol methods"' "${LANDING}" \
+    "landing: canonical-methods stat reads the derived count"
+assert_grep_present '[{]facts\.protocolMethods[}] canonical methods' "${LANDING}" \
+    "landing: Protocol section reads the derived count"
+assert_grep_absent '"110", label: "canonical Protocol methods"' "${LANDING}" \
+    "landing: no hardcoded canonical-methods stat"
 
 # The stale '109' / 'at v1.6' qualifier is gone from the methods claims.
 assert_grep_absent '109 canonical methods' "${LANDING}" \
