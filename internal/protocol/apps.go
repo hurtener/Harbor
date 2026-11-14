@@ -74,6 +74,8 @@ type AppsSurface struct {
 	// production implementation; a plain resource read or a registration
 	// fingerprint does NOT prove the gate's checks.
 	admissionGate RenderAdmissionGate
+	// sessionApps is the optional D-510 session App-reference proof.
+	sessionApps SessionAppChecker
 }
 
 // RenderAdmissionAuthority is the narrow, stateless, sealed
@@ -410,6 +412,19 @@ type AppsDeps struct {
 	// RenderAdmissionAuthority — the surface rejects a half-wired pair
 	// at construction. Both nil remains the compatible disabled surface.
 	RenderAdmissionGate RenderAdmissionGate
+	// SessionApps is the OPTIONAL session App-reference proof (D-510). When
+	// wired, a render-admission-backed `mcp.apps.call_tool` from a bearer
+	// whose agent_read_reach (not agent_reach) names the effective agent is
+	// admitted only if a turn of the caller's own session recorded exactly
+	// that (agent, server, resource) App. Nil refuses every read-reach call.
+	SessionApps SessionAppChecker
+}
+
+// SessionAppChecker reports whether the session of id holds a turn App
+// reference with exactly (agentID, serverID, resourceURI): an App a run in
+// that session rendered.
+type SessionAppChecker interface {
+	SessionHasApp(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) (bool, error)
 }
 
 // ErrAppsMisconfigured — NewAppsSurface was called with a missing
@@ -494,6 +509,7 @@ func NewAppsSurface(deps AppsDeps) (*AppsSurface, error) {
 		agents: deps.AgentResolver, reach: reach,
 		admissionAuthority: admissionAuthority,
 		admissionGate:      admissionGate,
+		sessionApps:        deps.SessionApps,
 	}, nil
 }
 
@@ -722,7 +738,17 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	}
 	effectiveID, err := AdmitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
 	if err != nil {
-		return nil, err
+		// D-510: a person reading their own session may press a button in an
+		// App a run in THAT session rendered for THAT agent, without being
+		// able to select the agent. Only the render-admission path qualifies,
+		// and only with the session App-reference proof; it makes no model
+		// call and opens no run, and the invocation keeps every approval,
+		// OAuth, policy and audit gate below.
+		readCtx, readID, readErr := s.admitReadReachAppCall(idCtx, id, r)
+		if readErr != nil {
+			return nil, err
+		}
+		idCtx, effectiveID = readCtx, readID
 	}
 	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
 	// The invoker re-enters the EXISTING approval / OAuth / identity
@@ -836,6 +862,26 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		}
 	}
 	return resp, nil
+}
+
+// admitReadReachAppCall admits a render-admission-backed App callback from
+// a read-reach bearer (D-510). It requires an explicit agent, server and
+// resource, read-reach admission of that agent and the session proof that a
+// turn of the caller's own session recorded exactly that App. The returned
+// context carries the read admission for that one agent.
+func (s *AppsSurface) admitReadReachAppCall(ctx context.Context, id identity.Identity, r *types.MCPAppCallToolRequest) (context.Context, string, error) {
+	if s.sessionApps == nil || !auth.AgentReadSessionAppsAllowed(ctx) || r.RenderAdmission == "" || r.AgentID == "" || r.ServerID == "" || r.ResourceURI == "" {
+		return ctx, "", auth.ErrAgentReachDenied
+	}
+	readCtx, effectiveID, err := AdmitEffectiveAgentForRead(ctx, string(methods.MethodMCPAppsCallTool), id, r.AgentID, s.agents, s.reach)
+	if err != nil || auth.AuthorizeAdmittedAgentRead(readCtx, effectiveID) != nil {
+		return ctx, "", auth.ErrAgentReachDenied
+	}
+	has, err := s.sessionApps.SessionHasApp(readCtx, id, effectiveID, r.ServerID, r.ResourceURI)
+	if err != nil || !has {
+		return ctx, "", auth.ErrAgentReachDenied
+	}
+	return readCtx, effectiveID, nil
 }
 
 // handleToolContext serves mcp.apps.tool_context — the tool-context read.

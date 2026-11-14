@@ -17283,7 +17283,7 @@ manual step.
 
 **Cross-references:** D-397, D-505, D-271, D-328.
 
-## D-510 — Read-only agent reach also reads App resources and tool listings
+## D-510 — Read-only agent reach: App resources, tool listings and own-session App use
 
 **Date:** 2026-11-13
 
@@ -17300,12 +17300,34 @@ admission for that one agent, and the console source authorizer honours it
 for that agent's own MCP servers only while the verified `agent_read_reach`
 still names the agent (`auth.AuthorizeAdmittedAgentRead`).
 
-Nothing that executes, selects or mutates reads the claim: `start`,
-`mcp.apps.call_tool` (render-admission backed or not), agent-configuration
-methods, skill publications and every other agent-addressed write keep
-calling `AdmitEffectiveAgent` and still require `agent_reach`. A render
-admission minted on a read-reach read therefore does not let that bearer call
-the App's tools.
+Two user actions inside a session the person already has also accept read
+reach, but only when the bearer carries the new optional signed boolean claim
+`agent_read_session_apps: true` (it requires a non-empty `agent_read_reach`;
+any non-boolean value rejects the token). An issuer sets it only on bearers
+whose read reach names agents the person may still use; a history-only bearer
+for an agent the person lost keeps strictly read-only access. The two actions,
+each narrowly:
+
+- **App callbacks.** A `mcp.apps.call_tool` that carries a render admission
+  (never the legacy binding or a bare call), names the agent, server and
+  resource explicitly, and whose exact (agent, server, resource) App is
+  recorded on a retained turn of the caller's own session
+  (`protocol.SessionAppChecker`, served by `turns.AppChecker` over the turn
+  projection). The render admission is still verified against the current
+  tuple and the invocation keeps every approval, OAuth, policy, redaction and
+  audit gate. Without the session proof wired, read-reach callbacks are
+  refused.
+- **Own live-profile restore.** `agent_config.user.reconcile_live_profile`
+  re-materializes the caller's own saved user-scope profile for the agent
+  (the personal connections it already authorized). It keeps the verified
+  identity and `agent_config:user` checks.
+
+Neither makes a model call, opens a run, selects an agent or changes the
+agent's configuration, which is why they fit a read entitlement. Everything
+else that executes, selects or mutates keeps calling `AdmitEffectiveAgent`
+and still requires `agent_reach`: `start`, `mcp.apps.call_tool` without the
+session proof, every other agent-configuration method, skill publication
+install/update/remove and every other agent-addressed write.
 
 **Correction to D-505.** D-505 listed steer, resume and cancel among the
 calls that "keep requiring `agent_reach`". They never consulted agent reach:

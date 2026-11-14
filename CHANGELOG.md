@@ -27,8 +27,13 @@ Two versions move independently in Harbor (RFC §5.3):
   well as `agent_reach`, so an MCP App already rendered in a session keeps
   rendering for a bearer that cannot select the agent. The console source
   authorizer honours the read admission for that agent's own servers only.
-  `start`, `mcp.apps.call_tool`, agent configuration and every other
-  agent-addressed write still require `agent_reach`.
+  With the new optional signed claim `agent_read_session_apps: true`, a
+  read-reach bearer may also call an App's tools with a render admission
+  when a turn of its own session recorded exactly that App
+  (`turns.AppChecker`), and may restore its own saved user profile
+  (`agent_config.user.reconcile_live_profile`). `start`, other
+  agent-configuration methods and every other agent-addressed write still
+  require `agent_reach`.
 
 ### Fixed
 

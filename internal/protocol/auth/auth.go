@@ -198,6 +198,10 @@ type Verified struct {
 	// this bearer may READ on session history surfaces without selecting
 	// them (see AgentReadReachClaim). Nil when absent.
 	AgentReadReach []string
+	// AgentReadSessionApps is the signed opt-in that lets the AgentReadReach
+	// agents also be USED for the caller's own-session App callbacks and own
+	// live-profile restore (D-510). False when absent.
+	AgentReadSessionApps bool
 	// SessionReach is the signed closed set of session IDs this bearer may
 	// select per request. A nil set means the claim is ABSENT and the
 	// dynamic per-request session selection is preserved unchanged; a
@@ -557,6 +561,11 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		v.audit(ctx, kidSeen, iss, sub, ErrAgentReadReachMalformed)
 		return Verified{}, ErrAgentReadReachMalformed
 	}
+	readSessionApps, readSessionAppsErr := ParseAgentReadSessionApps(claims[AgentReadSessionAppsClaim], readReach)
+	if readSessionAppsErr != nil {
+		v.audit(ctx, kidSeen, iss, sub, ErrAgentReadReachMalformed)
+		return Verified{}, readSessionAppsErr
+	}
 	sessionOwner, speaker, participantErr := parseSessionParticipant(claims, id, sessionReach, scopes)
 	if participantErr != nil {
 		v.audit(ctx, kidSeen, iss, sub, ErrSessionParticipantMalformed)
@@ -577,18 +586,19 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		runtimeID = ""
 	}
 	return Verified{
-		RuntimeID:           runtimeID,
-		ArtifactTransfer:    artifactTransfer,
-		ExecutionStartProof: executionProof,
-		Identity:            id,
-		Scopes:              scopes,
-		AgentReach:          reach,
-		AgentReadReach:      readReach,
-		SessionReach:        sessionReach,
-		SessionOwner:        sessionOwner,
-		Speaker:             speaker,
-		Subject:             sub,
-		Issuer:              iss,
+		RuntimeID:            runtimeID,
+		ArtifactTransfer:     artifactTransfer,
+		ExecutionStartProof:  executionProof,
+		Identity:             id,
+		Scopes:               scopes,
+		AgentReach:           reach,
+		AgentReadReach:       readReach,
+		AgentReadSessionApps: readSessionApps,
+		SessionReach:         sessionReach,
+		SessionOwner:         sessionOwner,
+		Speaker:              speaker,
+		Subject:              sub,
+		Issuer:               iss,
 	}, nil
 }
 

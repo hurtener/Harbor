@@ -506,6 +506,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			AgentReach:               in.AgentReach,
 			RenderAdmissionAuthority: in.RenderAdmissionAuthority,
 			RenderAdmissionGate:      in.RenderAdmissionGate,
+			SessionApps:              sessionAppChecker(in.TurnsStore),
 		})
 		if asErr != nil {
 			return nil, wrapErr("mcp apps surface", asErr)
@@ -1088,4 +1089,13 @@ func bootOwnershipMux(owner agentcfgprotocol.BootOwnership, next http.Handler) h
 // identically.
 func wrapErr(ctx string, err error) error {
 	return fmt.Errorf("%s: %w", ctx, err)
+}
+
+// sessionAppChecker is the D-510 session App-reference proof over the turn
+// projection; nil (read-reach App callbacks refused) when it is unwired.
+func sessionAppChecker(store turns.Store) protocol.SessionAppChecker {
+	if store == nil {
+		return nil
+	}
+	return turns.AppChecker{Store: store}
 }

@@ -20,7 +20,7 @@ func (s *Service) UserReconcileLiveProfile(ctx context.Context, req prototypes.A
 	if err != nil {
 		return prototypes.AgentConfigUserReconcileLiveProfileResponse{}, err
 	}
-	if err := requireUserSignedOAuthMCPAuthorization(ctx, id, req.AgentID); err != nil {
+	if err := requireUserLiveProfileAuthorization(ctx, id, req.AgentID); err != nil {
 		return prototypes.AgentConfigUserReconcileLiveProfileResponse{}, err
 	}
 	if s.signedOAuthMCPUserReconciler == nil {

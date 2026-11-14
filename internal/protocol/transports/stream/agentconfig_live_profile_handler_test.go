@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -87,5 +88,55 @@ func TestAgentConfigHandler_UserReconcileLiveProfileRejectsReachAndBodyMismatch(
 	defer spy.mu.Unlock()
 	if len(spy.calls) != 0 {
 		t.Fatalf("reconciler called on rejected requests: %+v", spy.calls)
+	}
+}
+
+// TestAgentConfigHandler_UserReconcileLiveProfileAdmitsReadReach pins D-510:
+// a bearer that may read but not select the agent may restore its OWN saved
+// user profile, while every other agent-config method (here user/get and
+// user/set_revision) still requires agent_reach, and an agent outside the
+// read reach stays refused.
+func TestAgentConfigHandler_UserReconcileLiveProfileAdmitsReadReach(t *testing.T) {
+	fixture := newSessionHandlerFixture(t)
+	spy := &liveProfileRouteSpy{}
+	svc, err := agentcfgprotocol.NewService(fixture.registry, agentcfgprotocol.WithSignedOAuthMCPUserReconciler(spy))
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	h, err := stream.NewAgentConfigHandler(svc, stream.WithAgentConfigReachAuthorizer(auth.NewAgentReachAuthorizer()))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	send := func(route, body string, readReach []string, sessionApps bool) (int, []byte) {
+		t.Helper()
+		id := acID()
+		req := httptest.NewRequest(http.MethodPost, "/v1/agent_config/"+route, strings.NewReader(body))
+		req.Header.Set(stream.HeaderTenant, id.TenantID)
+		req.Header.Set(stream.HeaderUser, id.UserID)
+		req.Header.Set(stream.HeaderSession, id.SessionID)
+		ctx := auth.WithScopes(req.Context(), []auth.Scope{auth.ScopeAgentConfigUser})
+		ctx = auth.WithAgentReadReach(auth.WithAgentReach(ctx, nil), readReach)
+		ctx = auth.WithAgentReadSessionApps(ctx, sessionApps)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req.WithContext(ctx))
+		return rec.Code, rec.Body.Bytes()
+	}
+	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"` + acAgent + `"}`
+	if code, raw := send("user/reconcile_live_profile", body, []string{acAgent}, true); code != http.StatusOK {
+		t.Fatalf("read-reach restore = %d %s", code, raw)
+	}
+	if code, raw := send("user/reconcile_live_profile", body, []string{"other-agent"}, true); code != http.StatusForbidden || errCode(t, raw) != protoerrors.CodeScopeMismatch {
+		t.Fatalf("restore outside read reach = %d %s, want 403", code, raw)
+	}
+	if code, raw := send("user/reconcile_live_profile", body, []string{acAgent}, false); code != http.StatusForbidden {
+		t.Fatalf("history-only read bearer restore = %d %s, want 403 without agent_read_session_apps", code, raw)
+	}
+	if code, raw := send("user/get", body, []string{acAgent}, true); code != http.StatusForbidden {
+		t.Fatalf("read-reach user/get = %d %s, want 403 (only the restore accepts read reach)", code, raw)
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.calls) != 1 || spy.calls[0].Identity != *acID() {
+		t.Fatalf("reconciler calls = %+v, want exactly the admitted restore", spy.calls)
 	}
 }

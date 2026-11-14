@@ -1214,6 +1214,14 @@ func (h *AgentConfigHandler) serveUserReconcileLiveProfile(w http.ResponseWriter
 		return
 	}
 	req.Identity = wireID
+	// D-510: restoring the caller's OWN saved user profile for an agent they
+	// may read is a recovery of their own connections: it makes no model
+	// call, opens no run and changes no agent configuration, so a read-reach
+	// bearer may ask for it. Every other agent-config method keeps requiring
+	// agent_reach.
+	if reqCtx, ok := h.admitAgentReadReach(r, req.AgentID); ok {
+		r = r.WithContext(reqCtx)
+	}
 	if !h.authorizeAndEnsureBootAgent(w, r, req.Identity, req.AgentID, methods.MethodAgentConfigUserReconcileLiveProfile) {
 		return
 	}
@@ -1575,12 +1583,28 @@ func (h *AgentConfigHandler) authorizeAgent(w http.ResponseWriter, r *http.Reque
 			"agent reach authority is not configured")
 		return false
 	}
+	if auth.AuthorizeAdmittedAgentRead(r.Context(), agentID) == nil {
+		return true
+	}
 	if err := h.reach.AuthorizeAgentReach(r.Context(), agentID); err != nil {
 		writeAgentConfigError(w, protoerrors.CodeScopeMismatch, http.StatusForbidden,
 			"caller is not authorized for the effective agent")
 		return false
 	}
 	return true
+}
+
+// admitAgentReadReach seats a read admission for agentID when the bearer
+// cannot select it but its verified agent_read_reach names it. Only the
+// user live-profile restore calls it (D-510).
+func (h *AgentConfigHandler) admitAgentReadReach(r *http.Request, agentID string) (context.Context, bool) {
+	if h.reach == nil || !auth.AgentReadSessionAppsAllowed(r.Context()) || h.reach.AuthorizeAgentReach(r.Context(), agentID) == nil {
+		return nil, false
+	}
+	if auth.AuthorizeAgentRead(r.Context(), agentID) != nil {
+		return nil, false
+	}
+	return auth.WithAgentReadAdmission(r.Context(), agentID), true
 }
 
 // authorizeAndEnsureBootAgent keeps ordering explicit: signed reach is the

@@ -134,3 +134,110 @@ func TestMCPSurface_Resources_AdmitsReadReach(t *testing.T) {
 		&types.MCPServerResourcesRequest{Identity: validScope(), AgentID: "agent-other", Name: "github-server"})
 	assertCode(t, err, protoerrors.CodeScopeMismatch)
 }
+
+// sessionAppSpy is a SessionAppChecker over a fixed set of session Apps.
+type sessionAppSpy struct {
+	apps  map[[3]string]bool
+	calls int
+}
+
+func (s *sessionAppSpy) SessionHasApp(_ context.Context, id identity.Identity, agentID, serverID, resourceURI string) (bool, error) {
+	s.calls++
+	if id != readReachIdentity {
+		return false, nil
+	}
+	return s.apps[[3]string{agentID, serverID, resourceURI}], nil
+}
+
+// TestAppsSurface_ReadReachAppCallNeedsRenderAdmissionAndSessionApp pins the
+// D-510 App callback rule for a read-reach bearer: a render-admission-backed
+// call to an App a turn of the caller's own session recorded for that agent
+// is invoked; the same call without the session App, without the render
+// admission, or with the proof unwired is refused before invocation.
+func TestAppsSurface_ReadReachAppCallNeedsRenderAdmissionAndSessionApp(t *testing.T) {
+	const server, uri = "srv", "ui://app/main.html"
+	build := func(apps protocol.SessionAppChecker) (*protocol.AppsSurface, *stubInvoker) {
+		inv := &stubInvoker{res: protocol.MCPAppToolResultRow{Tool: "srv_cb"}}
+		s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+			Resource:                 &stubResourceReader{content: protocol.MCPResourceContent{ResourceURI: uri, MIMEType: "text/html", Inline: []byte("<html>x</html>")}},
+			Invoker:                  inv,
+			ToolContext:              &stubToolContextReader{},
+			AgentResolver:            &stubAppsAgentResolver{},
+			AgentReach:               auth.NewAgentReachAuthorizer(),
+			RenderAdmissionAuthority: newFakeAdmissionAuthority(t),
+			RenderAdmissionGate:      &fixedGenerationGate{gen: "gen-1"},
+			SessionApps:              apps,
+		})
+		if err != nil {
+			t.Fatalf("NewAppsSurface: %v", err)
+		}
+		return s, inv
+	}
+	ctx := auth.WithAgentReadSessionApps(readReachCtx(t), true)
+	mintAdmission := func(s *protocol.AppsSurface) string {
+		resp, err := s.Dispatch(ctx, methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+			Identity: validScope(), AgentID: "agent-read", ServerID: server, ResourceURI: uri, RequestRenderAdmission: true,
+		})
+		if err != nil {
+			t.Fatalf("read-reach admission read: %v", err)
+		}
+		adm := resp.(*types.ReadMCPResourceResponse).RenderAdmission
+		if adm == nil || adm.Token == "" {
+			t.Fatal("no render admission minted")
+		}
+		return adm.Token
+	}
+	call := func(s *protocol.AppsSurface, token string) error {
+		_, err := s.Dispatch(ctx, methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+			Identity: validScope(), AgentID: "agent-read", ServerID: server, ResourceURI: uri, RenderAdmission: token, Tool: "srv_cb",
+		})
+		return err
+	}
+
+	proof := &sessionAppSpy{apps: map[[3]string]bool{{"agent-read", server, uri}: true}}
+	s, inv := build(proof)
+	if err := call(s, mintAdmission(s)); err != nil {
+		t.Fatalf("own-session App callback: %v", err)
+	}
+	if inv.admittedCalls != 1 || inv.gotAgent != "agent-read" {
+		t.Fatalf("admitted invocations = %d agent %q", inv.admittedCalls, inv.gotAgent)
+	}
+	if auth.AuthorizeAdmittedAgentRead(inv.admittedCtx, "agent-read") != nil {
+		t.Fatal("invocation context lacks the read admission the source authorizer needs")
+	}
+
+	other := &sessionAppSpy{apps: map[[3]string]bool{{"agent-read", server, "ui://app/other.html"}: true}}
+	s, inv = build(other)
+	assertCode(t, call(s, mintAdmission(s)), protoerrors.CodeScopeMismatch)
+	if inv.admittedCalls != 0 {
+		t.Fatal("App outside the session was invoked")
+	}
+
+	s, inv = build(proof)
+	_, err := s.Dispatch(ctx, methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: validScope(), AgentID: "agent-read", ServerID: server, Tool: "srv_cb",
+	})
+	assertCode(t, err, protoerrors.CodeScopeMismatch)
+	if inv.gotTool != "" {
+		t.Fatal("call without render admission was invoked")
+	}
+
+	// Without the signed agent_read_session_apps opt-in (a history-only
+	// bearer, e.g. for an agent removed from the person's reach) the same
+	// call is refused even with the session proof.
+	s, inv = build(proof)
+	token := mintAdmission(s)
+	_, err = s.Dispatch(readReachCtx(t), methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: validScope(), AgentID: "agent-read", ServerID: server, ResourceURI: uri, RenderAdmission: token, Tool: "srv_cb",
+	})
+	assertCode(t, err, protoerrors.CodeScopeMismatch)
+	if inv.admittedCalls != 0 {
+		t.Fatal("history-only read bearer invoked an App tool")
+	}
+
+	s, inv = build(nil)
+	assertCode(t, call(s, mintAdmission(s)), protoerrors.CodeScopeMismatch)
+	if inv.admittedCalls != 0 {
+		t.Fatal("unwired session proof admitted a read-reach callback")
+	}
+}

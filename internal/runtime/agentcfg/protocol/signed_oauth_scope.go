@@ -38,3 +38,21 @@ func requireUserSignedOAuthMCPAuthorization(ctx context.Context, id identity.Ide
 	}
 	return nil
 }
+
+// requireUserLiveProfileAuthorization is the live-profile restore's gate: the
+// same verified identity and agent_config:user scope, with agent_reach OR a
+// read admission seated by the transport for exactly this agent (D-510).
+// Restoring the caller's own saved profile selects nothing and runs nothing.
+func requireUserLiveProfileAuthorization(ctx context.Context, id identity.Identity, agentID string) error {
+	if auth.AuthorizeAdmittedAgentRead(ctx, agentID) != nil {
+		return requireUserSignedOAuthMCPAuthorization(ctx, id, agentID)
+	}
+	verified, ok := identity.FromVerified(ctx)
+	if !ok || verified != id {
+		return fmt.Errorf("%w: request identity is not the verified caller", ErrIdentityRequired)
+	}
+	if !auth.HasScope(ctx, auth.ScopeAgentConfigUser) {
+		return fmt.Errorf("%w: missing %q", ErrSignedCapabilityUserAuthorization, auth.ScopeAgentConfigUser)
+	}
+	return nil
+}
