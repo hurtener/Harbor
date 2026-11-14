@@ -1490,6 +1490,7 @@ type TaskRegistry interface {
 - **Lifecycle:** `PENDING → RUNNING → COMPLETE`, with `PAUSED → RUNNING` (planner-initiated, durable via planner checkpoint), `FAILED | CANCELLED` terminal.
 - **Cancellation propagation** honors `PropagateOnCancel` (`cascade` | `isolate`).
 - **Idempotency:** `Spawn` honors an `IdempotencyKey` per `(SessionID, IdempotencyKey)` so a retried spawn returns the original handle.
+- **Idle-session admission (opt-in, D-511):** `RequireIdleSession` refuses the spawn (`session_running`) while the session has a non-terminal top-level foreground task; checked after idempotency, atomic with the spawn.
 - **Background tasks at V1: in-process only.** The seam (`TaskRegistry` interface) is ready for a durable backend (Postgres-as-queue, NATS JetStream) post-V1.
 
 **Retain-turn timeouts and continuation hops — Settled.** Per-session config (matching the predecessor's stance), with per-spawn override via `SpawnRequest`. (Resolves brief 05 Q-5.)
