@@ -8,27 +8,22 @@ package publication
 // the runtime: projections are content-free apart from short listing text
 // (name, title, description), and the frozen body is returned only by
 // ReadCandidate. An admin accepts a candidate as a new publication or as a
-// successor revision of an existing one (through the ordinary publication
-// store, so every publication invariant still applies), or rejects it; the
-// submitter may withdraw a pending one.
+// successor revision of an existing one (through the same publish mutation
+// the publication store applies, so every publication invariant still
+// applies), or rejects it; the submitter may withdraw a pending one.
 //
-// Acceptance spans two aggregates (candidate and publication), so it is a
-// claim → publish → finalize sequence. The claim records the exact
-// acceptance parameters on the pending candidate; any admin retrying with
-// the same parameters resumes the same claim, and a different request (or a
-// reject) conflicts while it is outstanding. The publication's own
-// name-uniqueness and generation/hash CAS make a resumed publish unable to
-// produce a second publication; a resume that finds the claimed publish
-// already applied adopts it instead of publishing again.
+// Acceptance is one atomic step. The candidate and publication
+// aggregates are both slots of the tenant's organization identity in one
+// StateStore, so Accept loads both, applies the publish or successor mutation
+// and the accepted transition, and writes both in one SaveBatchIf. A
+// concurrent accept, reject or withdraw that loses the compare-and-set gets an
+// ordinary conflict and re-reads; nothing is ever half applied.
 //
-// Two implementations share one aggregate: NewMemoryCandidateStore (tests,
-// embedded use) and NewStateStoreCandidateStore over Harbor's mandatory
-// StateStore, inheriting the in-memory, SQLite and PostgreSQL driver triad.
+// The store is backed by Harbor's mandatory StateStore (in-memory, SQLite and
+// PostgreSQL drivers) and must share it with the publication store.
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,11 +63,10 @@ const (
 	maxPendingPerUser    = 64
 	// maxRetainedTerminal bounds decided candidates kept for history; the
 	// oldest are pruned first (publications themselves are unaffected).
-	maxRetainedTerminal    = 1024
-	maxCandidateNoteRunes  = 2000
-	maxCandidateListText   = 1024
-	candidateIDPrefix      = "cand"
-	candidateAcceptKeyBase = "candidate-accept"
+	maxRetainedTerminal   = 1024
+	maxCandidateNoteRunes = 2000
+	maxCandidateListText  = 1024
+	candidateIDPrefix     = "cand"
 )
 
 // Candidate sentinel errors.
@@ -86,39 +80,7 @@ var (
 	// ErrCandidateSupportFilesUnsupported means the skill carries support
 	// files, which publications cannot carry.
 	ErrCandidateSupportFilesUnsupported = errors.New("skills/publication: skills with support files cannot become publications")
-	// ErrClaimOutstanding means another acceptance of the candidate, with a
-	// different target, is recorded and not yet finalized or released. It is
-	// a conflict (errors.Is(err, ErrConflict) holds).
-	ErrClaimOutstanding = fmt.Errorf("%w: another acceptance of this candidate is in progress", ErrConflict)
 )
-
-// AcceptClaim is the exact acceptance an admin requested. It is recorded on
-// the pending candidate before publishing so a retry resumes the same
-// publish and a divergent request conflicts.
-type AcceptClaim struct {
-	Mode                           string `json:"mode"`
-	Name                           string `json:"name,omitempty"`
-	PublicationID                  string `json:"publication_id,omitempty"`
-	ExpectedPublicationGeneration  uint64 `json:"expected_publication_generation,omitempty"`
-	ExpectedPublicationContentHash string `json:"expected_publication_content_hash,omitempty"`
-	DecisionNote                   string `json:"decision_note,omitempty"`
-	ClaimedBy                      string `json:"claimed_by"`
-	// ClaimedAt is the claim's age for the stale window only; it never
-	// orders or identifies claims.
-	ClaimedAt time.Time `json:"claimed_at,omitempty"`
-	// Seq identifies this claim (per-candidate, monotonic): a release names
-	// it, so a release never clears a newer claim, and it is the claim's
-	// publication fence token.
-	Seq uint64 `json:"seq,omitempty"`
-}
-
-// SameTarget reports whether two acceptances publish to the same place.
-// A retry naming the same target resumes the recorded claim with its
-// original compare-and-swap predicates, even if the caller re-read the
-// target publication after an earlier attempt already advanced it.
-func (a AcceptClaim) SameTarget(b AcceptClaim) bool {
-	return a.Mode == b.Mode && a.Name == b.Name && a.PublicationID == b.PublicationID
-}
 
 // Candidate is the durable candidate record. Skill is the frozen body and is
 // never part of CandidateMetadata.
@@ -144,9 +106,9 @@ type Candidate struct {
 	UpdatedAt           time.Time      `json:"updated_at"`
 	RuntimeID           string         `json:"runtime_id"`
 	Skill               skills.Skill   `json:"skill"`
-	Claim               *AcceptClaim   `json:"claim,omitempty"`
-	// ClaimSeq numbers this candidate's claims monotonically.
-	ClaimSeq      uint64   `json:"claim_seq,omitempty"`
+	// AcceptReceipt is the publication receipt of the accept; its
+	// OperationID is the accept's idempotency key. Releases before 1.55 also
+	// wrote claim and claim_seq here; decoding ignores them.
 	AcceptReceipt *Receipt `json:"accept_receipt,omitempty"`
 }
 
@@ -186,10 +148,6 @@ func candidateMetadata(c Candidate) CandidateMetadata {
 
 func cloneCandidate(c Candidate) Candidate {
 	c.Skill = cloneSkill(c.Skill)
-	if c.Claim != nil {
-		claim := *c.Claim
-		c.Claim = &claim
-	}
 	if c.AcceptReceipt != nil {
 		receipt := *c.AcceptReceipt
 		c.AcceptReceipt = &receipt
@@ -225,12 +183,27 @@ type DecideCandidateRequest struct {
 	DecisionNote       string
 }
 
-// AcceptResult is what the publication store produced for a claim.
-type AcceptResult struct {
-	PublicationID    string
-	RevisionID       string
-	PriorContentHash string
-	Receipt          Receipt
+// AcceptCandidateRequest accepts a pending candidate. Mode new publishes it
+// under Name (default: the candidate's name); mode successor appends it to
+// PublicationID under the exact expected generation and content hash.
+type AcceptCandidateRequest struct {
+	IdempotencyKey                 string
+	CandidateID                    string
+	ExpectedGeneration             uint64
+	Mode                           string
+	Name                           string
+	PublicationID                  string
+	ExpectedPublicationGeneration  uint64
+	ExpectedPublicationContentHash string
+	DecisionNote                   string
+}
+
+// AcceptCandidateResult is the accepted candidate, the publication revision
+// it produced and the publication receipt.
+type AcceptCandidateResult struct {
+	Candidate   CandidateMetadata
+	Publication Metadata
+	Receipt     Receipt
 }
 
 // CandidateStore persists candidates. Visibility (admin vs submitter) is a
@@ -242,17 +215,10 @@ type CandidateStore interface {
 	// Read returns a candidate and its frozen body. privileged=false
 	// restricts it to the caller's own candidates.
 	Read(ctx context.Context, caller identity.Quadruple, candidateID string, privileged bool) (Candidate, error)
-	// Claim records an acceptance on a pending candidate (or returns the
-	// identical outstanding claim for a resume, or the finalized candidate
-	// for an identical replay).
-	Claim(ctx context.Context, caller identity.Quadruple, candidateID string, expectedGeneration uint64, claim AcceptClaim) (Candidate, error)
-	// ReleaseClaim clears the claim numbered claimSeq from a pending
-	// candidate after a publish that definitively did not apply, so the
-	// candidate can be accepted differently, rejected or withdrawn. It is a
-	// no-op when that claim is no longer the recorded one.
-	ReleaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, claimSeq uint64) error
-	// FinalizeAccept marks a claimed candidate accepted with the result.
-	FinalizeAccept(ctx context.Context, caller identity.Quadruple, candidateID string, result AcceptResult) (CandidateMetadata, error)
+	// Accept publishes a pending candidate and marks it accepted in one
+	// atomic write. It applies the verified admin gate itself. An exact
+	// replay of the idempotency key returns the original result.
+	Accept(ctx context.Context, caller identity.Quadruple, req AcceptCandidateRequest) (AcceptCandidateResult, error)
 	// Decide applies a reject (privileged) or withdraw (submitter) transition.
 	Decide(ctx context.Context, caller identity.Quadruple, req DecideCandidateRequest, privileged bool) (CandidateMetadata, error)
 	Close(ctx context.Context) error
@@ -310,44 +276,23 @@ func pruneTerminal(a *candidateAggregate) {
 	}
 }
 
-// candidateBackend loads and saves one tenant's aggregate. token is an
-// opaque CAS witness for save.
-type candidateBackend interface {
-	load(ctx context.Context, tenant string) (candidateAggregate, any, error)
-	save(ctx context.Context, tenant string, token any, a candidateAggregate) error
-}
-
+// candidateStore keeps one tenant's candidates in a single StateStore slot.
 type candidateStore struct {
 	mu      sync.Mutex
-	backend candidateBackend
+	state   state.StateStore
 	runtime string
 	clock   func() time.Time
 	closed  bool
 }
 
-// NewMemoryCandidateStore returns an in-memory CandidateStore bound to one
-// runtime/deployment.
-func NewMemoryCandidateStore(runtimeID string) CandidateStore {
-	return NewMemoryCandidateStoreWithClock(runtimeID, time.Now)
-}
-
-// NewMemoryCandidateStoreWithClock is NewMemoryCandidateStore with an
-// injected clock (claims are timestamped with it), for deterministic tests.
-func NewMemoryCandidateStoreWithClock(runtimeID string, clock func() time.Time) CandidateStore {
-	if clock == nil {
-		clock = time.Now
-	}
-	return &candidateStore{backend: &memoryCandidateBackend{tenants: map[string][]byte{}}, runtime: strings.TrimSpace(runtimeID), clock: clock}
-}
-
 // NewStateStoreCandidateStore returns a durable CandidateStore over the
-// shared StateStore.
+// StateStore the publication store uses.
 func NewStateStoreCandidateStore(st state.StateStore, runtimeID string) (CandidateStore, error) {
 	return NewStateStoreCandidateStoreWithClock(st, runtimeID, time.Now)
 }
 
 // NewStateStoreCandidateStoreWithClock is NewStateStoreCandidateStore with an
-// injected clock (claim age only), for deterministic tests.
+// injected clock, for deterministic tests.
 func NewStateStoreCandidateStoreWithClock(st state.StateStore, runtimeID string, clock func() time.Time) (CandidateStore, error) {
 	if st == nil {
 		return nil, ErrStoreClosed
@@ -355,70 +300,67 @@ func NewStateStoreCandidateStoreWithClock(st state.StateStore, runtimeID string,
 	if clock == nil {
 		clock = time.Now
 	}
-	return &candidateStore{backend: &stateCandidateBackend{state: st}, runtime: strings.TrimSpace(runtimeID), clock: clock}, nil
+	return &candidateStore{state: st, runtime: strings.TrimSpace(runtimeID), clock: clock}, nil
 }
 
-type memoryCandidateBackend struct {
-	tenants map[string][]byte
-}
-
-func (m *memoryCandidateBackend) load(_ context.Context, tenant string) (candidateAggregate, any, error) {
-	raw, ok := m.tenants[tenant]
-	if !ok {
-		return candidateAggregate{Operations: map[string]candidateOp{}}, nil, nil
-	}
-	a, err := decodeCandidates(raw)
-	return a, nil, err
-}
-
-func (m *memoryCandidateBackend) save(_ context.Context, tenant string, _ any, a candidateAggregate) error {
-	b, err := encode(a)
-	if err != nil {
-		return err
-	}
-	m.tenants[tenant] = b
-	return nil
-}
-
-type stateCandidateBackend struct {
-	state state.StateStore
-}
-
-type stateToken struct {
-	record  state.StateRecord
+// orgSlot is one loaded organization slot and its compare-and-set witness.
+type orgSlot struct {
+	kind    string
+	id      state.EventID // the loaded generation; empty when absent
 	present bool
 }
 
-func (s *stateCandidateBackend) load(ctx context.Context, tenant string) (candidateAggregate, any, error) {
-	r, err := s.state.Load(ctx, orgIdentity(tenant), candidateKind)
+func (s *candidateStore) loadSlot(ctx context.Context, tenant, kind string) ([]byte, orgSlot, error) {
+	r, err := s.state.Load(ctx, orgIdentity(tenant), kind)
 	if errors.Is(err, state.ErrNotFound) {
-		return candidateAggregate{Operations: map[string]candidateOp{}}, stateToken{}, nil
+		return nil, orgSlot{kind: kind}, nil
 	}
 	if err != nil {
-		return candidateAggregate{}, nil, err
+		return nil, orgSlot{}, err
 	}
-	a, err := decodeCandidates(r.Bytes)
-	return a, stateToken{record: r, present: true}, err
+	return r.Bytes, orgSlot{kind: kind, id: r.ID, present: true}, nil
 }
 
-func (s *stateCandidateBackend) save(ctx context.Context, tenant string, token any, a candidateAggregate) error {
-	b, err := encode(a)
+func (s *candidateStore) load(ctx context.Context, tenant string) (candidateAggregate, orgSlot, error) {
+	raw, sl, err := s.loadSlot(ctx, tenant, candidateKind)
 	if err != nil {
-		return err
+		return candidateAggregate{}, orgSlot{}, err
 	}
-	tok, isToken := token.(stateToken)
-	next := state.StateRecord{ID: state.NewEventID(), Identity: orgIdentity(tenant), Kind: candidateKind, Bytes: b}
-	expect := state.SlotExpectation{Identity: next.Identity, Kind: next.Kind}
-	if isToken && tok.present {
-		expect.ExpectedEventID = tok.record.ID
-	}
-	if err := s.state.SaveIf(ctx, []state.SlotExpectation{expect}, next); err != nil {
-		if errors.Is(err, state.ErrConditionFailed) {
-			return ErrConflict
+	a, err := decodeCandidates(raw)
+	return a, sl, err
+}
+
+// saveSlots writes every value to its slot in one conditional batch: each
+// slot must still hold the generation it was loaded at (or still be absent).
+func (s *candidateStore) saveSlots(ctx context.Context, tenant string, slots []orgSlot, values []any) error {
+	expect := make([]state.SlotExpectation, 0, len(slots))
+	writes := make([]state.StateRecord, 0, len(slots))
+	for i, sl := range slots {
+		b, err := encode(values[i])
+		if err != nil {
+			return err
 		}
-		return err
+		e := state.SlotExpectation{Identity: orgIdentity(tenant), Kind: sl.kind}
+		if sl.present {
+			e.ExpectedEventID = sl.id
+		}
+		expect = append(expect, e)
+		writes = append(writes, state.StateRecord{ID: state.NewEventID(), Identity: e.Identity, Kind: sl.kind, Bytes: b})
 	}
-	return nil
+	var err error
+	if len(writes) == 1 {
+		err = s.state.SaveIf(ctx, expect, writes[0])
+	} else {
+		err = s.state.SaveBatchIf(ctx, expect, writes)
+	}
+	if errors.Is(err, state.ErrConditionFailed) {
+		return ErrConflict
+	}
+	return err
+}
+
+func (s *candidateStore) save(ctx context.Context, tenant string, sl orgSlot, a candidateAggregate) error {
+	return s.saveSlots(ctx, tenant, []orgSlot{sl}, []any{a})
 }
 
 func decodeCandidates(raw []byte) (candidateAggregate, error) {
@@ -500,7 +442,7 @@ func (s *candidateStore) Submit(ctx context.Context, caller identity.Quadruple, 
 	if err := s.open(ctx, caller); err != nil {
 		return CandidateMetadata{}, err
 	}
-	a, token, err := s.backend.load(ctx, caller.TenantID)
+	a, sl, err := s.load(ctx, caller.TenantID)
 	if err != nil {
 		return CandidateMetadata{}, err
 	}
@@ -546,7 +488,7 @@ func (s *candidateStore) Submit(ctx context.Context, caller identity.Quadruple, 
 	}
 	a.Candidates = append(a.Candidates, c)
 	a.Operations[opKey] = candidateOp{Fingerprint: fp, CandidateID: c.CandidateID}
-	if err := s.backend.save(ctx, caller.TenantID, token, a); err != nil {
+	if err := s.save(ctx, caller.TenantID, sl, a); err != nil {
 		return CandidateMetadata{}, err
 	}
 	return candidateMetadata(c), nil
@@ -565,7 +507,7 @@ func (s *candidateStore) List(ctx context.Context, caller identity.Quadruple, re
 	if err := s.open(ctx, caller); err != nil {
 		return nil, err
 	}
-	a, _, err := s.backend.load(ctx, caller.TenantID)
+	a, _, err := s.load(ctx, caller.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -595,7 +537,7 @@ func (s *candidateStore) Read(ctx context.Context, caller identity.Quadruple, ca
 	if err := s.open(ctx, caller); err != nil {
 		return Candidate{}, err
 	}
-	a, _, err := s.backend.load(ctx, caller.TenantID)
+	a, _, err := s.load(ctx, caller.TenantID)
 	if err != nil {
 		return Candidate{}, err
 	}
@@ -607,146 +549,6 @@ func (s *candidateStore) Read(ctx context.Context, caller identity.Quadruple, ca
 		return Candidate{}, ErrContentHashMismatch
 	}
 	return cloneCandidate(a.Candidates[i]), nil
-}
-
-// Claim implements CandidateStore.
-func (s *candidateStore) Claim(ctx context.Context, caller identity.Quadruple, candidateID string, expectedGeneration uint64, claim AcceptClaim) (Candidate, error) {
-	note, err := validNote(claim.DecisionNote)
-	if err != nil {
-		return Candidate{}, err
-	}
-	claim.DecisionNote = note
-	claim.Name = canonicalName(claim.Name)
-	claim.PublicationID = strings.TrimSpace(claim.PublicationID)
-	claim.ClaimedBy = caller.UserID
-	claim.ClaimedAt = s.clock().UTC()
-	switch claim.Mode {
-	case AcceptModeNew:
-		if claim.PublicationID != "" || claim.ExpectedPublicationGeneration != 0 || claim.ExpectedPublicationContentHash != "" {
-			return Candidate{}, fmt.Errorf("%w: mode new takes no publication target", ErrInvalidRequest)
-		}
-	case AcceptModeSuccessor:
-		if claim.PublicationID == "" || claim.ExpectedPublicationGeneration == 0 || claim.ExpectedPublicationContentHash == "" || claim.Name != "" {
-			return Candidate{}, fmt.Errorf("%w: mode successor requires publication id, generation and content hash", ErrInvalidRequest)
-		}
-	default:
-		return Candidate{}, fmt.Errorf("%w: mode must be %q or %q", ErrInvalidRequest, AcceptModeNew, AcceptModeSuccessor)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.open(ctx, caller); err != nil {
-		return Candidate{}, err
-	}
-	a, token, err := s.backend.load(ctx, caller.TenantID)
-	if err != nil {
-		return Candidate{}, err
-	}
-	i, ok := findCandidate(a, strings.TrimSpace(candidateID))
-	if !ok {
-		return Candidate{}, ErrCandidateNotFound
-	}
-	c := a.Candidates[i]
-	if claim.Mode == AcceptModeNew && claim.Name == "" {
-		claim.Name = c.Name
-	}
-	if c.Claim != nil && c.Claim.SameTarget(claim) && ((c.State == CandidatePending && c.Generation == expectedGeneration) || (c.State == CandidateAccepted && c.Generation == expectedGeneration+1)) {
-		// Resume an outstanding claim with its original predicates, or
-		// replay a finalized acceptance. A resumed pending claim is in flight
-		// again: refresh its age (never its sequence) so it does not look
-		// stale to a concurrent decision.
-		if c.State == CandidatePending {
-			resumed := *c.Claim
-			resumed.ClaimedAt = claim.ClaimedAt
-			c.Claim = &resumed
-			a.Candidates[i] = c
-			if err := s.backend.save(ctx, caller.TenantID, token, a); err != nil {
-				return Candidate{}, err
-			}
-		}
-		return cloneCandidate(c), nil
-	}
-	if c.State == CandidatePending && c.Generation == expectedGeneration && c.Claim != nil {
-		return Candidate{}, ErrClaimOutstanding
-	}
-	if c.State != CandidatePending || c.Generation != expectedGeneration {
-		return Candidate{}, ErrConflict
-	}
-	c.ClaimSeq++
-	claim.Seq = c.ClaimSeq
-	c.Claim = &claim
-	a.Candidates[i] = c
-	if err := s.backend.save(ctx, caller.TenantID, token, a); err != nil {
-		return Candidate{}, err
-	}
-	return cloneCandidate(c), nil
-}
-
-// ReleaseClaim implements CandidateStore.
-func (s *candidateStore) ReleaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, claimSeq uint64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.open(ctx, caller); err != nil {
-		return err
-	}
-	a, token, err := s.backend.load(ctx, caller.TenantID)
-	if err != nil {
-		return err
-	}
-	i, ok := findCandidate(a, strings.TrimSpace(candidateID))
-	if !ok {
-		return ErrCandidateNotFound
-	}
-	c := a.Candidates[i]
-	if c.State != CandidatePending || c.Claim == nil || c.Claim.Seq != claimSeq {
-		// Already released, superseded or finalized: nothing to release.
-		return nil
-	}
-	c.Claim = nil
-	c.UpdatedAt = s.clock().UTC()
-	a.Candidates[i] = c
-	return s.backend.save(ctx, caller.TenantID, token, a)
-}
-
-// FinalizeAccept implements CandidateStore.
-func (s *candidateStore) FinalizeAccept(ctx context.Context, caller identity.Quadruple, candidateID string, result AcceptResult) (CandidateMetadata, error) {
-	if strings.TrimSpace(result.PublicationID) == "" || strings.TrimSpace(result.RevisionID) == "" {
-		return CandidateMetadata{}, fmt.Errorf("%w: accept result is incomplete", ErrInvalidRequest)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.open(ctx, caller); err != nil {
-		return CandidateMetadata{}, err
-	}
-	a, token, err := s.backend.load(ctx, caller.TenantID)
-	if err != nil {
-		return CandidateMetadata{}, err
-	}
-	i, ok := findCandidate(a, strings.TrimSpace(candidateID))
-	if !ok {
-		return CandidateMetadata{}, ErrCandidateNotFound
-	}
-	c := a.Candidates[i]
-	if c.State == CandidateAccepted && c.PublicationID == result.PublicationID && c.RevisionID == result.RevisionID {
-		return candidateMetadata(c), nil
-	}
-	if c.State != CandidatePending || c.Claim == nil {
-		return CandidateMetadata{}, ErrConflict
-	}
-	receipt := result.Receipt
-	c.State = CandidateAccepted
-	c.PublicationID = result.PublicationID
-	c.RevisionID = result.RevisionID
-	c.PriorContentHash = result.PriorContentHash
-	c.DecisionNote = c.Claim.DecisionNote
-	c.DecidedBy = caller.UserID
-	c.AcceptReceipt = &receipt
-	c.Generation++
-	c.UpdatedAt = s.clock().UTC()
-	a.Candidates[i] = c
-	if err := s.backend.save(ctx, caller.TenantID, token, a); err != nil {
-		return CandidateMetadata{}, err
-	}
-	return candidateMetadata(c), nil
 }
 
 // Decide implements CandidateStore.
@@ -777,7 +579,7 @@ func (s *candidateStore) Decide(ctx context.Context, caller identity.Quadruple, 
 	if err := s.open(ctx, caller); err != nil {
 		return CandidateMetadata{}, err
 	}
-	a, token, err := s.backend.load(ctx, caller.TenantID)
+	a, sl, err := s.load(ctx, caller.TenantID)
 	if err != nil {
 		return CandidateMetadata{}, err
 	}
@@ -793,7 +595,7 @@ func (s *candidateStore) Decide(ctx context.Context, caller identity.Quadruple, 
 		return candidateMetadata(a.Candidates[i]), nil
 	}
 	c := a.Candidates[i]
-	if c.State != CandidatePending || c.Generation != req.ExpectedGeneration || c.Claim != nil {
+	if c.State != CandidatePending || c.Generation != req.ExpectedGeneration {
 		return CandidateMetadata{}, ErrConflict
 	}
 	c.State = req.Outcome
@@ -805,10 +607,127 @@ func (s *candidateStore) Decide(ctx context.Context, caller identity.Quadruple, 
 	c.UpdatedAt = s.clock().UTC()
 	a.Candidates[i] = c
 	a.Operations[opKey] = candidateOp{Fingerprint: fp, CandidateID: id}
-	if err := s.backend.save(ctx, caller.TenantID, token, a); err != nil {
+	if err := s.save(ctx, caller.TenantID, sl, a); err != nil {
 		return CandidateMetadata{}, err
 	}
 	return candidateMetadata(c), nil
+}
+
+// Accept implements CandidateStore.
+func (s *candidateStore) Accept(ctx context.Context, caller identity.Quadruple, req AcceptCandidateRequest) (AcceptCandidateResult, error) {
+	if err := verifiedAdmin(ctx, caller); err != nil {
+		return AcceptCandidateResult{}, err
+	}
+	if err := validateKey(req.IdempotencyKey); err != nil {
+		return AcceptCandidateResult{}, err
+	}
+	note, err := validNote(req.DecisionNote)
+	if err != nil {
+		return AcceptCandidateResult{}, err
+	}
+	id := strings.TrimSpace(req.CandidateID)
+	name, pubID := canonicalName(req.Name), strings.TrimSpace(req.PublicationID)
+	switch req.Mode {
+	case AcceptModeNew:
+		if pubID != "" || req.ExpectedPublicationGeneration != 0 || req.ExpectedPublicationContentHash != "" {
+			return AcceptCandidateResult{}, fmt.Errorf("%w: mode new takes no publication target", ErrInvalidRequest)
+		}
+	case AcceptModeSuccessor:
+		if pubID == "" || req.ExpectedPublicationGeneration == 0 || req.ExpectedPublicationContentHash == "" || name != "" {
+			return AcceptCandidateResult{}, fmt.Errorf("%w: mode successor requires publication id, generation and content hash", ErrInvalidRequest)
+		}
+	default:
+		return AcceptCandidateResult{}, fmt.Errorf("%w: mode must be %q or %q", ErrInvalidRequest, AcceptModeNew, AcceptModeSuccessor)
+	}
+	fp := strings.Join([]string{"accept", id, fmt.Sprint(req.ExpectedGeneration), req.Mode, name, pubID,
+		fmt.Sprint(req.ExpectedPublicationGeneration), req.ExpectedPublicationContentHash, note}, "\x00")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.open(ctx, caller); err != nil {
+		return AcceptCandidateResult{}, err
+	}
+	cands, candSlot, err := s.load(ctx, caller.TenantID)
+	if err != nil {
+		return AcceptCandidateResult{}, err
+	}
+	rawPubs, pubSlot, err := s.loadSlot(ctx, caller.TenantID, publicationOrgKind)
+	if err != nil {
+		return AcceptCandidateResult{}, err
+	}
+	pubs, err := decodeAggregate(state.StateRecord{Bytes: rawPubs})
+	if err != nil {
+		return AcceptCandidateResult{}, err
+	}
+	if pubs.Operations == nil {
+		pubs.Operations = map[string]operation{}
+	}
+	i, ok := findCandidate(cands, id)
+	if !ok {
+		return AcceptCandidateResult{}, ErrCandidateNotFound
+	}
+	c := cands.Candidates[i]
+	opKey := candidateOpKey(caller, req.IdempotencyKey)
+	if prior, seen := cands.Operations[opKey]; seen {
+		// An exact replay answers the recorded acceptance; it never
+		// publishes again.
+		if prior.Fingerprint != fp || prior.CandidateID != id || c.State != CandidateAccepted || c.AcceptReceipt == nil {
+			return AcceptCandidateResult{}, ErrIdempotencyConflict
+		}
+		p, ferr := pubs.find(c.PublicationID)
+		if ferr != nil {
+			return AcceptCandidateResult{}, ferr
+		}
+		rev, rerr := revisionFor(p, c.RevisionID)
+		if rerr != nil {
+			return AcceptCandidateResult{}, rerr
+		}
+		return AcceptCandidateResult{Candidate: candidateMetadata(c), Publication: revisionMetadata(p, rev), Receipt: *c.AcceptReceipt}, nil
+	}
+	if c.State != CandidatePending || c.Generation != req.ExpectedGeneration {
+		return AcceptCandidateResult{}, ErrConflict
+	}
+	if skills.CanonicalContentHash(c.Skill) != c.ContentHash {
+		return AcceptCandidateResult{}, ErrContentHashMismatch
+	}
+	now := s.clock().UTC()
+	skill := cloneSkill(c.Skill)
+	var (
+		meta    Metadata
+		receipt Receipt
+	)
+	if req.Mode == AcceptModeNew {
+		if name == "" {
+			name = c.Name
+		}
+		skill.Name = name
+		if skill, err = validateSkill(skill, name); err == nil {
+			meta, receipt, err = pubs.publishNew(s.runtime, now, caller.TenantID, name, skill, req.IdempotencyKey)
+		}
+	} else {
+		p, ferr := pubs.find(pubID)
+		if ferr != nil {
+			return AcceptCandidateResult{}, ferr
+		}
+		skill.Name = p.Name
+		if skill, err = validateSkill(skill, ""); err == nil {
+			meta, receipt, err = pubs.publishSuccessor(now, pubID, req.ExpectedPublicationGeneration, req.ExpectedPublicationContentHash, skill, req.IdempotencyKey)
+		}
+	}
+	if err != nil {
+		return AcceptCandidateResult{}, err
+	}
+	c.State = CandidateAccepted
+	c.PublicationID, c.RevisionID, c.PriorContentHash = meta.PublicationID, meta.RevisionID, receipt.BeforeHash
+	c.DecisionNote, c.DecidedBy = note, caller.UserID
+	c.AcceptReceipt = &receipt
+	c.Generation++
+	c.UpdatedAt = now
+	cands.Candidates[i] = c
+	cands.Operations[opKey] = candidateOp{Fingerprint: fp, CandidateID: id}
+	if err := s.saveSlots(ctx, caller.TenantID, []orgSlot{candSlot, pubSlot}, []any{cands, pubs}); err != nil {
+		return AcceptCandidateResult{}, err
+	}
+	return AcceptCandidateResult{Candidate: candidateMetadata(c), Publication: meta, Receipt: receipt}, nil
 }
 
 // Close implements CandidateStore.
@@ -817,12 +736,4 @@ func (s *candidateStore) Close(context.Context) error {
 	defer s.mu.Unlock()
 	s.closed = true
 	return nil
-}
-
-// CandidateAcceptKey derives the publication idempotency key for one
-// candidate acceptance. It is a pure function of the candidate so every
-// resume of the same claim names the same publication operation.
-func CandidateAcceptKey(candidateID string) string {
-	sum := sha256.Sum256([]byte(candidateAcceptKeyBase + "\x00" + candidateID))
-	return candidateAcceptKeyBase + "-" + hex.EncodeToString(sum[:16])
 }

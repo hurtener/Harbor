@@ -17394,3 +17394,61 @@ strictly and reject the unknown field, so a caller upgrades runtimes before
 sending it.
 
 **Cross-references:** D-509, RFC §6.9 (`session_running`).
+
+## D-512 — One atomic candidate accept
+
+**Date:** 2026-11-14
+
+**Decision.** Accepting a publication candidate is one atomic write. This
+supersedes the claim, publish, finalize sequence and the acceptance fences of
+D-508; the rest of D-508 stands.
+
+The candidate aggregate (`skills.publications.candidates.v1`) and the
+publication aggregate (`skills.publications.organization.v1`) are both slots
+of the tenant's organization identity in the one StateStore the runtime wires
+into both stores. `CandidateStore.Accept` loads both and applies the ordinary
+publish or successor mutation, the same pure function the publication store's
+own `Publish` and `PublishSuccessor` apply, so every publication invariant
+holds unchanged. It marks the candidate accepted with the publication receipt
+and writes both slots in one `SaveBatchIf`. A failed write leaves both
+unchanged.
+
+- *Concurrency.* Reject and withdraw are a plain expected-generation check on
+  the candidate slot. A concurrent accept, reject or withdraw that loses the
+  compare-and-set gets an ordinary conflict and re-reads. Exactly one decision
+  wins; a candidate is never both published and rejected.
+- *Idempotency.* The accept honours its `idempotency_key`, now required and
+  recorded per person beside submit and decide keys. An exact replay returns the original
+  candidate, revision and receipt without publishing. A divergent reuse is an
+  idempotency conflict. A fresh key on a decided candidate is an ordinary
+  conflict. The receipt's operation id is the accept's key.
+- *Authority.* The accept writes the organization catalog itself, so it
+  applies the verified-admin gate (`ScopeAdmin`, caller equals the verified
+  identity) that the authorization wrapper applies to every other publication
+  mutation.
+- *Removed.* Claims, claim sequence numbers, the 2-minute stale window, the
+  60-second publish deadline, the fence tokens and the runtime-private
+  candidate marker in published revisions, along with the reserved-marker
+  guard on ordinary publishes. Accepted revisions now carry the candidate's
+  body unchanged apart from the publication name, so when the name is the
+  candidate's their content hash equals the candidate's.
+
+**Why.** Both aggregates already lived in one StateStore with an atomic
+multi-slot compare-and-set, so the two-step write and the recovery machinery
+around it (stale-claim resolution, fence revocation, adopting a publish that
+already applied) protected against a state that can no longer happen. The
+stale-claim check also read the wall clock instead of the injected clock.
+
+**Compatibility.** No wire change. Records written by earlier releases decode
+unchanged: a candidate's `claim` and `claim_seq` and the publication
+aggregate's `candidate_fence_tokens` are ignored and dropped on the next
+write. A pending candidate whose accept was in flight at the upgrade, with its
+revision already published, is not recognised as accepted. It stays pending,
+and the admin rejects it (or a new-mode retry conflicts on the name). Skill
+sharing had no production use before this release, so no marker lookup is
+kept. Mixed versions are not supported. A pre-1.55 runtime still running the
+claim sequence during a rolling deploy can publish after a 1.55 runtime
+rejects the same candidate, so every runtime runs 1.55 before candidates are
+used.
+
+**Cross-references:** D-508.

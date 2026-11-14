@@ -372,8 +372,8 @@ reference.
 People can also propose their own personal skills for organization review
 (D-508): `skills.publications.candidates.submit` freezes a snapshot of the
 caller's skill, admins list and read the pending candidates, then `accept` one
-as a new publication or a successor revision (through the same publication
-store, so every invariant above applies) or `reject` it with a note. A skill
+as a new publication or a successor revision (one atomic write that applies
+every publication invariant above, D-512) or `reject` it with a note. A skill
 with support files cannot become a publication yet and is refused at
 submission. `skills.publications.read` shows any caller the body of an active
 publication before they install it.

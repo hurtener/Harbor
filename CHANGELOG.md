@@ -17,6 +17,29 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.55.0] — 2026-11-14
+
+### Changed
+
+- **Atomic candidate accept (D-512).** `skills.publications.candidates.accept`
+  writes the publication and the accepted candidate in one conditional
+  StateStore batch, so they land together or not at all. A concurrent accept,
+  reject or withdraw that loses gets an ordinary `skill_publication_conflict`
+  and re-reads; a candidate is never both published and rejected. The accept
+  now honours its `idempotency_key`: an exact retry returns the original
+  candidate, publication and receipt, and another admin's later accept of a
+  decided candidate conflicts instead of replaying, and an accept without an
+  `idempotency_key` is refused as invalid. The receipt's `operation_id` is
+  that key. Accepted revisions carry the candidate's body without a
+  runtime-private marker. No wire change.
+- **Claim and fence machinery removed (D-512).** Acceptance claims, the
+  2-minute stale window, the 60-second publish deadline and acceptance fence
+  tokens are gone, with the reserved-marker guard on ordinary publishes.
+  Stored `claim`, `claim_seq` and `candidate_fence_tokens` fields from earlier
+  releases are ignored and dropped on the next write. Run 1.55 on every
+  runtime before using candidates; an accept that was in flight at the upgrade
+  leaves its candidate pending, for the admin to reject.
+
 ## [1.54.0] — 2026-11-14
 
 ### Added

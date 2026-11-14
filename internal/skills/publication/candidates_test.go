@@ -6,38 +6,61 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	sqlitedriver "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 )
 
-func candidateStores(t *testing.T) map[string]CandidateStore {
+// candidateEnv is a candidate store and a publication store over one
+// StateStore, as serve wires them.
+type candidateEnv struct {
+	st    state.StateStore
+	cands CandidateStore
+	pubs  *StateStoreStore
+}
+
+func newCandidateEnv(t *testing.T, driver string) candidateEnv {
 	t.Helper()
-	raw, err := stateinmem.New(config.StateConfig{})
+	var (
+		st  state.StateStore
+		err error
+	)
+	if driver == "sqlite" {
+		st, err = sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "candidates.sqlite")})
+	} else {
+		st, err = stateinmem.New(config.StateConfig{})
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = raw.Close(context.Background()) })
-	inmemDurable, err := NewStateStoreCandidateStore(raw, "rt")
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	cands, err := NewStateStoreCandidateStore(st, "rt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "candidates.sqlite")})
+	pubs, err := NewStateStore(st, "rt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sq.Close(context.Background()) })
-	sqliteDurable, err := NewStateStoreCandidateStore(sq, "rt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return map[string]CandidateStore{"memory": NewMemoryCandidateStore("rt"), "state-inmem": inmemDurable, "state-sqlite": sqliteDurable}
+	return candidateEnv{st: st, cands: cands, pubs: pubs}
+}
+
+func candidateEnvs(t *testing.T) map[string]candidateEnv {
+	return map[string]candidateEnv{"state-inmem": newCandidateEnv(t, "inmem"), "state-sqlite": newCandidateEnv(t, "sqlite")}
+}
+
+// adminCtx is a verified context holding the admin scope for caller.
+func adminCtx(t *testing.T, caller identity.Quadruple) context.Context {
+	return authorizedContext(t, caller.Identity, nil, auth.ScopeAdmin)
 }
 
 func submit(t *testing.T, s CandidateStore, user, key, name string) CandidateMetadata {
@@ -52,8 +75,9 @@ func submit(t *testing.T, s CandidateStore, user, key, name string) CandidateMet
 }
 
 func TestCandidateStore_Lifecycle(t *testing.T) {
-	for name, store := range candidateStores(t) {
+	for name, env := range candidateEnvs(t) {
 		t.Run(name, func(t *testing.T) {
+			store := env.cands
 			ctx := context.Background()
 			alice := publicationIdentity("tenant-a", "alice", "s-alice")
 			bob := publicationIdentity("tenant-a", "bob", "s-bob")
@@ -111,29 +135,26 @@ func TestCandidateStore_Lifecycle(t *testing.T) {
 				t.Fatalf("reject replay=%+v err=%v", again, err)
 			}
 
-			// Claim → finalize; stale generation and divergent claims conflict.
-			if _, err := store.Claim(ctx, alice, c.CandidateID, 7, AcceptClaim{Mode: AcceptModeNew}); !errors.Is(err, ErrConflict) {
-				t.Fatalf("stale claim err=%v", err)
+			// Accept: a stale generation conflicts; another tenant cannot see it.
+			if _, err := store.Accept(adminCtx(t, bob), bob, AcceptCandidateRequest{IdempotencyKey: "a0", CandidateID: c.CandidateID, ExpectedGeneration: 7, Mode: AcceptModeNew}); !errors.Is(err, ErrConflict) {
+				t.Fatalf("stale accept err=%v", err)
 			}
-			claimed, err := store.Claim(ctx, alice, c.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, DecisionNote: "ok"})
-			if err != nil || claimed.Claim == nil || claimed.Claim.Name != "triage" {
-				t.Fatalf("claim=%+v err=%v", claimed, err)
+			if _, err := store.Accept(adminCtx(t, other), other, AcceptCandidateRequest{IdempotencyKey: "a0", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew}); !errors.Is(err, ErrCandidateNotFound) {
+				t.Fatalf("cross-tenant accept err=%v", err)
 			}
-			if _, err := store.Claim(ctx, bob, c.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, Name: "other"}); !errors.Is(err, ErrConflict) {
-				t.Fatalf("divergent claim err=%v", err)
+			done, err := store.Accept(adminCtx(t, bob), bob, AcceptCandidateRequest{IdempotencyKey: "a1", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew, DecisionNote: "ok"})
+			if err != nil || done.Candidate.State != CandidateAccepted || done.Candidate.DecidedBy != "bob" || done.Candidate.DecisionNote != "ok" || done.Candidate.Generation != 2 {
+				t.Fatalf("accept=%+v err=%v", done, err)
 			}
-			if resumed, err := store.Claim(ctx, bob, c.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, Name: "triage", DecisionNote: "ok"}); err != nil || resumed.Claim == nil {
-				t.Fatalf("resume claim=%+v err=%v", resumed, err)
+			if done.Publication.Name != "triage" || done.Candidate.PublicationID != done.Publication.PublicationID || done.Candidate.RevisionID != done.Publication.RevisionID || done.Receipt.Operation != "publish" || done.Receipt.OperationID != "a1" {
+				t.Fatalf("accept result=%+v", done)
 			}
-			if _, err := store.Decide(ctx, alice, DecideCandidateRequest{IdempotencyKey: "r2", CandidateID: c.CandidateID, ExpectedGeneration: 1, Outcome: CandidateRejected}, true); !errors.Is(err, ErrConflict) {
-				t.Fatalf("reject while claimed err=%v", err)
+			// The publication is in the same tenant's catalog, not another's.
+			if body, _, err := env.pubs.Read(ctx, bob, ReadRequest{PublicationID: done.Publication.PublicationID}); err != nil || body.Steps[0] != "step for triage" || body.ContentHash != c.ContentHash {
+				t.Fatalf("published body=%+v err=%v", body, err)
 			}
-			done, err := store.FinalizeAccept(ctx, bob, c.CandidateID, AcceptResult{PublicationID: "pub-1", RevisionID: "rev-1", Receipt: Receipt{Operation: "publish"}})
-			if err != nil || done.State != CandidateAccepted || done.PublicationID != "pub-1" || done.DecidedBy != "bob" || done.DecisionNote != "ok" || done.Generation != 2 {
-				t.Fatalf("finalize=%+v err=%v", done, err)
-			}
-			if replay, err := store.Claim(ctx, alice, c.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, Name: "triage", DecisionNote: "ok"}); err != nil || replay.State != CandidateAccepted {
-				t.Fatalf("accepted replay=%+v err=%v", replay, err)
+			if foreign, _ := env.pubs.List(ctx, other); len(foreign) != 0 {
+				t.Fatalf("cross-tenant publications=%+v", foreign)
 			}
 			// After a decision the submitter may submit the same name again.
 			submit(t, store, "alice", "k3", "triage")
@@ -142,7 +163,7 @@ func TestCandidateStore_Lifecycle(t *testing.T) {
 }
 
 func TestCandidateStore_ValidatesInput(t *testing.T) {
-	store := NewMemoryCandidateStore("rt")
+	store := newCandidateEnv(t, "inmem").cands
 	ctx := context.Background()
 	id := publicationIdentity("tenant-a", "alice", "s")
 	long := make([]rune, maxCandidateNoteRunes+1)
@@ -160,52 +181,368 @@ func TestCandidateStore_ValidatesInput(t *testing.T) {
 			t.Errorf("case %d err=%v want invalid", i, err)
 		}
 	}
-	if _, err := store.Claim(ctx, id, "missing", 1, AcceptClaim{Mode: "bogus"}); !errors.Is(err, ErrInvalidRequest) {
-		t.Errorf("bad mode err=%v", err)
-	}
-	if _, err := store.Claim(ctx, id, "missing", 1, AcceptClaim{Mode: AcceptModeSuccessor, PublicationID: "p"}); !errors.Is(err, ErrInvalidRequest) {
-		t.Errorf("incomplete successor err=%v", err)
+	admin := adminCtx(t, id)
+	for i, req := range []AcceptCandidateRequest{
+		{IdempotencyKey: "k", CandidateID: "missing", ExpectedGeneration: 1, Mode: "bogus"},
+		{IdempotencyKey: "k", CandidateID: "missing", ExpectedGeneration: 1, Mode: AcceptModeSuccessor, PublicationID: "p"},
+		{IdempotencyKey: "k", CandidateID: "missing", ExpectedGeneration: 1, Mode: AcceptModeNew, PublicationID: "p"},
+		{IdempotencyKey: "", CandidateID: "missing", ExpectedGeneration: 1, Mode: AcceptModeNew},
+		{IdempotencyKey: "k", CandidateID: "missing", ExpectedGeneration: 1, Mode: AcceptModeNew, DecisionNote: string(long)},
+	} {
+		if _, err := store.Accept(admin, id, req); !errors.Is(err, ErrInvalidRequest) {
+			t.Errorf("accept case %d err=%v want invalid", i, err)
+		}
 	}
 	if _, err := store.List(ctx, id, ListCandidatesRequest{State: "nope"}); !errors.Is(err, ErrInvalidRequest) {
 		t.Errorf("bad state err=%v", err)
 	}
 }
 
-func TestCandidateStore_ConcurrentSubmitsAndClaims(t *testing.T) {
-	for name, store := range candidateStores(t) {
+// Accept writes the organization catalog directly, so it applies the same
+// verified-admin gate as AuthorizedStore.
+func TestCandidateAccept_RequiresVerifiedAdmin(t *testing.T) {
+	env := newCandidateEnv(t, "inmem")
+	c := submit(t, env.cands, "alice", "k", "triage")
+	admin := publicationIdentity("tenant-a", "admin", "s-admin")
+	req := AcceptCandidateRequest{IdempotencyKey: "a", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew}
+	if _, err := env.cands.Accept(context.Background(), admin, req); !errors.Is(err, ErrVerifiedIdentityRequired) {
+		t.Fatalf("unverified accept err=%v", err)
+	}
+	if _, err := env.cands.Accept(authorizedContext(t, admin.Identity, nil, auth.ScopeAgentConfigUser), admin, req); !errors.Is(err, ErrAdminRequired) {
+		t.Fatalf("non-admin accept err=%v", err)
+	}
+	other := publicationIdentity("tenant-a", "mallory", "s-m")
+	if _, err := env.cands.Accept(adminCtx(t, other), admin, req); !errors.Is(err, ErrVerifiedIdentityRequired) {
+		t.Fatalf("mismatched caller accept err=%v", err)
+	}
+	if pubs, _ := env.pubs.List(context.Background(), admin); len(pubs) != 0 {
+		t.Fatalf("denied accept published %+v", pubs)
+	}
+	if got, _ := env.cands.Read(context.Background(), admin, c.CandidateID, true); got.State != CandidatePending || got.Generation != 1 {
+		t.Fatalf("denied accept changed the candidate: %+v", got)
+	}
+}
+
+func TestCandidateAccept_SuccessorAndFailuresWriteNothing(t *testing.T) {
+	for name, env := range candidateEnvs(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
+			admin := publicationIdentity("tenant-a", "admin", "s-admin")
+			actx := adminCtx(t, admin)
+			pub, _, err := env.pubs.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p", Name: "triage", Skill: publicationSkill("triage", "v0"), ExpectedAbsent: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := submit(t, env.cands, "alice", "k", "my-triage")
+			// Name clash, stale predicates and a missing target all conflict
+			// without writing anything.
+			if _, err := env.cands.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "a1", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew, Name: "triage"}); !errors.Is(err, ErrConflict) {
+				t.Fatalf("name clash err=%v", err)
+			}
+			if _, err := env.cands.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "a2", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeSuccessor, PublicationID: pub.PublicationID, ExpectedPublicationGeneration: 9, ExpectedPublicationContentHash: pub.ContentHash}); !errors.Is(err, ErrConflict) {
+				t.Fatalf("stale successor err=%v", err)
+			}
+			if _, err := env.cands.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "a3", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeSuccessor, PublicationID: "pub_missing", ExpectedPublicationGeneration: 1, ExpectedPublicationContentHash: "h"}); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("missing target err=%v", err)
+			}
+			if got, _ := env.pubs.Get(ctx, admin, pub.PublicationID); got.Generation != 1 {
+				t.Fatalf("failed accepts moved the publication: %+v", got)
+			}
+			if got, _ := env.cands.Read(ctx, admin, c.CandidateID, true); got.State != CandidatePending || got.Generation != 1 {
+				t.Fatalf("failed accepts moved the candidate: %+v", got)
+			}
+			// The successor lands under the publication's own name.
+			res, err := env.cands.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "a4", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeSuccessor, PublicationID: pub.PublicationID, ExpectedPublicationGeneration: 1, ExpectedPublicationContentHash: pub.ContentHash})
+			if err != nil || res.Publication.Generation != 2 || res.Publication.Name != "triage" || res.Receipt.Operation != "publish_successor" || res.Candidate.PriorContentHash != pub.ContentHash {
+				t.Fatalf("successor accept=%+v err=%v", res, err)
+			}
+			if body, _, err := env.pubs.Read(ctx, admin, ReadRequest{PublicationID: pub.PublicationID}); err != nil || body.Steps[0] != "step for my-triage" {
+				t.Fatalf("successor body=%+v err=%v", body, err)
+			}
+		})
+	}
+}
+
+// An exact retry returns the original result without publishing again; a
+// divergent reuse of the key is an idempotency conflict and a fresh key on a
+// decided candidate is an ordinary conflict.
+func TestCandidateAccept_IdempotentReplay(t *testing.T) {
+	for name, env := range candidateEnvs(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			admin := publicationIdentity("tenant-a", "admin", "s-admin")
+			actx := adminCtx(t, admin)
+			c := submit(t, env.cands, "alice", "k", "triage")
+			req := AcceptCandidateRequest{IdempotencyKey: "acc", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew, DecisionNote: "ok"}
+			first, err := env.cands.Accept(actx, admin, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The publication advances afterwards; the replay still answers
+			// the revision this accept produced.
+			if _, _, err := env.pubs.PublishSuccessor(ctx, admin, SuccessorRequest{IdempotencyKey: "s", PublicationID: first.Publication.PublicationID, ExpectedGeneration: 1, ExpectedContentHash: first.Publication.ContentHash, Skill: publicationSkill("triage", "v2")}); err != nil {
+				t.Fatal(err)
+			}
+			replay, err := env.cands.Accept(actx, admin, req)
+			if err != nil || replay.Publication != first.Publication || replay.Receipt != first.Receipt || replay.Candidate != first.Candidate {
+				t.Fatalf("replay=%+v err=%v want %+v", replay, err, first)
+			}
+			divergent := req
+			divergent.Name = "other"
+			if _, err := env.cands.Accept(actx, admin, divergent); !errors.Is(err, ErrIdempotencyConflict) {
+				t.Fatalf("divergent replay err=%v", err)
+			}
+			fresh := req
+			fresh.IdempotencyKey = "acc-2"
+			if _, err := env.cands.Accept(actx, admin, fresh); !errors.Is(err, ErrConflict) {
+				t.Fatalf("fresh key on accepted candidate err=%v", err)
+			}
+			// A key used for another operation never adopts a publication.
+			if _, err := env.cands.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "k", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew}); err == nil {
+				t.Fatal("submit key reused as an accept key succeeded")
+			}
+			if pubs, _ := env.pubs.List(ctx, admin); len(pubs) != 1 {
+				t.Fatalf("publications=%d want 1", len(pubs))
+			}
+		})
+	}
+}
+
+// Concurrent decisions on one candidate through two store instances over one
+// StateStore (so no in-process mutex serializes them): exactly one wins, and
+// the end state is consistent — accepted with exactly one publication, or
+// rejected with none. Never both.
+func TestCandidateAccept_ConcurrentAcceptVersusReject(t *testing.T) {
+	for name, env := range candidateEnvs(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			second, err := NewStateStoreCandidateStore(env.st, "rt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			admin := publicationIdentity("tenant-a", "admin", "s-admin")
+			actx := adminCtx(t, admin)
+			accepted, rejected := 0, 0
+			for i := range 20 {
+				skill := fmt.Sprintf("race-%d", i)
+				c := submit(t, env.cands, "alice", "k-"+skill, skill)
+				var acceptErr, rejectErr error
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					_, acceptErr = env.cands.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "a-" + skill, CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew})
+				}()
+				go func() {
+					defer wg.Done()
+					_, rejectErr = second.Decide(ctx, admin, DecideCandidateRequest{IdempotencyKey: "r-" + skill, CandidateID: c.CandidateID, ExpectedGeneration: 1, Outcome: CandidateRejected}, true)
+				}()
+				wg.Wait()
+				if (acceptErr == nil) == (rejectErr == nil) {
+					t.Fatalf("round %d: accept err=%v reject err=%v, want exactly one winner", i, acceptErr, rejectErr)
+				}
+				for _, err := range []error{acceptErr, rejectErr} {
+					if err != nil && !errors.Is(err, ErrConflict) {
+						t.Fatalf("round %d: loser err=%v want conflict", i, err)
+					}
+				}
+				got, _ := env.cands.Read(ctx, admin, c.CandidateID, true)
+				published := 0
+				pubs, _ := env.pubs.List(ctx, admin)
+				for _, p := range pubs {
+					if p.Name == skill {
+						published++
+					}
+				}
+				switch {
+				case acceptErr == nil && got.State == CandidateAccepted && published == 1:
+					accepted++
+				case rejectErr == nil && got.State == CandidateRejected && published == 0:
+					rejected++
+				default:
+					t.Fatalf("round %d: state=%s publications=%d", i, got.State, published)
+				}
+			}
+			t.Logf("accepted=%d rejected=%d", accepted, rejected)
+		})
+	}
+}
+
+// hookedState runs before once, ahead of the first conditional write of the
+// hooked kind, so another decision deterministically commits between this
+// store's load and its save.
+type hookedState struct {
+	state.StateStore
+	batch  bool // hook SaveBatchIf (an accept) or SaveIf (a reject)
+	before func()
+	once   sync.Once
+}
+
+func (h *hookedState) SaveBatchIf(ctx context.Context, expect []state.SlotExpectation, writes []state.StateRecord) error {
+	if h.batch {
+		h.once.Do(h.before)
+	}
+	return h.StateStore.SaveBatchIf(ctx, expect, writes)
+}
+
+func (h *hookedState) SaveIf(ctx context.Context, expect []state.SlotExpectation, next state.StateRecord) error {
+	if !h.batch && next.Kind == candidateKind {
+		h.once.Do(h.before)
+	}
+	return h.StateStore.SaveIf(ctx, expect, next)
+}
+
+// The interleavings the free-running race may not hit, forced: a reject
+// that commits after an accept loaded wins and the accept publishes nothing;
+// an accept that commits after a reject loaded wins and the reject conflicts.
+func TestCandidateAccept_InterleavedDecisionsExactlyOneWins(t *testing.T) {
+	for name, env := range candidateEnvs(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			admin := publicationIdentity("tenant-a", "admin", "s-admin")
+			actx := adminCtx(t, admin)
+			plain, err := NewStateStoreCandidateStore(env.st, "rt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			hooked := func(batch bool, before func()) CandidateStore {
+				s, err := NewStateStoreCandidateStore(&hookedState{StateStore: env.st, batch: batch, before: before}, "rt")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return s
+			}
+			countPubs := func(skill string) int {
+				pubs, _ := env.pubs.List(ctx, admin)
+				n := 0
+				for _, p := range pubs {
+					if p.Name == skill {
+						n++
+					}
+				}
+				return n
+			}
+
+			c := submit(t, plain, "alice", "k1", "reject-wins")
+			var rejectErr error
+			acceptor := hooked(true, func() {
+				_, rejectErr = plain.Decide(ctx, admin, DecideCandidateRequest{IdempotencyKey: "r1", CandidateID: c.CandidateID, ExpectedGeneration: 1, Outcome: CandidateRejected}, true)
+			})
+			if _, err := acceptor.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "a1", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew}); !errors.Is(err, ErrConflict) || rejectErr != nil {
+				t.Fatalf("accept err=%v reject err=%v, want conflict/nil", err, rejectErr)
+			}
+			if got, _ := plain.Read(ctx, admin, c.CandidateID, true); got.State != CandidateRejected || countPubs("reject-wins") != 0 {
+				t.Fatalf("reject-wins state=%s publications=%d", got.State, countPubs("reject-wins"))
+			}
+
+			c2 := submit(t, plain, "alice", "k2", "accept-wins")
+			var acceptErr error
+			rejecter := hooked(false, func() {
+				_, acceptErr = plain.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "a2", CandidateID: c2.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew})
+			})
+			if _, err := rejecter.Decide(ctx, admin, DecideCandidateRequest{IdempotencyKey: "r2", CandidateID: c2.CandidateID, ExpectedGeneration: 1, Outcome: CandidateRejected}, true); !errors.Is(err, ErrConflict) || acceptErr != nil {
+				t.Fatalf("reject err=%v accept err=%v, want conflict/nil", err, acceptErr)
+			}
+			if got, _ := plain.Read(ctx, admin, c2.CandidateID, true); got.State != CandidateAccepted || countPubs("accept-wins") != 1 {
+				t.Fatalf("accept-wins state=%s publications=%d", got.State, countPubs("accept-wins"))
+			}
+		})
+	}
+}
+
+// Of N concurrent accepts with distinct targets, through two store instances,
+// exactly one wins and exactly one publication exists.
+func TestCandidateAccept_ConcurrentAcceptsPublishOnce(t *testing.T) {
+	for name, env := range candidateEnvs(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			second, err := NewStateStoreCandidateStore(env.st, "rt")
+			if err != nil {
+				t.Fatal(err)
+			}
 			var wg sync.WaitGroup
-			for i := range 100 {
+			for i := range 40 {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
 					user := fmt.Sprintf("u%d", i%10)
-					_, _ = store.Submit(ctx, publicationIdentity("tenant-a", user, "s"), SubmitCandidateRequest{IdempotencyKey: fmt.Sprintf("k%d", i), AgentID: "a", Skill: publicationSkill(fmt.Sprintf("s%d", i), "x")})
+					_, _ = env.cands.Submit(ctx, publicationIdentity("tenant-a", user, "s"), SubmitCandidateRequest{IdempotencyKey: fmt.Sprintf("k%d", i), AgentID: "a", Skill: publicationSkill(fmt.Sprintf("s%d", i), "x")})
 				}(i)
 			}
 			wg.Wait()
-			all, err := store.List(ctx, publicationIdentity("tenant-a", "admin", "s"), ListCandidatesRequest{All: true})
-			if err != nil || len(all) != 100 {
+			admin := publicationIdentity("tenant-a", "admin", "s")
+			all, err := env.cands.List(ctx, admin, ListCandidatesRequest{All: true})
+			if err != nil || len(all) != 40 {
 				t.Fatalf("listed %d err=%v", len(all), err)
 			}
-			// Exactly one of N concurrent distinct claims wins.
 			target := all[0]
+			actx := adminCtx(t, admin)
 			var wins atomic.Int32
 			for i := range 20 {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
-					if _, err := store.Claim(ctx, publicationIdentity("tenant-a", "admin", "s"), target.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, Name: fmt.Sprintf("n%d", i)}); err == nil {
+					store := env.cands
+					if i%2 == 1 {
+						store = second
+					}
+					if _, err := store.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: fmt.Sprintf("a%d", i), CandidateID: target.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew, Name: fmt.Sprintf("n%d", i)}); err == nil {
 						wins.Add(1)
+					} else if !errors.Is(err, ErrConflict) {
+						t.Errorf("loser err=%v", err)
 					}
 				}(i)
 			}
 			wg.Wait()
-			if wins.Load() != 1 {
-				t.Fatalf("claim winners=%d want 1", wins.Load())
+			pubs, _ := env.pubs.List(ctx, admin)
+			if wins.Load() != 1 || len(pubs) != 1 {
+				t.Fatalf("winners=%d publications=%d want 1/1", wins.Load(), len(pubs))
 			}
 		})
+	}
+}
+
+// Records written by releases before 1.55 decode: a candidate's claim and
+// claim_seq and the publication aggregate's candidate_fence_tokens are
+// ignored, so a pending candidate an older runtime had claimed can still be
+// accepted (or rejected), and the next write drops the old fields.
+func TestCandidateAccept_DecodesPreAtomicRecords(t *testing.T) {
+	env := newCandidateEnv(t, "sqlite")
+	ctx := context.Background()
+	admin := publicationIdentity("tenant-a", "admin", "s-admin")
+	sk := publicationSkill("triage", "v1")
+	sk.ContentHash = skills.CanonicalContentHash(sk)
+	legacyCand := map[string]any{
+		"candidates": []map[string]any{{
+			"candidate_id": "cand_legacy", "name": "triage", "submitter_user": "alice", "agent_id": "agent-a",
+			"content_hash": sk.ContentHash, "state": "pending", "generation": 1, "runtime_id": "rt", "skill": sk,
+			"claim":     map[string]any{"mode": "new", "name": "triage", "claimed_by": "admin", "claimed_at": "2026-11-13T10:00:00Z", "seq": 3},
+			"claim_seq": 3,
+		}},
+		"seq": 1,
+	}
+	legacyPubs := map[string]any{"publications": []Publication{}, "candidate_fence_tokens": map[string]any{"cand_legacy": map[string]uint64{"live": 3}}}
+	for kind, v := range map[string]any{candidateKind: legacyCand, publicationOrgKind: legacyPubs} {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := env.st.SaveIf(ctx, []state.SlotExpectation{{Identity: orgIdentity("tenant-a"), Kind: kind}}, state.StateRecord{ID: state.NewEventID(), Identity: orgIdentity("tenant-a"), Kind: kind, Bytes: b}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := env.cands.Accept(adminCtx(t, admin), admin, AcceptCandidateRequest{IdempotencyKey: "a", CandidateID: "cand_legacy", ExpectedGeneration: 1, Mode: AcceptModeNew})
+	if err != nil || res.Candidate.State != CandidateAccepted {
+		t.Fatalf("accept of a legacy-claimed candidate=%+v err=%v", res, err)
+	}
+	for _, kind := range []string{candidateKind, publicationOrgKind} {
+		r, err := env.st.Load(ctx, orgIdentity("tenant-a"), kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if raw := string(r.Bytes); strings.Contains(raw, `"claim"`) || strings.Contains(raw, "claim_seq") || strings.Contains(raw, "candidate_fence_tokens") {
+			t.Fatalf("%s still carries pre-atomic fields: %s", kind, raw)
+		}
 	}
 }
 
@@ -246,51 +583,11 @@ func TestStore_ReadVisibility(t *testing.T) {
 	}
 }
 
-func TestCandidateClaimReleaseAndOutstanding(t *testing.T) {
-	for name, store := range candidateStores(t) {
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			admin := publicationIdentity("tenant-a", "admin", "s-admin")
-			meta := submit(t, store, "alice", "k1", "triage")
-			first, err := store.Claim(ctx, admin, meta.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew})
-			if err != nil || first.Claim == nil || first.Claim.ClaimedAt.IsZero() || first.Claim.Seq != 1 {
-				t.Fatalf("claim=%+v err=%v", first, err)
-			}
-			// A different target while the claim is outstanding is refused as such.
-			if _, err := store.Claim(ctx, admin, meta.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, Name: "other"}); !errors.Is(err, ErrClaimOutstanding) || !errors.Is(err, ErrConflict) {
-				t.Fatalf("outstanding err=%v", err)
-			}
-			// The same target resumes the original claim even with a new note.
-			again, err := store.Claim(ctx, admin, meta.CandidateID, 1, AcceptClaim{Mode: AcceptModeNew, DecisionNote: "x"})
-			if err != nil || again.Claim.Seq != first.Claim.Seq || again.Claim.DecisionNote != "" {
-				t.Fatalf("resume=%+v err=%v", again.Claim, err)
-			}
-			// Releasing another claim time is a no-op; releasing the recorded one clears it.
-			if err := store.ReleaseClaim(ctx, admin, meta.CandidateID, first.Claim.Seq+1); err != nil {
-				t.Fatal(err)
-			}
-			if got, _ := store.Read(ctx, admin, meta.CandidateID, true); got.Claim == nil {
-				t.Fatal("mismatched release cleared the claim")
-			}
-			if err := store.ReleaseClaim(ctx, admin, meta.CandidateID, first.Claim.Seq); err != nil {
-				t.Fatal(err)
-			}
-			got, _ := store.Read(ctx, admin, meta.CandidateID, true)
-			if got.Claim != nil || got.State != CandidatePending || got.Generation != 1 {
-				t.Fatalf("released=%+v", got)
-			}
-			if _, err := store.Decide(ctx, admin, DecideCandidateRequest{IdempotencyKey: "r", CandidateID: meta.CandidateID, ExpectedGeneration: 1, Outcome: CandidateRejected}, true); err != nil {
-				t.Fatalf("reject after release: %v", err)
-			}
-		})
-	}
-}
-
 // Decided candidates never count toward the tenant quota, and only one
 // person's open requests can't fill it.
 func TestCandidateQuotaCountsOnlyPendingAndPrunesHistory(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryCandidateStore("rt")
+	store := newCandidateEnv(t, "inmem").cands
 	alice := publicationIdentity("tenant-a", "alice", "s-alice")
 	seen := map[string]bool{}
 	for i := range maxRetainedTerminal + 50 {
@@ -321,187 +618,6 @@ func TestCandidateQuotaCountsOnlyPendingAndPrunesHistory(t *testing.T) {
 		t.Fatalf("per-user cap err=%v", err)
 	}
 	submit(t, store, "dave", "k", "notes")
-}
-
-// A publish whose acceptance was revoked (its claim resolved as stale) can
-// never land, even if it reaches the store after a newer acceptance.
-func TestCandidateFenceRejectsARevokedPublish(t *testing.T) {
-	raw, err := stateinmem.New(config.StateConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = raw.Close(context.Background()) })
-	durable, err := NewStateStore(raw, "rt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, store := range map[string]Store{"memory": NewMemoryStore("rt"), "state": durable} {
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			admin := publicationIdentity("tenant-a", "admin", "s-admin")
-			const t1, t2 = uint64(1), uint64(2)
-			if err := store.FenceCandidate(ctx, admin, "cand-1", t1); err != nil {
-				t.Fatalf("first fence err=%v", err)
-			}
-			// A resolution that saw an older acceptance never revokes a newer one.
-			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", 0); !errors.Is(err, ErrConflict) {
-				t.Fatalf("resolve of an older acceptance err=%v", err)
-			}
-			res, err := store.ResolveCandidate(ctx, admin, "cand-1", t1)
-			if err != nil || res.Applied {
-				t.Fatalf("resolve=%+v err=%v", res, err)
-			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", t2); err != nil {
-				t.Fatalf("new fence after revoke err=%v", err)
-			}
-			sk := publicationSkill("triage", "v1")
-			sk.Extra = map[string]any{CandidateMarkerKey: "cand-1"}
-			// The old acceptance's publish arrives late: refused at commit.
-			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "old", Name: "triage", Skill: sk, ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: t1}}); !errors.Is(err, ErrCandidateFenced) {
-				t.Fatalf("revoked publish err=%v", err)
-			}
-			if pubs, _ := store.List(ctx, admin); len(pubs) != 0 {
-				t.Fatalf("revoked publish landed: %+v", pubs)
-			}
-			// The live acceptance publishes once; a repeat by another caller is
-			// the same revision, never a second publication.
-			first, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "new", Name: "triage-2", Skill: withName(sk, "triage-2"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: t2}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			other := publicationIdentity("tenant-a", "admin2", "s-admin2")
-			again, _, err := store.Publish(ctx, other, PublishRequest{IdempotencyKey: "new", Name: "triage-2", Skill: withName(sk, "triage-2"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: t2}})
-			if err != nil || again.PublicationID != first.PublicationID {
-				t.Fatalf("repeat=%+v err=%v", again, err)
-			}
-			// Once applied, resolution reports it and never revokes.
-			res, err = store.ResolveCandidate(ctx, admin, "cand-1", t2)
-			if err != nil || !res.Applied || res.Publication.PublicationID != first.PublicationID {
-				t.Fatalf("applied resolve=%+v err=%v", res, err)
-			}
-			if pubs, _ := store.List(ctx, admin); len(pubs) != 1 {
-				t.Fatalf("publications=%+v", pubs)
-			}
-		})
-	}
-}
-
-func withName(sk skills.Skill, name string) skills.Skill {
-	sk.Name = name
-	return sk
-}
-
-// An ordinary publish cannot plant the candidate marker (which would make a
-// pending candidate adopt another body), and a candidate publish may carry
-// only its own marker.
-func TestPublishRefusesReservedMarker(t *testing.T) {
-	raw, err := stateinmem.New(config.StateConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = raw.Close(context.Background()) })
-	durable, err := NewStateStore(raw, "rt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, store := range map[string]Store{"memory": NewMemoryStore("rt"), "state": durable} {
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			admin := publicationIdentity("tenant-a", "admin", "s-admin")
-			planted := publicationSkill("triage", "v1")
-			planted.Extra = map[string]any{CandidateMarkerKey: "cand-1"}
-			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p", Name: "triage", Skill: planted, ExpectedAbsent: true}); !errors.Is(err, ErrInvalidRequest) {
-				t.Fatalf("planted marker on publish err=%v", err)
-			}
-			// Only the marker is reserved: other underscore keys earlier
-			// releases accepted keep working.
-			other := publicationSkill("triage", "v1")
-			other.Extra = map[string]any{"_publication.source": "existing metadata"}
-			clean, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p3", Name: "triage", Skill: other, ExpectedAbsent: true})
-			if err != nil {
-				t.Fatalf("legacy underscore key on publish: %v", err)
-			}
-			if _, _, err := store.PublishSuccessor(ctx, admin, SuccessorRequest{IdempotencyKey: "s", PublicationID: clean.PublicationID, ExpectedGeneration: clean.Generation, ExpectedContentHash: clean.ContentHash, Skill: planted}); !errors.Is(err, ErrInvalidRequest) {
-				t.Fatalf("planted marker on successor err=%v", err)
-			}
-			// A candidate publish naming another candidate is refused too.
-			const tok = uint64(1)
-			if err := store.FenceCandidate(ctx, admin, "cand-2", tok); err != nil {
-				t.Fatal(err)
-			}
-			if _, _, err := store.Publish(ctx, admin, PublishRequest{IdempotencyKey: "c", Name: "other", Skill: withName(planted, "other"), ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-2", Token: tok}}); !errors.Is(err, ErrInvalidRequest) {
-				t.Fatalf("foreign marker on candidate publish err=%v", err)
-			}
-			// Nothing planted means nothing to adopt.
-			if res, err := store.ResolveCandidate(ctx, admin, "cand-1", 1); err != nil || res.Applied {
-				t.Fatalf("resolve=%+v err=%v", res, err)
-			}
-		})
-	}
-}
-
-// Paused-accept regression at the store: a token is the claim sequence; a
-// revoked token is permanent, an older token never installs over a newer
-// one, and resolution revokes only what the caller saw (memory and durable).
-func TestCandidateFenceRevokedTokenIsPermanent(t *testing.T) {
-	for name, store := range fenceStores(t) {
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			admin := publicationIdentity("tenant-a", "admin", "s-admin")
-			if err := store.FenceCandidate(ctx, admin, "cand-1", 1); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", 1); err != nil {
-				t.Fatalf("resume err=%v", err)
-			}
-			// A rejection resolves claim 1 before the paused accept resumes.
-			if res, err := store.ResolveCandidate(ctx, admin, "cand-1", 1); err != nil || res.Applied {
-				t.Fatalf("resolve=%+v err=%v", res, err)
-			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", 1); !errors.Is(err, ErrCandidateFenced) {
-				t.Fatalf("revoked token resumed: %v", err)
-			}
-			// Resolving a claim that never fenced revokes its token too.
-			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", 2); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", 2); !errors.Is(err, ErrCandidateFenced) {
-				t.Fatalf("revoked unfenced token installed: %v", err)
-			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", 3); err != nil {
-				t.Fatalf("newer token: %v", err)
-			}
-			if err := store.FenceCandidate(ctx, admin, "cand-1", 2); !errors.Is(err, ErrCandidateFenced) {
-				t.Fatalf("older token after newer: %v", err)
-			}
-			if _, err := store.ResolveCandidate(ctx, admin, "cand-1", 2); !errors.Is(err, ErrConflict) {
-				t.Fatalf("stale resolution revoked a newer fence: %v", err)
-			}
-		})
-	}
-}
-
-func fenceStores(t *testing.T) map[string]Store {
-	t.Helper()
-	raw, err := stateinmem.New(config.StateConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = raw.Close(context.Background()) })
-	durable, err := NewStateStore(raw, "rt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "fences.sqlite")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sq.Close(context.Background()) })
-	sqlite, err := NewStateStore(sq, "rt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return map[string]Store{"memory": NewMemoryStore("rt"), "state-inmem": durable, "state-sqlite": sqlite}
 }
 
 // Upgrade: a publication aggregate persisted by an earlier release (no fence
@@ -543,81 +659,18 @@ func TestPublicationUpgradeFromLegacyRecord(t *testing.T) {
 	if err != nil || succ.Generation != 2 {
 		t.Fatalf("successor on legacy record=%+v err=%v", succ, err)
 	}
-	// A candidate whose snapshot carries the legacy key publishes too.
-	const tok = uint64(1)
-	if err := store.FenceCandidate(ctx, admin, "cand-1", tok); err != nil {
+	// A candidate whose snapshot carries the legacy key is accepted onto it.
+	cands, err := NewStateStoreCandidateStore(sq, "rt")
+	if err != nil {
 		t.Fatal(err)
 	}
-	cand := publicationSkill("weekly", "v3")
-	cand.Extra = map[string]any{"_publication.source": "existing metadata", CandidateMarkerKey: "cand-1"}
-	if _, _, err := store.PublishSuccessor(ctx, admin, SuccessorRequest{IdempotencyKey: "c", PublicationID: succ.PublicationID, ExpectedGeneration: succ.Generation, ExpectedContentHash: succ.ContentHash, Skill: cand, Candidate: &CandidateFence{CandidateID: "cand-1", Token: tok}}); err != nil {
+	cand := publicationSkill("my-weekly", "v3")
+	cand.Extra = map[string]any{"_publication.source": "existing metadata"}
+	c, err := cands.Submit(ctx, publicationIdentity("tenant-a", "alice", "s-alice"), SubmitCandidateRequest{IdempotencyKey: "k", AgentID: "agent-a", Skill: cand})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cands.Accept(adminCtx(t, admin), admin, AcceptCandidateRequest{IdempotencyKey: "a", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeSuccessor, PublicationID: succ.PublicationID, ExpectedPublicationGeneration: succ.Generation, ExpectedPublicationContentHash: succ.ContentHash}); err != nil {
 		t.Fatalf("candidate successor with legacy key: %v", err)
-	}
-}
-
-// Fences survive a SQLite reopen mid-claim: the resume presents its exact
-// integer token and resolution still revokes it.
-func TestCandidateFenceSurvivesSQLiteReopen(t *testing.T) {
-	ctx := context.Background()
-	dsn := filepath.Join(t.TempDir(), "reopen.sqlite")
-	admin := publicationIdentity("tenant-a", "admin", "s-admin")
-	open := func() (*StateStoreStore, func()) {
-		sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
-		if err != nil {
-			t.Fatal(err)
-		}
-		st, err := NewStateStore(sq, "rt")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return st, func() { _ = sq.Close(ctx) }
-	}
-	first, closeFirst := open()
-	const tok = uint64(1)
-	if err := first.FenceCandidate(ctx, admin, "cand-1", tok); err != nil {
-		t.Fatal(err)
-	}
-	closeFirst()
-	second, closeSecond := open()
-	defer closeSecond()
-	if err := second.FenceCandidate(ctx, admin, "cand-1", tok); err != nil {
-		t.Fatalf("resume after reopen err=%v", err)
-	}
-	sk := publicationSkill("triage", "v1")
-	sk.Extra = map[string]any{CandidateMarkerKey: "cand-1"}
-	if _, _, err := second.Publish(ctx, admin, PublishRequest{IdempotencyKey: "p", Name: "triage", Skill: sk, ExpectedAbsent: true, Candidate: &CandidateFence{CandidateID: "cand-1", Token: tok}}); err != nil {
-		t.Fatalf("publish after reopen: %v", err)
-	}
-	if res, err := second.ResolveCandidate(ctx, admin, "cand-1", tok); err != nil || !res.Applied {
-		t.Fatalf("resolve after reopen=%+v err=%v", res, err)
-	}
-}
-
-// An interim build's string fence is legacy: ignored, so the candidate is
-// unfenced — revoked and resolvable — and a new acceptance fences normally.
-func TestCandidateFenceLegacyStringFenceIsResolvable(t *testing.T) {
-	sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "legacy-fence.sqlite")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sq.Close(context.Background()) })
-	ctx := context.Background()
-	admin := publicationIdentity("tenant-a", "admin", "s-admin")
-	b, err := json.Marshal(map[string]any{"publications": []Publication{}, "candidate_fences": map[string]string{"cand-1": "2026-11-13T10:00:00.1Z"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sq.SaveIf(ctx, []state.SlotExpectation{{Identity: orgIdentity("tenant-a"), Kind: publicationOrgKind}}, state.StateRecord{ID: state.NewEventID(), Identity: orgIdentity("tenant-a"), Kind: publicationOrgKind, Bytes: b}); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStateStore(sq, "rt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res, err := store.ResolveCandidate(ctx, admin, "cand-1", 1); err != nil || res.Applied {
-		t.Fatalf("legacy resolve=%+v err=%v", res, err)
-	}
-	if err := store.FenceCandidate(ctx, admin, "cand-1", 2); err != nil {
-		t.Fatalf("fence after legacy err=%v", err)
 	}
 }

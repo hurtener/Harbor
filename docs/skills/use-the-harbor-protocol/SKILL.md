@@ -186,9 +186,11 @@ own; `.read` returns the frozen body to an admin or the submitter (otherwise
 `.accept` with `mode` `new` (optional `name`) or `successor` (`publication_id`
 plus the publication's expected generation and content hash), or `.reject` with
 a `decision_note`; both take the candidate's `expected_generation`. Acceptance
-goes through the ordinary publication store, records the resulting publication,
-revision and replaced content hash on the candidate, and is safe to retry: a
-retry, by the same or another admin, never publishes twice.
+applies the ordinary publication invariants and writes the publication and the
+accepted candidate (resulting publication, revision and replaced content hash)
+in one atomic step (D-512). An exact retry with the same `idempotency_key`
+returns the original result; a concurrent or later decision on the same
+candidate gets `skill_publication_conflict`. Nothing ever publishes twice.
 
 The admin-scoped `agent_config.agent_packs.list|upsert|remove|propose|commit`
 methods manage a per-agent skill pack. Direct writes use the dedicated verbs;

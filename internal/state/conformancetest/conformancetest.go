@@ -116,6 +116,22 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil || got.ID != a.ID {
 			t.Fatalf("partial write after failed batch = %+v, %v", got, err)
 		}
+		// One present and one absent slot commit together (a first write of
+		// one aggregate beside an update of another).
+		c := state.StateRecord{ID: "01HABXXX00000000BE", Identity: a.Identity, Kind: "batch.c", Bytes: []byte("c")}
+		mixed := []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}, {Identity: c.Identity, Kind: c.Kind}}
+		if err := s.SaveBatchIf(ctx, mixed, []state.StateRecord{nextA, c}); err != nil {
+			t.Fatalf("mixed present/absent batch: %v", err)
+		}
+		for _, rec := range []state.StateRecord{nextA, c} {
+			if got, err := s.Load(ctx, rec.Identity, rec.Kind); err != nil || got.ID != rec.ID {
+				t.Fatalf("Load(%s) after mixed batch = %+v, %v", rec.Kind, got, err)
+			}
+		}
+		if err := s.SaveBatchIf(ctx, mixed, []state.StateRecord{a, c}); !errors.Is(err, state.ErrConditionFailed) {
+			t.Fatalf("replayed mixed batch = %v, want ErrConditionFailed", err)
+		}
+		a = nextA
 		duplicate := []state.SlotExpectation{{Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}, {Identity: a.Identity, Kind: a.Kind, ExpectedEventID: a.ID}}
 		if err := s.SaveBatchIf(ctx, duplicate, []state.StateRecord{nextA}); !errors.Is(err, state.ErrInvalidRecord) {
 			t.Fatalf("duplicate expectations validation = %v", err)
