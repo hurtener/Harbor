@@ -962,7 +962,7 @@ type durableAggregate struct {
 	Operations   map[string]operation `json:"operations,omitempty"`
 	// Releases before 1.55 also wrote candidate acceptance fences
 	// (candidate_fence_tokens); decoding ignores them and the next write
-	// drops them (D-512).
+	// drops them.
 }
 type durableReference struct {
 	Reference  Reference            `json:"reference"`

@@ -12,7 +12,7 @@ package publication
 // the publication store applies, so every publication invariant still
 // applies), or rejects it; the submitter may withdraw a pending one.
 //
-// Acceptance is one atomic step (D-512). The candidate and publication
+// Acceptance is one atomic step. The candidate and publication
 // aggregates are both slots of the tenant's organization identity in one
 // StateStore, so Accept loads both, applies the publish or successor mutation
 // and the accepted transition, and writes both in one SaveBatchIf. A

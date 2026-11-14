@@ -368,6 +368,88 @@ func TestCandidateAccept_ConcurrentAcceptVersusReject(t *testing.T) {
 	}
 }
 
+// hookedState runs before once, ahead of the first conditional write of the
+// hooked kind, so another decision deterministically commits between this
+// store's load and its save.
+type hookedState struct {
+	state.StateStore
+	batch  bool // hook SaveBatchIf (an accept) or SaveIf (a reject)
+	before func()
+	once   sync.Once
+}
+
+func (h *hookedState) SaveBatchIf(ctx context.Context, expect []state.SlotExpectation, writes []state.StateRecord) error {
+	if h.batch {
+		h.once.Do(h.before)
+	}
+	return h.StateStore.SaveBatchIf(ctx, expect, writes)
+}
+
+func (h *hookedState) SaveIf(ctx context.Context, expect []state.SlotExpectation, next state.StateRecord) error {
+	if !h.batch && next.Kind == candidateKind {
+		h.once.Do(h.before)
+	}
+	return h.StateStore.SaveIf(ctx, expect, next)
+}
+
+// The interleavings the free-running race may not hit, forced: a reject
+// that commits after an accept loaded wins and the accept publishes nothing;
+// an accept that commits after a reject loaded wins and the reject conflicts.
+func TestCandidateAccept_InterleavedDecisionsExactlyOneWins(t *testing.T) {
+	for name, env := range candidateEnvs(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			admin := publicationIdentity("tenant-a", "admin", "s-admin")
+			actx := adminCtx(t, admin)
+			plain, err := NewStateStoreCandidateStore(env.st, "rt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			hooked := func(batch bool, before func()) CandidateStore {
+				s, err := NewStateStoreCandidateStore(&hookedState{StateStore: env.st, batch: batch, before: before}, "rt")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return s
+			}
+			countPubs := func(skill string) int {
+				pubs, _ := env.pubs.List(ctx, admin)
+				n := 0
+				for _, p := range pubs {
+					if p.Name == skill {
+						n++
+					}
+				}
+				return n
+			}
+
+			c := submit(t, plain, "alice", "k1", "reject-wins")
+			var rejectErr error
+			acceptor := hooked(true, func() {
+				_, rejectErr = plain.Decide(ctx, admin, DecideCandidateRequest{IdempotencyKey: "r1", CandidateID: c.CandidateID, ExpectedGeneration: 1, Outcome: CandidateRejected}, true)
+			})
+			if _, err := acceptor.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "a1", CandidateID: c.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew}); !errors.Is(err, ErrConflict) || rejectErr != nil {
+				t.Fatalf("accept err=%v reject err=%v, want conflict/nil", err, rejectErr)
+			}
+			if got, _ := plain.Read(ctx, admin, c.CandidateID, true); got.State != CandidateRejected || countPubs("reject-wins") != 0 {
+				t.Fatalf("reject-wins state=%s publications=%d", got.State, countPubs("reject-wins"))
+			}
+
+			c2 := submit(t, plain, "alice", "k2", "accept-wins")
+			var acceptErr error
+			rejecter := hooked(false, func() {
+				_, acceptErr = plain.Accept(actx, admin, AcceptCandidateRequest{IdempotencyKey: "a2", CandidateID: c2.CandidateID, ExpectedGeneration: 1, Mode: AcceptModeNew})
+			})
+			if _, err := rejecter.Decide(ctx, admin, DecideCandidateRequest{IdempotencyKey: "r2", CandidateID: c2.CandidateID, ExpectedGeneration: 1, Outcome: CandidateRejected}, true); !errors.Is(err, ErrConflict) || acceptErr != nil {
+				t.Fatalf("reject err=%v accept err=%v, want conflict/nil", err, acceptErr)
+			}
+			if got, _ := plain.Read(ctx, admin, c2.CandidateID, true); got.State != CandidateAccepted || countPubs("accept-wins") != 1 {
+				t.Fatalf("accept-wins state=%s publications=%d", got.State, countPubs("accept-wins"))
+			}
+		})
+	}
+}
+
 // Of N concurrent accepts with distinct targets, through two store instances,
 // exactly one wins and exactly one publication exists.
 func TestCandidateAccept_ConcurrentAcceptsPublishOnce(t *testing.T) {

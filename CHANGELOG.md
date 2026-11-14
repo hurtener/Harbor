@@ -28,10 +28,10 @@ Two versions move independently in Harbor (RFC §5.3):
   and re-reads; a candidate is never both published and rejected. The accept
   now honours its `idempotency_key`: an exact retry returns the original
   candidate, publication and receipt, and another admin's later accept of a
-  decided candidate conflicts instead of replaying. The receipt's
-  `operation_id` is that key. Accepted revisions carry the candidate's body
-  unchanged (no runtime-private marker), so the content hashes match. No wire
-  change.
+  decided candidate conflicts instead of replaying, and an accept without an
+  `idempotency_key` is refused as invalid. The receipt's `operation_id` is
+  that key. Accepted revisions carry the candidate's body without a
+  runtime-private marker. No wire change.
 - **Claim and fence machinery removed (D-512).** Acceptance claims, the
   2-minute stale window, the 60-second publish deadline and acceptance fence
   tokens are gone, with the reserved-marker guard on ordinary publishes.

@@ -17417,8 +17417,8 @@ unchanged.
   the candidate slot. A concurrent accept, reject or withdraw that loses the
   compare-and-set gets an ordinary conflict and re-reads. Exactly one decision
   wins; a candidate is never both published and rejected.
-- *Idempotency.* The accept honours its `idempotency_key`, recorded per person
-  beside submit and decide keys. An exact replay returns the original
+- *Idempotency.* The accept honours its `idempotency_key`, now required and
+  recorded per person beside submit and decide keys. An exact replay returns the original
   candidate, revision and receipt without publishing. A divergent reuse is an
   idempotency conflict. A fresh key on a decided candidate is an ordinary
   conflict. The receipt's operation id is the accept's key.
@@ -17430,7 +17430,8 @@ unchanged.
   60-second publish deadline, the fence tokens and the runtime-private
   candidate marker in published revisions, along with the reserved-marker
   guard on ordinary publishes. Accepted revisions now carry the candidate's
-  body unchanged, so their content hash equals the candidate's.
+  body unchanged apart from the publication name, so when the name is the
+  candidate's their content hash equals the candidate's.
 
 **Why.** Both aggregates already lived in one StateStore with an atomic
 multi-slot compare-and-set, so the two-step write and the recovery machinery

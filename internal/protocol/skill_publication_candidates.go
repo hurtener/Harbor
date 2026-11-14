@@ -155,7 +155,7 @@ func (s *SkillPublicationsSurface) submitCandidate(ctx context.Context, method m
 }
 
 // acceptCandidate accepts a pending candidate in one atomic store write
-// (D-512): the publication and the accepted candidate land together or not
+// so the publication and the accepted candidate land together or not
 // at all. A losing concurrent decision is an ordinary conflict; an exact
 // retry with the same idempotency key returns the original result.
 func (s *SkillPublicationsSurface) acceptCandidate(ctx context.Context, method methods.Method, caller identity.Quadruple, r *types.SkillPublicationCandidateAcceptRequest) (any, error) {
