@@ -407,13 +407,71 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapAgentConfigMemory) {
 		t.Fatal("versioned memory budget must appear in the canonical capability set")
 	}
-	caps := h.Capabilities
-	if len(caps) != 19 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly 19 canonical capabilities including run limits", caps)
+	// D-508 added skill body reads and reviewed publication candidates.
+	if !h.Accepts(types.CapSkillReads) || !h.Accepts(types.CapSkillPublicationCandidates) {
+		t.Fatal("skill_reads and skill_publication_candidates (D-508) must appear in the canonical capability set")
 	}
+	assertCanonicalCapabilityUniverse(t, h.Capabilities)
 	deps := types.Deprecations()
 	if len(deps) != 0 {
 		t.Errorf("types.Deprecations() returned %d entries at 0.1.0, expected empty registry", len(deps))
+	}
+}
+
+// canonicalCapabilityUniverse is the integration suite's independent pin of
+// the advertised capability universe. It is deliberately NOT derived from
+// types.Capabilities() (the handshake is built from that, so the check would
+// be a tautology): a capability added or removed updates this list in the
+// same PR as the surface (CLAUDE.md §17.6), and a mismatch names the
+// difference instead of only a count.
+var canonicalCapabilityUniverse = []types.Capability{
+	"agent_config",
+	"agent_config_memory_v1",
+	"caller_memory",
+	"events_subscribe",
+	"llm_provider_catalog",
+	"llm_provider_route",
+	"llm_provider_route_model_profile_v1",
+	"run_limits_v1",
+	"run_llm_settings_v1",
+	"run_scoped_tools_v1",
+	"runtime_posture",
+	"session_lifecycle",
+	"skill_publication_candidates",
+	"skill_publications",
+	"skill_reads",
+	"state_snapshots",
+	"task_control",
+	"tenant_scoped_broker_credentials_v1",
+	"tool_annotations",
+	"tools_configuration_view_v1",
+	"topology_snapshot",
+}
+
+// assertCanonicalCapabilityUniverse fails, naming the missing and unexpected
+// capabilities, unless got is exactly canonicalCapabilityUniverse.
+func assertCanonicalCapabilityUniverse(t *testing.T, got []types.Capability) {
+	t.Helper()
+	want := make(map[types.Capability]bool, len(canonicalCapabilityUniverse))
+	for _, c := range canonicalCapabilityUniverse {
+		want[c] = true
+	}
+	have := make(map[types.Capability]bool, len(got))
+	var missing, unexpected []types.Capability
+	for _, c := range got {
+		have[c] = true
+		if !want[c] {
+			unexpected = append(unexpected, c)
+		}
+	}
+	for _, c := range canonicalCapabilityUniverse {
+		if !have[c] {
+			missing = append(missing, c)
+		}
+	}
+	if len(got) != len(canonicalCapabilityUniverse) || len(missing) != 0 || len(unexpected) != 0 {
+		t.Fatalf("capability universe has %d entries, want %d: missing %v, unexpected %v (update canonicalCapabilityUniverse with the surface change)",
+			len(got), len(canonicalCapabilityUniverse), missing, unexpected)
 	}
 }
 
