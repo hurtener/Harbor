@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -885,7 +886,9 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		// reply leaves, so its buttons pass the own-session check. A failed
 		// write is not a failed call; the nested App then fails closed.
 		if s.sessionAppRecorder != nil {
-			_ = s.sessionAppRecorder.RecordSessionApp(idCtx, effectiveID, res.App.ServerID, res.App.ResourceURI)
+			if err := s.sessionAppRecorder.RecordSessionApp(idCtx, effectiveID, res.App.ServerID, res.App.ResourceURI); err != nil {
+				slog.WarnContext(idCtx, "mcp.apps: nested App not recorded; its buttons will be refused", slog.String("error", err.Error()))
+			}
 		}
 		resp.App = &types.MCPAppRef{
 			AgentID:        effectiveID,

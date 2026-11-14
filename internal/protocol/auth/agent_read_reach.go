@@ -127,6 +127,9 @@ func WithAgentReadSessionApps(ctx context.Context, enabled bool) context.Context
 
 // AgentReadSessionAppsAllowed reports the verified opt-in. Absent is false.
 func AgentReadSessionAppsAllowed(ctx context.Context) bool {
-	enabled, _ := ctx.Value(agentReadSessionAppsKey{}).(bool)
+	enabled, ok := ctx.Value(agentReadSessionAppsKey{}).(bool)
+	if !ok {
+		return false
+	}
 	return enabled
 }

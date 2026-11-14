@@ -17032,7 +17032,6 @@ agent. No schema or wire-type change; old issuers are unaffected.
 
 **Cross-references:** D-397.
 
-
 ## D-506 — Same-runtime pack copy carries package-backed items
 
 **Date:** 2026-11-13
