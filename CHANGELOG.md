@@ -17,6 +17,21 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.54.0] — 2026-11-14
+
+### Added
+
+- **Opt-in one run per session on `start` (D-511).** `start` accepts
+  `require_idle_session: true`. While the session triple has a non-terminal
+  (pending, running or paused) top-level foreground task, the start is refused
+  with the existing `409 session_running` and nothing is created. The check
+  runs after the idempotency lookup, inside the same task-engine lock as the
+  spawn, so concurrent flagged starts admit exactly one and an exact retry of
+  an accepted start still answers its task (`reused: true`). Background and
+  child tasks do not count. The flag is not part of the task's content
+  identity. Omitted, `start` behaves as before. Runtimes before 1.54 decode
+  `start` strictly and reject the field, so callers upgrade runtimes first.
+
 ## [1.53.0] — 2026-11-13
 
 ### Changed

@@ -148,7 +148,10 @@ const (
 	// than silently truncating the upload. Maps to HTTP 413 (Payload Too
 	// Large).
 	CodeRequestTooLarge Code = "request_too_large"
-	// CodeSessionRunning — sessions surface: a `sessions.delete` erasure
+	// CodeSessionRunning — the target session has an active task. Also
+	// returned by a `start` that set `require_idle_session` while the session
+	// has a non-terminal top-level foreground task (nothing is created).
+	// sessions surface: a `sessions.delete` erasure
 	// was refused because the target session has a RUNNING task. The
 	// erasure mirrors the GC never-reap-running invariant (RFC §6.9) — a
 	// session with in-flight work is durable execution state, not a
