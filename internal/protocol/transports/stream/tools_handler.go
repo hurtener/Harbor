@@ -224,7 +224,7 @@ func (h *ToolsHandler) serveList(w http.ResponseWriter, r *http.Request, body []
 	req.Identity = scope
 	var admittedAgentID string
 	if req.AgentID != "" {
-		effectiveID, admissionErr := protocol.AdmitEffectiveAgent(r.Context(), string(methods.MethodToolsList), identity.Identity{
+		admittedCtx, effectiveID, admissionErr := protocol.AdmitEffectiveAgentForRead(r.Context(), string(methods.MethodToolsList), identity.Identity{
 			TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
 		}, req.AgentID, h.agents, h.reach)
 		if admissionErr != nil {
@@ -232,7 +232,7 @@ func (h *ToolsHandler) serveList(w http.ResponseWriter, r *http.Request, body []
 			return
 		}
 		admittedAgentID = effectiveID
-		r = r.WithContext(tools.WithEffectiveAgentConfig(r.Context(), effectiveID))
+		r = r.WithContext(tools.WithEffectiveAgentConfig(admittedCtx, effectiveID))
 	}
 	resp, err := h.service.ListForView(r.Context(), req, auth.HasScope(r.Context(), auth.ScopeAdmin), admittedAgentID)
 	if err != nil {
@@ -276,7 +276,7 @@ func (h *ToolsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 	req.Identity = scope
 	var admittedAgentID string
 	if req.AgentID != "" {
-		effectiveID, admissionErr := protocol.AdmitEffectiveAgent(r.Context(), string(methods.MethodToolsDescribe), identity.Identity{
+		admittedCtx, effectiveID, admissionErr := protocol.AdmitEffectiveAgentForRead(r.Context(), string(methods.MethodToolsDescribe), identity.Identity{
 			TenantID: scope.Tenant, UserID: scope.User, SessionID: scope.Session,
 		}, req.AgentID, h.agents, h.reach)
 		if admissionErr != nil {
@@ -284,7 +284,7 @@ func (h *ToolsHandler) serveDescribe(w http.ResponseWriter, r *http.Request, bod
 			return
 		}
 		admittedAgentID = effectiveID
-		r = r.WithContext(tools.WithEffectiveAgentConfig(r.Context(), effectiveID))
+		r = r.WithContext(tools.WithEffectiveAgentConfig(admittedCtx, effectiveID))
 	}
 	resp, err := h.service.DescribeForView(r.Context(), req, auth.HasScope(r.Context(), auth.ScopeAdmin), admittedAgentID)
 	if err != nil {

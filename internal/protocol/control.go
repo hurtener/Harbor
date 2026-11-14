@@ -474,6 +474,39 @@ func AdmitEffectiveAgent(ctx context.Context, method string, id identity.Identit
 	return effectiveID, nil
 }
 
+// AdmitEffectiveAgentForRead is AdmitEffectiveAgent for READ-ONLY surfaces
+// (D-510): an effective agent outside the signed agent_reach is still admitted
+// when the verified agent_read_reach names it. The same reach-before-resolver
+// ordering, retirement and resolution rules apply. When admission came from
+// read reach the returned context carries the read admission, so the console
+// source authorizer can honour it for that agent's own MCP servers. Surfaces
+// that execute, select or mutate (start, App tool calls, agent-config writes)
+// must keep calling AdmitEffectiveAgent.
+func AdmitEffectiveAgentForRead(ctx context.Context, method string, id identity.Identity, agentID string, agents AgentResolver, reach auth.AgentReachAuthorizer) (context.Context, string, error) {
+	effectiveID, err := AdmitEffectiveAgent(ctx, method, id, agentID, agents, readReachAuthorizer{inner: reach})
+	if err != nil {
+		return ctx, "", err
+	}
+	if reach.AuthorizeAgentReach(ctx, effectiveID) == nil {
+		return ctx, effectiveID, nil
+	}
+	return auth.WithAgentReadAdmission(ctx, effectiveID), effectiveID, nil
+}
+
+// readReachAuthorizer widens the shared gate to agent_read_reach for the
+// read-admission helper only. An unwired inner gate stays fail-closed.
+type readReachAuthorizer struct{ inner auth.AgentReachAuthorizer }
+
+func (r readReachAuthorizer) AuthorizeAgentReach(ctx context.Context, agentID string) error {
+	if r.inner == nil {
+		return auth.ErrAgentReachDenied
+	}
+	if err := r.inner.AuthorizeAgentReach(ctx, agentID); err == nil {
+		return nil
+	}
+	return auth.AuthorizeAgentRead(ctx, agentID)
+}
+
 // dispatchStart handles the `start` method: it spawns a foreground task
 // via the tasks.TaskRegistry. A `start` request carries the
 // identity triple (RunID is ignored — Spawn assigns the TaskID) and no

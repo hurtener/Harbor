@@ -17032,7 +17032,6 @@ agent. No schema or wire-type change; old issuers are unaffected.
 
 **Cross-references:** D-397.
 
-
 ## D-506 — Same-runtime pack copy carries package-backed items
 
 **Date:** 2026-11-13
@@ -17282,3 +17281,79 @@ isolation axis. No schema change; fleets on `migration_mode: verify` need no
 manual step.
 
 **Cross-references:** D-397, D-505, D-271, D-328.
+
+## D-510 — Read-only agent reach: App resources, tool listings and own-session App use
+
+**Date:** 2026-11-13
+
+**Decision.** The read-only effective-agent admission that D-505 applied to
+session history now also covers the read-only agent-addressed reads a chat
+surface needs to render what an agent already produced:
+`mcp.servers.read_resource` (including its `ui://` re-check and the opt-in
+render-admission mint), `mcp.servers.resources`, `tools.list` and
+`tools.describe`. Each admits an effective agent named by the signed
+`agent_reach` **or** `agent_read_reach`, with the same reach-before-resolver
+ordering, retirement and resolution rules (`protocol.AdmitEffectiveAgentForRead`).
+When admission came from read reach, the request context carries a read
+admission for that one agent, and the console source authorizer honours it
+for that agent's own MCP servers only while the verified `agent_read_reach`
+still names the agent (`auth.AuthorizeAdmittedAgentRead`).
+
+Two user actions inside a session the person already has also accept read
+reach, but only when the bearer carries the new optional signed boolean claim
+`agent_read_session_apps: true` (it requires a non-empty `agent_read_reach`;
+any non-boolean value rejects the token). An issuer sets it only on bearers
+whose read reach names agents the person may still use; a history-only bearer
+for an agent the person lost keeps strictly read-only access. The two actions,
+each narrowly:
+
+- **App callbacks.** A `mcp.apps.call_tool` that carries a render admission
+  (never the legacy binding or a bare call), names the agent, server and
+  resource explicitly, and whose exact (agent, server, resource) App the
+  caller's own session rendered (`protocol.SessionAppChecker`). The proof is
+  the **session App ledger** (`mcpconsole.ToolContextStore`), which the MCP
+  provider writes **before** it publishes the `mcp.app_available` event, so a
+  button pressed the moment the App appears is never refused; the turn
+  projection (`turns.AppChecker`) is a fallback for Apps recorded before the
+  ledger existed. An App returned by an admitted callback (a nested App) is
+  written to the same session's ledger under the same effective agent before
+  the reply leaves, so its own buttons pass the same check. The render admission is still verified against the current
+  tuple and the invocation keeps every approval, OAuth, policy, redaction and
+  audit gate. Without the session proof wired, read-reach callbacks are
+  refused.
+- **Own live-profile restore.** `agent_config.user.reconcile_live_profile`
+  re-materializes the caller's own saved user-scope profile for the agent
+  (the personal connections it already authorized). It keeps the verified
+  identity and `agent_config:user` checks.
+
+Neither makes a model call, opens a run, selects an agent or changes the
+agent's configuration, which is why they fit a read entitlement.
+
+**Session participants (D-509).** A participant bearer may now also call
+`mcp.servers.read_resource`, `mcp.apps.call_tool` and `mcp.apps.tool_context`.
+The ledger lives in the session's owner partition, so a participant sees the
+shared session's Apps. A participant reads or calls only Apps that ledger
+recorded, and a participant call always needs a render admission, whatever
+its agent reach. Everything else partition-wide stays closed to participants,
+including the live-profile restore. Everything
+else that executes, selects or mutates keeps calling `AdmitEffectiveAgent`
+and still requires `agent_reach`: `start`, `mcp.apps.call_tool` without the
+session proof, every other agent-configuration method, skill publication
+install/update/remove and every other agent-addressed write.
+
+**Correction to D-505.** D-505 listed steer, resume and cancel among the
+calls that "keep requiring `agent_reach`". They never consulted agent reach:
+the steering controls (`cancel`, `pause`, `resume`, `approve`, `reject`,
+`redirect`, `inject_context`, `user_message`) are authorized by the verified
+caller having written the run (or the `admin` scope). That remains true. An
+issuer that needs to keep a read-only bearer from steering the person's own
+runs has no Harbor control for it today.
+
+**Why.** An issuer that hands a browser a read-only bearer (so that runs are
+opened only through its own server-side admission) found that MCP Apps
+already rendered in the person's chat stopped rendering, because the App
+resource and tool-listing reads required selection authority. Reading the
+App document an agent rendered is a read of the person's own session, the
+same class of access D-505 already allows. No schema or wire-type change.
+
+**Cross-references:** D-505, HA-56, D-509.

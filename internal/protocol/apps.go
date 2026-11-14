@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -74,6 +75,10 @@ type AppsSurface struct {
 	// production implementation; a plain resource read or a registration
 	// fingerprint does NOT prove the gate's checks.
 	admissionGate RenderAdmissionGate
+	// sessionApps is the optional D-510 session App-reference proof.
+	sessionApps SessionAppChecker
+	// sessionAppRecorder is the optional D-510 nested-App ledger write.
+	sessionAppRecorder SessionAppRecorder
 }
 
 // RenderAdmissionAuthority is the narrow, stateless, sealed
@@ -410,6 +415,29 @@ type AppsDeps struct {
 	// RenderAdmissionAuthority — the surface rejects a half-wired pair
 	// at construction. Both nil remains the compatible disabled surface.
 	RenderAdmissionGate RenderAdmissionGate
+	// SessionApps is the OPTIONAL session App-reference proof (D-510). When
+	// wired, a render-admission-backed `mcp.apps.call_tool` from a bearer
+	// whose agent_read_reach (not agent_reach) names the effective agent is
+	// admitted only if a turn of the caller's own session recorded exactly
+	// that (agent, server, resource) App. Nil refuses every read-reach call.
+	SessionApps SessionAppChecker
+	// SessionAppRecorder is the OPTIONAL ledger write for an App returned by
+	// an admitted `mcp.apps.call_tool` (a nested App, D-510). It records the
+	// App for the same session and effective agent before the reply leaves,
+	// so the nested App's own buttons pass the same own-session check.
+	SessionAppRecorder SessionAppRecorder
+}
+
+// SessionAppRecorder records an App on the ctx identity's session ledger.
+type SessionAppRecorder interface {
+	RecordSessionApp(ctx context.Context, agentID, serverID, resourceURI string) error
+}
+
+// SessionAppChecker reports whether the session of id holds a turn App
+// reference with exactly (agentID, serverID, resourceURI): an App a run in
+// that session rendered.
+type SessionAppChecker interface {
+	SessionHasApp(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) (bool, error)
 }
 
 // ErrAppsMisconfigured — NewAppsSurface was called with a missing
@@ -494,6 +522,8 @@ func NewAppsSurface(deps AppsDeps) (*AppsSurface, error) {
 		agents: deps.AgentResolver, reach: reach,
 		admissionAuthority: admissionAuthority,
 		admissionGate:      admissionGate,
+		sessionApps:        deps.SessionApps,
+		sessionAppRecorder: deps.SessionAppRecorder,
 	}, nil
 }
 
@@ -554,9 +584,17 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	if perr != nil {
 		return nil, perr
 	}
-	effectiveID, err := AdmitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
+	idCtx, effectiveID, err := AdmitEffectiveAgentForRead(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
 	if err != nil {
 		return nil, err
+	}
+	// D-510: a session participant reads only Apps the shared session
+	// rendered (the same exact-session rule as its other routes).
+	if participant, ok := identity.ParticipantFrom(ctx); ok && participant.IsGuest(id) {
+		if !s.sessionHasApp(idCtx, id, effectiveID, r.ServerID, r.ResourceURI) {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: session participants may read only Apps this session rendered", string(method))
+		}
 	}
 	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
 	if r.AppOperation != "" {
@@ -616,7 +654,7 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 		// Agent resolution and admission can block. Reuse current agent/source
 		// checks after that I/O, then check the original opaque entry/generation
 		// before releasing the document, origin policy or admission together.
-		if _, err := AdmitEffectiveAgent(idCtx, string(method), id, effectiveID, s.agents, s.reach); err != nil {
+		if _, _, err := AdmitEffectiveAgentForRead(idCtx, string(method), id, effectiveID, s.agents, s.reach); err != nil {
 			return nil, err
 		}
 		if content.FinalCheck != nil {
@@ -722,7 +760,25 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	}
 	effectiveID, err := AdmitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
 	if err != nil {
-		return nil, err
+		// D-510: a person reading their own session may press a button in an
+		// App a run in THAT session rendered for THAT agent, without being
+		// able to select the agent. Only the render-admission path qualifies,
+		// and only with the session App-reference proof; it makes no model
+		// call and opens no run, and the invocation keeps every approval,
+		// OAuth, policy and audit gate below.
+		readCtx, readID, readErr := s.admitReadReachAppCall(idCtx, id, r)
+		if readErr != nil {
+			return nil, err
+		}
+		idCtx, effectiveID = readCtx, readID
+	}
+	// D-510: a session participant may call only Apps the shared session
+	// rendered, through a render admission, whatever its agent reach.
+	if participant, ok := identity.ParticipantFrom(ctx); ok && participant.IsGuest(id) {
+		if r.RenderAdmission == "" || !s.sessionHasApp(idCtx, id, effectiveID, r.ServerID, r.ResourceURI) {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: session participants may call only Apps this session rendered", string(method))
+		}
 	}
 	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
 	// The invoker re-enters the EXISTING approval / OAuth / identity
@@ -825,6 +881,15 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		resp.Content = res.Inline
 	}
 	if res.App != nil {
+		// D-510: a nested App returned by an admitted callback joins the
+		// same session's ledger under the same effective agent before the
+		// reply leaves, so its buttons pass the own-session check. A failed
+		// write is not a failed call; the nested App then fails closed.
+		if s.sessionAppRecorder != nil {
+			if err := s.sessionAppRecorder.RecordSessionApp(idCtx, effectiveID, res.App.ServerID, res.App.ResourceURI); err != nil {
+				slog.WarnContext(idCtx, "mcp.apps: nested App not recorded; its buttons will be refused", slog.String("error", err.Error()))
+			}
+		}
 		resp.App = &types.MCPAppRef{
 			AgentID:        effectiveID,
 			ServerID:       res.App.ServerID,
@@ -836,6 +901,35 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		}
 	}
 	return resp, nil
+}
+
+// admitReadReachAppCall admits a render-admission-backed App callback from
+// a read-reach bearer (D-510). It requires an explicit agent, server and
+// resource, read-reach admission of that agent and the session proof that a
+// turn of the caller's own session recorded exactly that App. The returned
+// context carries the read admission for that one agent.
+func (s *AppsSurface) admitReadReachAppCall(ctx context.Context, id identity.Identity, r *types.MCPAppCallToolRequest) (context.Context, string, error) {
+	if s.sessionApps == nil || !auth.AgentReadSessionAppsAllowed(ctx) || r.RenderAdmission == "" || r.AgentID == "" || r.ServerID == "" || r.ResourceURI == "" {
+		return ctx, "", auth.ErrAgentReachDenied
+	}
+	readCtx, effectiveID, err := AdmitEffectiveAgentForRead(ctx, string(methods.MethodMCPAppsCallTool), id, r.AgentID, s.agents, s.reach)
+	if err != nil || auth.AuthorizeAdmittedAgentRead(readCtx, effectiveID) != nil {
+		return ctx, "", auth.ErrAgentReachDenied
+	}
+	if !s.sessionHasApp(readCtx, id, effectiveID, r.ServerID, r.ResourceURI) {
+		return ctx, "", auth.ErrAgentReachDenied
+	}
+	return readCtx, effectiveID, nil
+}
+
+// sessionHasApp is the fail-closed own-session App proof: unwired or a
+// lookup error answers false.
+func (s *AppsSurface) sessionHasApp(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) bool {
+	if s.sessionApps == nil {
+		return false
+	}
+	has, err := s.sessionApps.SessionHasApp(ctx, id, agentID, serverID, resourceURI)
+	return err == nil && has
 }
 
 // handleToolContext serves mcp.apps.tool_context — the tool-context read.

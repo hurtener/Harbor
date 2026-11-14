@@ -220,6 +220,7 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 			ctx = WithScopes(ctx, verified.Scopes)
 			ctx = WithAgentReach(ctx, verified.AgentReach)
 			ctx = WithAgentReadReach(ctx, verified.AgentReadReach)
+			ctx = WithAgentReadSessionApps(ctx, verified.AgentReadSessionApps)
 			if transfer := verified.ArtifactTransfer; transfer != nil {
 				allowed := r.Method == http.MethodPost && r.URL.RawQuery == "" && !r.URL.ForceQuery &&
 					(transfer.Mode == "read" && r.URL.Path == "/v1/control/artifacts.get" ||
