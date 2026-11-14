@@ -5105,6 +5105,7 @@ Declared in `internal/protocol/types`.
 | `description` | `string` | optional (`omitempty`) |
 | `priority` | `int` | optional (`omitempty`) |
 | `idempotency_key` | `string` | optional (`omitempty`) |
+| `require_idle_session` | `bool` | optional (`omitempty`) |
 | `input_artifact_ids` | `[]string` | optional (`omitempty`) |
 | `input_artifact_dispositions` | `map[string]string` | optional (`omitempty`) |
 | `output_schema` | `jsontext.Value` | optional (`omitempty`) |

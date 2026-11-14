@@ -394,6 +394,10 @@ type SpawnRequest struct {
 	Query          string
 	Priority       int
 	IdempotencyKey string
+	// RequireIdleSession refuses the spawn with ErrSessionBusy while the
+	// session has a non-terminal top-level foreground task. It is checked
+	// after the idempotency lookup and is not part of the content identity.
+	RequireIdleSession bool
 	// VerifiedExecutionOperationID is trusted edge context, not a tool or
 	// request-body argument. Ordinary spawns leave it empty.
 	VerifiedExecutionOperationID string
@@ -1072,6 +1076,9 @@ var (
 	// IdempotencyKey but a divergent SpawnRequest. Tells the caller
 	// a retry policy bug exists upstream.
 	ErrIdempotencyConflict = errors.New("tasks: idempotency key reused with divergent SpawnRequest")
+	// ErrSessionBusy — Spawn with RequireIdleSession found a non-terminal
+	// top-level foreground task in the same session triple.
+	ErrSessionBusy = errors.New("tasks: session has an active run")
 	// ErrIdentityRequired — Spawn / Get / List / Cancel / Prioritize
 	// / Mark* called with an Identity missing one of (tenant, user,
 	// session). Identity is mandatory.

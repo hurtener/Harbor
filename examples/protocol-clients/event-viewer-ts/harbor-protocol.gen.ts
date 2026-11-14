@@ -3705,6 +3705,7 @@ export interface StartRequest {
   description?: string;
   priority?: number;
   idempotency_key?: string;
+  require_idle_session?: boolean;
   input_artifact_ids?: string[];
   input_artifact_dispositions?: Record<string, string>;
   output_schema?: unknown;

@@ -80,6 +80,10 @@ func mapTaskError(method string, err error) *protoerrors.Error {
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: idempotency key reused with a divergent request", method)
 
+	case stderrors.Is(err, tasks.ErrSessionBusy):
+		return protoerrors.Newf(protoerrors.CodeSessionRunning,
+			"method %q: the session already has an active run", method)
+
 	case stderrors.Is(err, tasks.ErrInvalidRequest):
 		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: request failed validation", method)

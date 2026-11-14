@@ -687,6 +687,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		Query:                        sr.Query,
 		Priority:                     sr.Priority,
 		IdempotencyKey:               sr.IdempotencyKey,
+		RequireIdleSession:           sr.RequireIdleSession,
 		VerifiedExecutionOperationID: operation.OperationID,
 		InputArtifactIDs:             sr.InputArtifactIDs,
 		InputArtifactDispositions:    sr.InputArtifactDispositions,

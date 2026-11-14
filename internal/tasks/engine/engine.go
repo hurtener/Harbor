@@ -352,6 +352,13 @@ func (e *Engine) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		}
 	}
 
+	// Opt-in one-run-per-session admission, after the idempotency lookup so
+	// an exact retry of an accepted start still answers its task. Atomic
+	// with the spawn: e.mu is held until the task is persisted.
+	if req.RequireIdleSession && e.sessionHasActiveRunLocked(req.Identity.Identity) {
+		return tasks.TaskHandle{}, tasks.ErrSessionBusy
+	}
+
 	// New task: assign ULID, persist, emit task.spawned.
 	id := tasks.TaskID(ulid.MustNew(ulid.Now(), e.ulidEntropy).String())
 	now := time.Now().UnixNano()
@@ -1779,6 +1786,18 @@ func isValidTransition(from, to tasks.TaskStatus) bool {
 	default:
 		return false
 	}
+}
+
+// sessionHasActiveRunLocked reports whether the session triple has a
+// non-terminal top-level foreground task. Caller MUST hold e.mu.
+func (e *Engine) sessionHasActiveRunLocked(id identity.Identity) bool {
+	for _, t := range e.tasks {
+		if t.Kind == tasks.KindForeground && (t.ParentTaskID == nil || *t.ParentTaskID == "") &&
+			!isTerminal(t.Status) && identitiesEqual(t.Identity.Identity, id) {
+			return true
+		}
+	}
+	return false
 }
 
 func isTerminal(s tasks.TaskStatus) bool {

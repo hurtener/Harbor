@@ -17357,3 +17357,40 @@ App document an agent rendered is a read of the person's own session, the
 same class of access D-505 already allows. No schema or wire-type change.
 
 **Cross-references:** D-505, HA-56, D-509.
+
+## D-511 — Opt-in one run per session on `start`
+
+**Date:** 2026-11-14
+
+**Decision.** `start` gains the optional boolean `require_idle_session`. When
+true, `Engine.Spawn` refuses the start with `tasks.ErrSessionBusy`, mapped to
+the existing `CodeSessionRunning` (HTTP 409), while the session triple has a
+non-terminal (pending, running or paused) top-level foreground task. Nothing
+is persisted or published on refusal.
+
+- *Ordering.* The check runs after the idempotency lookup, so an exact retry
+  of an accepted start answers its task with `Reused=true` instead of being
+  refused by it.
+- *Atomicity.* The check and the spawn hold the engine mutex together, so
+  concurrent flagged starts in one idle session admit exactly one. The
+  guarantee is per task engine, the same as idempotency deduplication.
+- *Scope.* Background tasks and child tasks (non-empty parent) do not count,
+  so lingering background work never holds a session. A paused run counts;
+  a caller that wants to start beside it omits the flag.
+- *Identity.* The flag is a start-time admission condition, not task
+  content: it is not folded into the idempotency content hash and not
+  stored on the task.
+- *Cost.* One scan of the engine's in-memory task map, only for flagged
+  starts.
+
+**Why.** A host that lets several people write into one session needs one
+run at a time without keeping its own lease and liveness machinery beside the
+runtime's task state. The runtime already owns that state; an atomic opt-in
+admission is the smallest product-neutral primitive. Omitted, behaviour is
+unchanged.
+
+**Compatibility.** Additive wire field. Runtimes before 1.54 decode `start`
+strictly and reject the unknown field, so a caller upgrades runtimes before
+sending it.
+
+**Cross-references:** D-509, RFC §6.9 (`session_running`).

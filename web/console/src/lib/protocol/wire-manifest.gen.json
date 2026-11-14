@@ -11264,6 +11264,11 @@
           "optional": true
         },
         {
+          "key": "require_idle_session",
+          "type": "boolean",
+          "optional": true
+        },
+        {
           "key": "input_artifact_ids",
           "type": "array",
           "optional": true

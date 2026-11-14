@@ -148,6 +148,16 @@ type StartRequest struct {
 	// key — even against the same session id — and each gets its own
 	// task, never a reused handle and never a conflict.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// RequireIdleSession, when true, admits the start only while the session
+	// has no active run: a non-terminal (pending, running or paused)
+	// top-level foreground task in the same identity triple refuses it with
+	// CodeSessionRunning (409) and creates nothing. The check runs after the
+	// idempotency lookup, so an exact retry of an accepted start still
+	// answers its task with Reused=true. Background and child tasks do not
+	// count. The check is atomic with the spawn inside one task engine. It is
+	// not part of the task's content identity. Omitted or false keeps the
+	// ordinary behaviour (any number of runs per session).
+	RequireIdleSession bool `json:"require_idle_session,omitempty"`
 	// InputArtifactIDs attach operator-uploaded
 	// artifacts as multimodal inputs the run consumes on its first
 	// planner turn. The runtime's per-MIME materializer routes each
