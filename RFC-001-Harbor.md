@@ -271,7 +271,9 @@ JWT, asymmetric algorithms only (RS256/RS384/RS512/ES256/ES384/ES512). The tripl
 **Read-only agent reach (D-505).** An optional `agent_read_reach` claim with
 the same strict shape lets `sessions.turns.list` and `sessions.turns.get`
 serve rows of the agents it names; it never authorizes selecting them, and a
-non-empty value requires a non-empty `session_reach`.
+non-empty value requires a non-empty `session_reach`. D-510 extends the same
+read-only admission to App resource reads and tool listings; App tool calls
+and every agent-addressed write still require `agent_reach`.
 
 **Session participants (D-509).** A session keeps one owner partition
 `(tenant, owner, session)`. An optional signed `session_owner` claim lets a

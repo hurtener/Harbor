@@ -12,7 +12,9 @@ import (
 // surfaces, without being able to select those agents. It lets an issuer hand a
 // person the history of their own session after the session moved to another
 // agent, or after the agent stopped being available to them, while start,
-// steer and every other agent-addressed write still require `agent_reach`.
+// App tool calls and every other agent-addressed write still require
+// `agent_reach`. D-510 extends it to App resource reads and tool listings.
+// Steering is authorized by run authorship, never by reach.
 //
 // It is an entitlement, never an isolation principal: the exact-session
 // identity boundary is unchanged, and a bearer carrying a non-empty read reach
@@ -69,4 +71,27 @@ func ParseAgentReadReach(raw any) ([]string, error) {
 		return nil, fmt.Errorf("%w: %w", ErrAgentReadReachMalformed, err)
 	}
 	return reach, nil
+}
+
+type agentReadAdmissionKey struct{}
+
+// WithAgentReadAdmission records that a READ-ONLY Protocol surface admitted
+// agentID through agent_read_reach (D-510). Only the read-admission helper in
+// the protocol package seats it, after the verified read reach authorized the
+// effective agent; downstream source visibility may then honour the same read
+// reach for that one agent. It is never seated by a write surface.
+func WithAgentReadAdmission(ctx context.Context, agentID string) context.Context {
+	return context.WithValue(ctx, agentReadAdmissionKey{}, agentID)
+}
+
+// AuthorizeAdmittedAgentRead permits agentID only when a read-only surface
+// admitted exactly that agent on ctx AND the verified agent_read_reach still
+// names it. Absent the read admission it denies, so a write path that reaches
+// the same downstream gate keeps requiring agent_reach.
+func AuthorizeAdmittedAgentRead(ctx context.Context, agentID string) error {
+	admitted, ok := ctx.Value(agentReadAdmissionKey{}).(string)
+	if !ok || admitted == "" || admitted != agentID {
+		return ErrAgentReachDenied
+	}
+	return AuthorizeAgentRead(ctx, agentID)
 }

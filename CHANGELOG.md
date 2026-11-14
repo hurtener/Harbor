@@ -17,6 +17,24 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.53.0] — 2026-11-13
+
+### Changed
+
+- **Read-only agent reach reads App resources and tool listings (D-510).**
+  `mcp.servers.read_resource`, `mcp.servers.resources`, `tools.list` and
+  `tools.describe` now admit an effective agent named by `agent_read_reach` as
+  well as `agent_reach`, so an MCP App already rendered in a session keeps
+  rendering for a bearer that cannot select the agent. The console source
+  authorizer honours the read admission for that agent's own servers only.
+  `start`, `mcp.apps.call_tool`, agent configuration and every other
+  agent-addressed write still require `agent_reach`.
+
+### Fixed
+
+- D-505's text claimed steering controls require `agent_reach`; they are
+  authorized by run authorship. D-510 records the correction.
+
 ## [1.52.0] — 2026-11-13
 
 ### Added

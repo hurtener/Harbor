@@ -135,10 +135,15 @@ func (a *SourceAuthorizer) VisibleRegistration(ctx context.Context, _ tools.Tool
 		return false, ErrSourceAuthorityUnavailable
 	}
 	if err := a.reach.AuthorizeAgentReach(ctx, owner.Agent); err != nil {
-		if errors.Is(err, protocolauth.ErrAgentReachDenied) {
+		if !errors.Is(err, protocolauth.ErrAgentReachDenied) {
+			return false, fmt.Errorf("authorize source agent reach: %w", err)
+		}
+		// D-510: a read-only surface that admitted exactly this agent through
+		// agent_read_reach may read the agent's own servers. Without that
+		// read admission (every execute/select path) the denial stands.
+		if protocolauth.AuthorizeAdmittedAgentRead(ctx, owner.Agent) != nil {
 			return false, nil
 		}
-		return false, fmt.Errorf("authorize source agent reach: %w", err)
 	}
 	if a.config == nil {
 		return false, ErrSourceAuthorityUnavailable

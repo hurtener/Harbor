@@ -554,7 +554,7 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	if perr != nil {
 		return nil, perr
 	}
-	effectiveID, err := AdmitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
+	idCtx, effectiveID, err := AdmitEffectiveAgentForRead(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
 	if err != nil {
 		return nil, err
 	}
@@ -616,7 +616,7 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 		// Agent resolution and admission can block. Reuse current agent/source
 		// checks after that I/O, then check the original opaque entry/generation
 		// before releasing the document, origin policy or admission together.
-		if _, err := AdmitEffectiveAgent(idCtx, string(method), id, effectiveID, s.agents, s.reach); err != nil {
+		if _, _, err := AdmitEffectiveAgentForRead(idCtx, string(method), id, effectiveID, s.agents, s.reach); err != nil {
 			return nil, err
 		}
 		if content.FinalCheck != nil {

@@ -231,3 +231,62 @@ func TestSourceAuthorizer_ReachBoundsPersonalSources(t *testing.T) {
 		})
 	}
 }
+
+// TestSourceAuthorizer_ReadAdmissionOpensOnlyTheAdmittedAgent pins D-510: a
+// bearer with no agent_reach and agent_read_reach naming agent-b reads
+// agent-b's personal source only when a read-only surface admitted agent-b on
+// the context. The read reach alone (a write path, which never seats the
+// read admission) stays denied, and the admission for agent-b opens nothing
+// of agent-a's.
+func TestSourceAuthorizer_ReadAdmissionOpensOnlyTheAdmittedAgent(t *testing.T) {
+	const logical = "shared-connection"
+	ownerA := auth.Owner{Tenant: "tenant-1", Agent: "agent-a", User: "user-a"}
+	ownerB := auth.Owner{Tenant: "tenant-1", Agent: "agent-b", User: "user-a"}
+	id := identity.Identity{TenantID: ownerA.Tenant, UserID: ownerA.User, SessionID: "session-a"}
+	reg := mcp.NewRegistry()
+	for _, owner := range []auth.Owner{ownerA, ownerB} {
+		if err := reg.Register(context.Background(), mcp.ServerRegistration{
+			Provider:     &stubProvider{id: tools.ToolSourceID(mcp.PhysicalServerName(logical, owner))},
+			Transport:    "streamable-http",
+			LogicalName:  logical,
+			Owner:        owner,
+			InitialState: mcp.ServerStateOnline,
+		}); err != nil {
+			t.Fatalf("register %s: %v", owner.Agent, err)
+		}
+	}
+	config := &mutableUserConfig{
+		active: true,
+		pairs: map[string]agentcfg.SignedOAuthMCPPair{
+			ownerA.Agent: {ProviderName: "provider-a", OwnerAgentID: ownerA.Agent, OwnerUserID: ownerA.User, Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: logical}},
+			ownerB.Agent: {ProviderName: "provider-b", OwnerAgentID: ownerB.Agent, OwnerUserID: ownerB.User, Connection: agentcfg.SignedOAuthMCPConnectionDescriptor{Name: logical}},
+		},
+	}
+	accessor, err := mcpconsole.NewRegistryAccessor(reg, mcpconsole.WithSourceAuthorizer(mcpconsole.NewSourceAuthorizer(reg, config)))
+	if err != nil {
+		t.Fatalf("NewRegistryAccessor: %v", err)
+	}
+	ctx, err := identity.With(context.Background(), id)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	ctx = protocolauth.WithAgentReadReach(protocolauth.WithAgentReach(ctx, nil), []string{ownerB.Agent})
+	physicalA := mcp.PhysicalServerName(logical, ownerA)
+	physicalB := mcp.PhysicalServerName(logical, ownerB)
+
+	if _, err := accessor.ListResources(ctx, physicalB); err == nil {
+		t.Fatal("read reach without a read admission listed agent-b's source")
+	}
+	admitted := protocolauth.WithAgentReadAdmission(ctx, ownerB.Agent)
+	if _, err := accessor.ListResources(admitted, physicalB); err != nil {
+		t.Fatalf("read-admitted agent-b source: %v", err)
+	}
+	if _, err := accessor.ListResources(admitted, physicalA); err == nil {
+		t.Fatal("agent-b read admission opened agent-a's source")
+	}
+	// The admission is bound to the verified read reach, not just the marker.
+	forged := protocolauth.WithAgentReadAdmission(protocolauth.WithAgentReadReach(ctx, []string{"agent-x"}), ownerB.Agent)
+	if _, err := accessor.ListResources(forged, physicalB); err == nil {
+		t.Fatal("a read admission outside the verified read reach was honoured")
+	}
+}

@@ -17282,3 +17282,44 @@ isolation axis. No schema change; fleets on `migration_mode: verify` need no
 manual step.
 
 **Cross-references:** D-397, D-505, D-271, D-328.
+
+## D-510 — Read-only agent reach also reads App resources and tool listings
+
+**Date:** 2026-11-13
+
+**Decision.** The read-only effective-agent admission that D-505 applied to
+session history now also covers the read-only agent-addressed reads a chat
+surface needs to render what an agent already produced:
+`mcp.servers.read_resource` (including its `ui://` re-check and the opt-in
+render-admission mint), `mcp.servers.resources`, `tools.list` and
+`tools.describe`. Each admits an effective agent named by the signed
+`agent_reach` **or** `agent_read_reach`, with the same reach-before-resolver
+ordering, retirement and resolution rules (`protocol.AdmitEffectiveAgentForRead`).
+When admission came from read reach, the request context carries a read
+admission for that one agent, and the console source authorizer honours it
+for that agent's own MCP servers only while the verified `agent_read_reach`
+still names the agent (`auth.AuthorizeAdmittedAgentRead`).
+
+Nothing that executes, selects or mutates reads the claim: `start`,
+`mcp.apps.call_tool` (render-admission backed or not), agent-configuration
+methods, skill publications and every other agent-addressed write keep
+calling `AdmitEffectiveAgent` and still require `agent_reach`. A render
+admission minted on a read-reach read therefore does not let that bearer call
+the App's tools.
+
+**Correction to D-505.** D-505 listed steer, resume and cancel among the
+calls that "keep requiring `agent_reach`". They never consulted agent reach:
+the steering controls (`cancel`, `pause`, `resume`, `approve`, `reject`,
+`redirect`, `inject_context`, `user_message`) are authorized by the verified
+caller having written the run (or the `admin` scope). That remains true. An
+issuer that needs to keep a read-only bearer from steering the person's own
+runs has no Harbor control for it today.
+
+**Why.** An issuer that hands a browser a read-only bearer (so that runs are
+opened only through its own server-side admission) found that MCP Apps
+already rendered in the person's chat stopped rendering, because the App
+resource and tool-listing reads required selection authority. Reading the
+App document an agent rendered is a read of the person's own session, the
+same class of access D-505 already allows. No schema or wire-type change.
+
+**Cross-references:** D-505, HA-56, D-509.
