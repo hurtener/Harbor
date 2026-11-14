@@ -406,10 +406,10 @@ func (s *stateCandidateBackend) save(ctx context.Context, tenant string, token a
 	if err != nil {
 		return err
 	}
-	tok, _ := token.(stateToken)
+	tok, isToken := token.(stateToken)
 	next := state.StateRecord{ID: state.NewEventID(), Identity: orgIdentity(tenant), Kind: candidateKind, Bytes: b}
 	expect := state.SlotExpectation{Identity: next.Identity, Kind: next.Kind}
-	if tok.present {
+	if isToken && tok.present {
 		expect.ExpectedEventID = tok.record.ID
 	}
 	if err := s.state.SaveIf(ctx, []state.SlotExpectation{expect}, next); err != nil {

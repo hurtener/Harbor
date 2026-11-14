@@ -148,7 +148,7 @@ func TestReview_RevokedRecordedFenceWedgesSameTarget(t *testing.T) {
 	if _, err := store.ResolveCandidate(admin, me, id, tok); err != nil { // crash before ReleaseClaim
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, Mode: "new", IdempotencyKey: fmt.Sprintf("a%d", i)})
 		t.Logf("same-target retry %d: err=%v", i, err)
 		if err == nil {
@@ -188,7 +188,7 @@ func TestReview_RandomInterleavings(t *testing.T) {
 				lister = st
 			} else {
 				dsn := filepath.Join(t.TempDir(), "rt.sqlite")
-				for i := 0; i < 2; i++ {
+				for range 2 {
 					sq, err := sqlitedriver.New(config.StateConfig{Driver: "sqlite", DSN: dsn})
 					if err != nil {
 						t.Fatal(err)
@@ -203,7 +203,7 @@ func TestReview_RandomInterleavings(t *testing.T) {
 				}
 			}
 			ids := []string{}
-			for i := 0; i < 12; i++ {
+			for i := range 12 {
 				sub, err := surfaces[0].Dispatch(candUserCtx(t, "alice"), methods.MethodSkillsPublicationsCandidatesSubmit, &types.SkillPublicationCandidateSubmitRequest{Identity: candID("alice"), AgentID: "agent-a", Name: fmt.Sprintf("s%d", i), IdempotencyKey: fmt.Sprintf("k%d", i)})
 				if err != nil {
 					t.Fatal(err)
@@ -213,8 +213,8 @@ func TestReview_RandomInterleavings(t *testing.T) {
 			stale.Store(true) // every claim looks stale → maximal resolution racing
 			var wg sync.WaitGroup
 			for i, id := range ids {
-				for round := 0; round < 3; round++ {
-					for w := 0; w < 4; w++ {
+				for round := range 3 {
+					for w := range 4 {
 						wg.Add(1)
 						go func(i, w, round int, id string) {
 							defer wg.Done()

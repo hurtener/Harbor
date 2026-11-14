@@ -235,7 +235,7 @@ func TestAgentPackCopy_ConcurrentCopiesNeverStrandTheActiveReference(t *testing.
 	}
 	fx.seedCopyTarget(t)
 	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

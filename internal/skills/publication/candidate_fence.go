@@ -29,7 +29,7 @@ func checkReservedExtra(skill skills.Skill, f *CandidateFence) error {
 	if f == nil {
 		return fmt.Errorf("%w: extra key %q is reserved", ErrInvalidRequest, CandidateMarkerKey)
 	}
-	if marker, _ := value.(string); marker != f.CandidateID {
+	if marker, ok := value.(string); !ok || marker != f.CandidateID {
 		return fmt.Errorf("%w: candidate marker does not name this candidate", ErrInvalidRequest)
 	}
 	return nil
@@ -77,7 +77,7 @@ func candidateRevision(pubs []Publication, candidateID string) (CandidateResolut
 	}
 	for _, p := range pubs {
 		for i, rev := range p.Revisions {
-			if marker, _ := rev.Skill.Extra[CandidateMarkerKey].(string); marker == candidateID {
+			if marker, ok := rev.Skill.Extra[CandidateMarkerKey].(string); ok && marker == candidateID {
 				res := CandidateResolution{Applied: true, Publication: revisionMetadata(p, rev)}
 				op := "publish"
 				if i > 0 {
