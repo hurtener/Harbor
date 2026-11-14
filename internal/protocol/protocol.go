@@ -197,9 +197,11 @@ func NewControlSurface(taskRegistry tasks.TaskRegistry, steeringRegistry *steeri
 // `inject_context` additionally require that the verified bearer's signed
 // agent reach names the agent the target run executes under. The agent is
 // read from the task record, never from the request. Authorship is still
-// checked first, and the controls that only reduce or decide a run
-// (`cancel`, `pause`, `resume`, `approve`, `reject`) are unaffected. The
-// admin scope is not an exemption. Off by default.
+// checked first. A `reject` carrying a non-empty reason needs the same
+// reach, because the reason reaches the model as the rejected tool's error
+// text. The controls that only reduce or decide a run (`cancel`, `pause`,
+// `resume`, `approve`, a reason-less `reject`) are unaffected. The admin
+// scope is not an exemption. Off by default.
 func WithSteeringRequiresAgentReach(required bool) Option {
 	return func(s *ControlSurface) { s.steeringRequiresAgentReach = required }
 }

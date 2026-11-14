@@ -2439,8 +2439,10 @@ type A2APeerConfig struct {
 // the controls that add input to a run (`user_message`, `redirect`,
 // `inject_context`), that the verified bearer's signed `agent_reach`
 // names the agent the run executes under, as recorded on the task at
-// spawn. Authorship is still checked first; `cancel`, `pause`, `resume`,
-// `approve` and `reject` stay authorship-only. Restart-required.
+// spawn. A `reject` with a non-empty reason needs the same reach, since the
+// reason reaches the model. Authorship is still checked first; `cancel`,
+// `pause`, `resume`, `approve` and a reason-less `reject` stay
+// authorship-only. Restart-required.
 //
 // `RequireExecutionProof` (default false) refuses every `start` that does
 // not carry a verified signed execution start proof (the signed body

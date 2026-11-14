@@ -1789,8 +1789,10 @@ add input to a run (`user_message`, `redirect`, `inject_context`) also
 require the verified bearer's signed `agent_reach` to name the agent the
 run executes under. That agent is read from the task record (the start
 admission receipt, else the agent named at start, else the configured
-default agent), never from the request. Authorship is still checked
-first. `cancel`, `pause`, `resume`, `approve` and `reject` stay
+default agent), never from the request. A `reject` with a non-empty
+`reason` needs the same reach, because the reason reaches the model as the
+rejected tool's error text. Authorship is still checked first. `cancel`,
+`pause`, `resume`, `approve` and a `reject` without a reason stay
 authorship-only. The `admin` scope is not an exemption. A refusal is HTTP
 403 `scope_mismatch`. Restart-required.
 
@@ -1800,8 +1802,9 @@ Opt-in (D-513). Default: `false`. When `true`, `start` is refused with HTTP
 403 `scope_mismatch` ("start requires a signed execution proof") unless the
 bearer carries the signed execution start claims, the signed body digest
 matches the raw start body and the signed idempotency key equals the
-start's. `flows.run` cannot carry a proof and is refused with 403
-`scope_mismatch`. The `admin` scope is not an exemption. Tasks a run spawns
+start's. `flows.run` is refused while this is on (403 `scope_mismatch`,
+admin included): it starts a run but cannot carry a proof, so the Console
+Flows page's "run" action stops working on such a runtime. The `admin` scope is not an exemption. Tasks a run spawns
 internally are unaffected. Restart-required.
 
 ---

@@ -17476,8 +17476,18 @@ executes under.
 - *Ordering.* Authorship (D-509: the run's writer, or `admin`) and the
   per-control scope minimum are checked first; the reach check runs before
   the inbox lookup, through the shared signed-reach gate.
-- *Scope.* `cancel`, `pause`, `resume`, `approve` and `reject` stay
-  authorship-only. `resume` adds no model input: its payload is stored on
+- *Reject reason.* `reject` carries an optional free-text `reason`. When an
+  approval gate owns the pause, the reason becomes the rejected tool's error
+  text ("approval: tool X rejected: reason"), which the run's next planner
+  step sees as the tool's error observation, so it is input by another door.
+  A `reject` whose payload carries a reason (any value other than absent,
+  null or the empty string) therefore needs the same reach, through the
+  same recorded-agent helper; refusal: 403 `scope_mismatch`, "a reject
+  reason requires agent reach to the run's agent; reject without a reason
+  instead". A `reject` without a reason stays authorship-only. The
+  `approve` reason reaches only the approval events and is unaffected.
+- *Scope.* `cancel`, `pause`, `resume`, `approve` and a reason-less
+  `reject` stay authorship-only. `resume` adds no model input: its payload is stored on
   the pause record and the only registered continuation (MCP connection
   auth) reads the continuation's own data, not the resume payload. The
   admin-only `prioritize` is unaffected.
@@ -17487,6 +17497,9 @@ executes under.
   compares the tenant first.
 - *Refusal.* HTTP 403 `scope_mismatch`, "steering this run requires agent
   reach to the run's agent", the code a reach-less `start` gets.
+- *Transports.* Both checks live in the shared surfaces every transport
+  converges on (`ControlSurface.Dispatch` for start and steering, the flows
+  surface for `flows.run`), not in a REST handler.
 
 `protocol.require_execution_proof` refuses every `start` that does not carry
 a verified signed execution start proof.
@@ -17502,8 +17515,11 @@ a verified signed execution start proof.
 - *Other external spawn paths.* `start` is the only Protocol method that
   calls `tasks.Spawn` directly. `flows.run` (admin-only) reaches it through
   `SpawnTool` as a parentless foreground task that the run-loop driver
-  drives; it cannot carry a proof, so it is refused (403 `scope_mismatch`)
-  while the setting is on. `prepare` warms a session and spawns nothing;
+  drives. It cannot carry a proof, so while the setting is on `flows.run`
+  is refused (403 `scope_mismatch`, "flows.run: runs require a signed
+  execution proof, which flows.run cannot carry"), admin included. The
+  admin Console Flows page calls it from the browser, so its run action is
+  unavailable on such a runtime. `prepare` warms a session and spawns nothing;
   restart redrive re-drives existing tasks and spawns none.
 - *Internal spawns.* Child tasks a run spawns (planner `SpawnTask` through
   the dispatch executor, deterministic planner steps) and tool tasks go to
@@ -17520,13 +17536,6 @@ signed-reach gate and the verified start proof.
 
 **Known limits.**
 
-- `reject` carries an optional free-text `reason` (bounded by the steering
-  payload limits, 4096 characters per string). When an approval gate owns
-  the pause, the reason becomes the rejected tool's error text
-  ("approval: tool X rejected: reason"), which the run's next planner step
-  sees as the tool's error observation. A reach-less author can therefore
-  still place bounded text in front of the model through `reject`. The
-  `approve` reason reaches only the approval events.
 - The settings are per runtime. A deployment that mixes runtimes with and
   without them enforces each runtime's own setting.
 

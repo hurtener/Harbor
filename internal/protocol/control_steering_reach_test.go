@@ -76,7 +76,8 @@ var steeringCases = []struct {
 	{methods.MethodPause, nil, false},
 	{methods.MethodResume, nil, false},
 	{methods.MethodApprove, map[string]any{"reason": "ok"}, false},
-	{methods.MethodReject, map[string]any{"reason": "no"}, false},
+	{methods.MethodReject, nil, false},
+	{methods.MethodReject, map[string]any{"reason": ""}, false},
 }
 
 func steer(ctx context.Context, s *protocol.ControlSurface, m methods.Method, run identity.Quadruple, payload map[string]any) error {
@@ -204,5 +205,40 @@ func TestSteeringRequiresAgentReach_CrossTenant(t *testing.T) {
 		if err := steer(ctxA, s, m, runA, payload); err != nil {
 			t.Fatalf("tenant-A bearer %s on own run = %v", m, err)
 		}
+	}
+}
+
+// A reject reason reaches the model as the rejected tool's error text, so
+// with the setting on a non-empty reason needs reach to the run's agent. A
+// reject without a reason stays authorship-only.
+func TestSteeringRequiresAgentReach_RejectReason(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	s := steerReachSurface(t, fx, true)
+	run := startSteerRun(t, fx, s, steerAuthor, "agent-a", "reject")
+	for _, reason := range []any{"not this tool", " ", 42, map[string]any{"text": "x"}} {
+		err := steer(reachCtx(t, steerAuthor, nil), s, methods.MethodReject, run, map[string]any{"reason": reason})
+		if got := codeOf(t, err); got != protoerrors.CodeScopeMismatch {
+			t.Fatalf("reach-less reject with reason %v = %v, want scope_mismatch", reason, err)
+		}
+		if got := codeOf(t, steer(reachCtx(t, steerAuthor, []string{"agent-b"}), s, methods.MethodReject, run, map[string]any{"reason": reason})); got != protoerrors.CodeScopeMismatch {
+			t.Fatalf("other-agent reject with reason %v code = %q", reason, got)
+		}
+	}
+	for _, payload := range []map[string]any{nil, {"reason": ""}, {"reason": nil}} {
+		if err := steer(reachCtx(t, steerAuthor, nil), s, methods.MethodReject, run, payload); err != nil {
+			t.Fatalf("reach-less reject without reason %v = %v, want accepted", payload, err)
+		}
+	}
+	if err := steer(reachCtx(t, steerAuthor, []string{"agent-a"}), s, methods.MethodReject, run, map[string]any{"reason": "not this tool"}); err != nil {
+		t.Fatalf("reject with reason and reach = %v, want accepted", err)
+	}
+	// Approve reasons reach only events and stay authorship-only.
+	if err := steer(reachCtx(t, steerAuthor, nil), s, methods.MethodApprove, run, map[string]any{"reason": "fine"}); err != nil {
+		t.Fatalf("reach-less approve with reason = %v, want accepted", err)
+	}
+	// Setting off: a reach-less reject with a reason is accepted.
+	off := steerReachSurface(t, fx, false)
+	if err := steer(reachCtx(t, steerAuthor, nil), off, methods.MethodReject, run, map[string]any{"reason": "x"}); err != nil {
+		t.Fatalf("setting off: reject with reason = %v", err)
 	}
 }

@@ -854,9 +854,19 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 	if err := steering.CheckScope(ctrlType, scope, caller.TenantID, q); err != nil {
 		return nil, mapSteeringError(string(method), err)
 	}
-	if s.steeringRequiresAgentReach && addsRunInput(ctrlType) {
-		if err := s.authorizeRunAgentReach(ctx, string(method), q); err != nil {
-			return nil, err
+	if s.steeringRequiresAgentReach {
+		if addsRunInput(ctrlType) {
+			if err := s.authorizeRunAgentReach(ctx, string(method), q,
+				"steering this run requires agent reach to the run's agent"); err != nil {
+				return nil, err
+			}
+		} else if ctrlType == steering.ControlReject && rejectCarriesReason(cr.Payload) {
+			// A rejection reason reaches the model as the rejected tool's
+			// error text, so it is input by another door.
+			if err := s.authorizeRunAgentReach(ctx, string(method), q,
+				"a reject reason requires agent reach to the run's agent; reject without a reason instead"); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -915,13 +925,27 @@ func addsRunInput(t steering.ControlType) bool {
 	}
 }
 
+// rejectCarriesReason reports whether a reject payload carries a reason.
+// Any present value other than the empty string counts, so a reason of an
+// unexpected type is treated as input rather than ignored.
+func rejectCarriesReason(payload map[string]any) bool {
+	reason, ok := payload["reason"]
+	if !ok || reason == nil {
+		return false
+	}
+	if text, isString := reason.(string); isString {
+		return text != ""
+	}
+	return true
+}
+
 // authorizeRunAgentReach requires the verified bearer's signed agent reach
 // to name the agent the target run executes under. The agent comes from
 // the task record (recordedRunAgent), never from the request body. A task
-// that cannot be read, or whose agent cannot be determined, is refused.
-func (s *ControlSurface) authorizeRunAgentReach(ctx context.Context, method string, run identity.Quadruple) error {
-	denied := protoerrors.Newf(protoerrors.CodeScopeMismatch,
-		"method %q: steering this run requires agent reach to the run's agent", method)
+// that cannot be read, or whose agent cannot be determined, is refused
+// with the given reason.
+func (s *ControlSurface) authorizeRunAgentReach(ctx context.Context, method string, run identity.Quadruple, reason string) error {
+	denied := protoerrors.Newf(protoerrors.CodeScopeMismatch, "method %q: %s", method, reason)
 	if s.tasks == nil || s.reach == nil {
 		return denied
 	}

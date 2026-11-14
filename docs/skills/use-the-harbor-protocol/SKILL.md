@@ -24,8 +24,9 @@ A runtime can make the proof mandatory with `protocol.require_execution_proof`
 (D-513): `start` without a verified proof answers 403 `scope_mismatch`, admin
 included, and `flows.run` is refused. With
 `protocol.steering_requires_agent_reach`, `user_message`, `redirect` and
-`inject_context` also need signed `agent_reach` to the run's recorded agent;
-`cancel`, `pause`, `resume`, `approve` and `reject` stay authorship-only.
+`inject_context` also need signed `agent_reach` to the run's recorded agent,
+as does a `reject` with a non-empty `reason`; `cancel`, `pause`, `resume`,
+`approve` and a reason-less `reject` stay authorship-only.
 
 For browser artifact transfer, issue a short-lived signed `artifact_transfer`
 object with `mode`, `id`, and `max_bytes`, empty elevated scopes/agent reach,

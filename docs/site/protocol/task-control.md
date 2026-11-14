@@ -68,8 +68,9 @@ execution proof") unless the bearer carries the signed execution start
 claims ([auth & identity](./auth-and-identity.md#the-jwt)), the signed digest
 matches the exact request bytes and the signed idempotency key equals
 `idempotency_key`. Nothing is created on refusal, and the `admin` scope is
-not an exemption. `flows.run` cannot carry a proof and is refused on such a
-runtime. Child tasks a run spawns internally do not go through `start`.
+not an exemption. `flows.run` is refused on such a runtime (`403
+scope_mismatch`, admin included) because it starts a run but cannot carry a
+proof. Child tasks a run spawns internally do not go through `start`.
 
 ## Naming an agent
 
@@ -169,8 +170,10 @@ names the agent the run executes under. The runtime reads that agent from
 the task record, never from the request, so a read-only bearer without
 reach cannot add input to a run it wrote. The check runs after authorship,
 and a refusal is `403 scope_mismatch`. The `admin` scope is not an
-exemption. `cancel`, `pause`, `resume`, `approve` and `reject` stay
-authorship-only.
+exemption. A `reject` whose payload carries a non-empty `reason` needs the
+same reach, because the reason reaches the model as the rejected tool's
+error text; a `reject` without a reason, `cancel`, `pause`, `resume` and
+`approve` stay authorship-only.
 
 ## Preconditions: controls target LIVE runs
 

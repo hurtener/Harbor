@@ -171,10 +171,18 @@ func TestE2E_RequireExecutionProofAndSteeringReach_On(t *testing.T) {
 			status, raw := arPost(t, s, "/v1/control/"+method, srpToken(t, s, id, nil, nil, nil), srpControlBody(t, id, runID, nil))
 			arAssertStatus(t, status, raw, http.StatusNotFound)
 		}
+		// A reject reason reaches the model, so it needs reach too.
+		status, raw := arPost(t, s, "/v1/control/reject", srpToken(t, s, id, nil, nil, nil),
+			srpControlBody(t, id, runID, map[string]any{"reason": "not this"}))
+		arAssertStatus(t, status, raw, http.StatusForbidden)
+		arAssertCode(t, raw, "scope_mismatch")
+		status, raw = arPost(t, s, "/v1/control/reject", srpToken(t, s, id, nil, []string{agent}, nil),
+			srpControlBody(t, id, runID, map[string]any{"reason": "not this"}))
+		arAssertStatus(t, status, raw, http.StatusNotFound)
 		// A body agent_id is not part of the control wire shape.
 		body := srpControlBody(t, id, runID, map[string]any{"message": "x"})
 		body["agent_id"] = arOtherAgent
-		status, raw := arPost(t, s, "/v1/control/user_message", srpToken(t, s, id, nil, []string{arOtherAgent}, nil), body)
+		status, raw = arPost(t, s, "/v1/control/user_message", srpToken(t, s, id, nil, []string{arOtherAgent}, nil), body)
 		arAssertStatus(t, status, raw, http.StatusBadRequest)
 	})
 

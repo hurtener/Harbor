@@ -24,20 +24,20 @@ Two versions move independently in Harbor (RFC §5.3):
 - **Opt-in steering agent reach (D-513).** With
   `protocol.steering_requires_agent_reach: true`, `user_message`, `redirect`
   and `inject_context` also require the bearer's signed `agent_reach` to name
-  the agent recorded on the run's task (never a request field). Authorship is
-  still checked first; `cancel`, `pause`, `resume`, `approve` and `reject`
-  stay authorship-only. The `admin` scope is not an exemption. A refusal is
+  the agent recorded on the run's task (never a request field), and so does a
+  `reject` with a non-empty `reason`, which reaches the model as the rejected
+  tool's error text. Authorship is still checked first; `cancel`, `pause`,
+  `resume`, `approve` and a reason-less `reject` stay authorship-only. The `admin` scope is not an exemption. A refusal is
   403 `scope_mismatch`. Off by default; behaviour is unchanged when off.
 - **Opt-in required start execution proof (D-513).** With
   `protocol.require_execution_proof: true`, `start` is refused with 403
   `scope_mismatch` ("start requires a signed execution proof") unless the
   bearer carries a verified signed execution start proof whose body digest
-  and idempotency key match. Nothing is created on refusal, `admin` is not
-  exempt, and `flows.run`, which cannot carry a proof, is refused. Child tasks
-  a run spawns are unaffected. Off by default.
-- **Known limit (D-513).** A `reject` `reason` reaches the model as the
-  rejected tool's error text, so a reach-less author can still send bounded
-  text to the model through `reject`. No wire change.
+  and idempotency key match. Nothing is created on refusal and `admin` is not
+  exempt. `flows.run` starts a run but cannot carry a proof, so it is refused
+  with 403 `scope_mismatch` too, which disables the Console Flows page's run
+  action on such a runtime. Child tasks a run spawns are unaffected. Off by
+  default. No wire change.
 
 ## [1.55.0] — 2026-11-14
 
