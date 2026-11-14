@@ -59,6 +59,10 @@ func (s *AuthorizedStore) caller(ctx context.Context, caller identity.Quadruple)
 	if s == nil || s.store == nil || s.reach == nil {
 		return ErrAuthorizedStoreMisconfigured
 	}
+	return verifiedCaller(ctx, caller)
+}
+
+func verifiedCaller(ctx context.Context, caller identity.Quadruple) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -72,14 +76,25 @@ func (s *AuthorizedStore) caller(ctx context.Context, caller identity.Quadruple)
 	return nil
 }
 
-func (s *AuthorizedStore) adminCaller(ctx context.Context, caller identity.Quadruple) error {
-	if err := s.caller(ctx, caller); err != nil {
+// verifiedAdmin is the organization-admin gate: the caller is the verified
+// identity and holds the verified admin scope. AuthorizedStore applies it to
+// every organization mutation and the candidate accept applies it directly,
+// because the accept writes the publication aggregate itself.
+func verifiedAdmin(ctx context.Context, caller identity.Quadruple) error {
+	if err := verifiedCaller(ctx, caller); err != nil {
 		return err
 	}
 	if !auth.HasScope(ctx, auth.ScopeAdmin) {
 		return ErrAdminRequired
 	}
 	return nil
+}
+
+func (s *AuthorizedStore) adminCaller(ctx context.Context, caller identity.Quadruple) error {
+	if s == nil || s.store == nil || s.reach == nil {
+		return ErrAuthorizedStoreMisconfigured
+	}
+	return verifiedAdmin(ctx, caller)
 }
 
 func (s *AuthorizedStore) agentCaller(ctx context.Context, caller identity.Quadruple, agentID string) error {

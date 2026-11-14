@@ -130,10 +130,6 @@ type PublishRequest struct {
 	Name           string
 	Skill          skills.Skill
 	ExpectedAbsent bool
-	// Candidate, when set, makes this a candidate acceptance's publish: it
-	// commits only under the candidate's live fence, and a publish the
-	// candidate already produced is returned instead of written again.
-	Candidate *CandidateFence
 }
 
 // SuccessorRequest publishes an immutable successor revision for an existing
@@ -144,8 +140,6 @@ type SuccessorRequest struct {
 	ExpectedGeneration  uint64
 	ExpectedContentHash string
 	Skill               skills.Skill
-	// Candidate fences a candidate acceptance's publish (see PublishRequest).
-	Candidate *CandidateFence
 }
 
 // RetireRequest terminally retires a publication. Retirement is not a grace
@@ -211,17 +205,6 @@ type Store interface {
 	// Revisions lists one publication's immutable revisions, oldest first,
 	// as content-free metadata (admin-only through AuthorizedStore).
 	Revisions(ctx context.Context, caller identity.Quadruple, publicationID string) ([]Metadata, error)
-	// FenceCandidate installs or resumes token (the acceptance's claim
-	// sequence number) as the candidate's live fence. A token at or below the
-	// revoked one, or below the live one, is ErrCandidateFenced; a newer token
-	// revokes the older live fence in the same write.
-	FenceCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, token uint64) error
-	// ResolveCandidate atomically reports the revision the candidate's
-	// publish produced, or, if none, revokes the fence of the acceptance the
-	// caller saw (expected) and anything older. A live fence newer than
-	// expected is ErrConflict (re-read). Any error means "unknown": do not
-	// release the claim.
-	ResolveCandidate(ctx context.Context, caller identity.Quadruple, candidateID string, expected uint64) (CandidateResolution, error)
 	Close(ctx context.Context) error
 }
 
@@ -460,7 +443,6 @@ type MemoryStore struct {
 	closed  bool
 	clock   func() time.Time
 	pubs    map[string][]Publication
-	fences  map[string]map[string]fenceState
 	refs    map[string]Reference
 	ops     map[string]operation
 }
@@ -569,17 +551,6 @@ func (m *MemoryStore) Publish(ctx context.Context, caller identity.Quadruple, re
 	if err != nil {
 		return Metadata{}, Receipt{}, err
 	}
-	if err := checkReservedExtra(skill, req.Candidate); err != nil {
-		return Metadata{}, Receipt{}, err
-	}
-	if req.Candidate != nil {
-		if res, ok := candidateRevision(m.pubs[caller.TenantID], req.Candidate.CandidateID); ok {
-			return res.Publication, res.Receipt, nil
-		}
-		if err := checkFence(m.fencesFor(caller.TenantID), req.Candidate); err != nil {
-			return Metadata{}, Receipt{}, err
-		}
-	}
 	fingerprint := "publish\x00" + canonicalName(req.Name) + "\x00" + skill.ContentHash
 	opKey := opKey(caller, req.IdempotencyKey)
 	if prior, ok, err := m.checkOp(opKey, fingerprint); err != nil || ok {
@@ -593,23 +564,12 @@ func (m *MemoryStore) Publish(ctx context.Context, caller identity.Quadruple, re
 		}
 		return m.replayMetadata(opKey, Metadata{}), prior, nil
 	}
-	for _, p := range m.pubs[caller.TenantID] {
-		if p.Name == canonicalName(req.Name) {
-			return Metadata{}, Receipt{}, ErrConflict
-		}
+	a := durableAggregate{Publications: m.pubs[caller.TenantID]}
+	result, receipt, err := a.publishNew(m.runtime, m.clock().UTC(), caller.TenantID, req.Name, skill, req.IdempotencyKey)
+	if err != nil {
+		return Metadata{}, Receipt{}, err
 	}
-	if len(m.pubs[caller.TenantID]) >= maxPublications {
-		return Metadata{}, Receipt{}, fmt.Errorf("%w: publication limit reached", ErrConflict)
-	}
-	now := m.clock().UTC()
-	publicationID := newOpaqueID("pub", caller.TenantID+canonicalName(req.Name), uint64(len(m.pubs[caller.TenantID])+1))
-	revisionID := newOpaqueID("rev", skill.ContentHash, 1)
-	skill = stampOriginRef(skill, publicationID, revisionID)
-	p := Publication{PublicationID: publicationID, RevisionID: revisionID, Name: canonicalName(req.Name), ContentHash: skill.ContentHash, State: StateActive, Generation: 1, RuntimeID: m.runtime, CreatedAt: now, UpdatedAt: now, Skill: cloneSkill(skill)}
-	p.Revisions = []Revision{currentRevision(p)}
-	m.pubs[caller.TenantID] = append(m.pubs[caller.TenantID], p)
-	receipt := Receipt{OperationID: req.IdempotencyKey, Operation: "publish", PublicationID: p.PublicationID, RevisionID: p.RevisionID, Generation: p.Generation, State: p.State, AfterHash: p.ContentHash, UpdatedAt: now}
-	result := metadata(p)
+	m.pubs[caller.TenantID] = a.Publications
 	m.recordPublicationOp(opKey, fingerprint, receipt, result)
 	return result, receipt, nil
 }
@@ -668,17 +628,6 @@ func (m *MemoryStore) PublishSuccessor(ctx context.Context, caller identity.Quad
 	if err != nil {
 		return Metadata{}, Receipt{}, err
 	}
-	if err := checkReservedExtra(skill, req.Candidate); err != nil {
-		return Metadata{}, Receipt{}, err
-	}
-	if req.Candidate != nil {
-		if res, ok := candidateRevision(m.pubs[caller.TenantID], req.Candidate.CandidateID); ok {
-			return res.Publication, res.Receipt, nil
-		}
-		if err := checkFence(m.fencesFor(caller.TenantID), req.Candidate); err != nil {
-			return Metadata{}, Receipt{}, err
-		}
-	}
 	fingerprint := fmt.Sprintf("successor\x00%s\x00%d\x00%s\x00%s", req.PublicationID, req.ExpectedGeneration, req.ExpectedContentHash, skill.ContentHash)
 	opKey := opKey(caller, req.IdempotencyKey)
 	if prior, ok, err := m.checkOp(opKey, fingerprint); err != nil || ok {
@@ -687,34 +636,11 @@ func (m *MemoryStore) PublishSuccessor(ctx context.Context, caller identity.Quad
 		}
 		return m.replayMetadata(opKey, Metadata{}), prior, nil
 	}
-	p, idx, err := m.publication(caller, req.PublicationID)
+	a := durableAggregate{Publications: m.pubs[caller.TenantID]}
+	result, receipt, err := a.publishSuccessor(m.clock().UTC(), req.PublicationID, req.ExpectedGeneration, req.ExpectedContentHash, skill, req.IdempotencyKey)
 	if err != nil {
 		return Metadata{}, Receipt{}, err
 	}
-	if canonicalName(skill.Name) != p.Name {
-		return Metadata{}, Receipt{}, fmt.Errorf("%w: successor skill name must match publication name", ErrInvalidRequest)
-	}
-	if p.State == StateRetired {
-		return Metadata{}, Receipt{}, ErrRetired
-	}
-	if p.Generation != req.ExpectedGeneration || p.ContentHash != req.ExpectedContentHash {
-		return Metadata{}, Receipt{}, ErrConflict
-	}
-	if len(p.Revisions) >= maxRevisions {
-		return Metadata{}, Receipt{}, fmt.Errorf("%w: revision limit reached", ErrConflict)
-	}
-	now := m.clock().UTC()
-	revisionID := newOpaqueID("rev", skill.ContentHash, p.Generation+1)
-	skill = stampOriginRef(skill, p.PublicationID, revisionID)
-	p.RevisionID = revisionID
-	p.ContentHash = skill.ContentHash
-	p.Generation++
-	p.UpdatedAt = now
-	p.Skill = cloneSkill(skill)
-	p.Revisions = append(p.Revisions, currentRevision(p))
-	m.pubs[caller.TenantID][idx] = p
-	receipt := Receipt{OperationID: req.IdempotencyKey, Operation: "publish_successor", PublicationID: p.PublicationID, RevisionID: p.RevisionID, Generation: p.Generation, State: p.State, BeforeHash: req.ExpectedContentHash, AfterHash: p.ContentHash, UpdatedAt: now}
-	result := metadata(p)
 	m.recordPublicationOp(opKey, fingerprint, receipt, result)
 	return result, receipt, nil
 }
@@ -1034,11 +960,9 @@ func NewStateStore(st state.StateStore, runtimeID string) (*StateStoreStore, err
 type durableAggregate struct {
 	Publications []Publication        `json:"publications"`
 	Operations   map[string]operation `json:"operations,omitempty"`
-	// CandidateFenceTokens maps a candidate to its integer acceptance fence;
-	// fenced publishes commit only under the live token. (Unreleased interim
-	// builds wrote string fences under another key; those are ignored, which
-	// leaves such a candidate unfenced — revoked and resolvable — never stuck.)
-	CandidateFenceTokens map[string]fenceState `json:"candidate_fence_tokens,omitempty"`
+	// Releases before 1.55 also wrote candidate acceptance fences
+	// (candidate_fence_tokens); decoding ignores them and the next write
+	// drops them (D-512).
 }
 type durableReference struct {
 	Reference  Reference            `json:"reference"`
@@ -1128,17 +1052,6 @@ func (d *StateStoreStore) Publish(ctx context.Context, c identity.Quadruple, r P
 	if err != nil {
 		return Metadata{}, Receipt{}, err
 	}
-	if err := checkReservedExtra(skill, r.Candidate); err != nil {
-		return Metadata{}, Receipt{}, err
-	}
-	if r.Candidate != nil {
-		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {
-			return res.Publication, res.Receipt, nil
-		}
-		if err := checkFence(a.CandidateFenceTokens, r.Candidate); err != nil {
-			return Metadata{}, Receipt{}, err
-		}
-	}
 	fp := "publish\x00" + canonicalName(r.Name) + "\x00" + skill.ContentHash
 	opKey := durableOpKey(c, r.IdempotencyKey)
 	if prior, ok := a.Operations[opKey]; ok {
@@ -1152,23 +1065,10 @@ func (d *StateStoreStore) Publish(ctx context.Context, c identity.Quadruple, r P
 		}
 		return replayOperationMetadata(prior, Metadata{}), prior.Receipt, nil
 	}
-	for _, p := range a.Publications {
-		if p.Name == canonicalName(r.Name) {
-			return Metadata{}, Receipt{}, ErrConflict
-		}
+	result, receipt, err := a.publishNew(d.runtime, d.clock().UTC(), c.TenantID, r.Name, skill, r.IdempotencyKey)
+	if err != nil {
+		return Metadata{}, Receipt{}, err
 	}
-	if len(a.Publications) >= maxPublications {
-		return Metadata{}, Receipt{}, fmt.Errorf("%w: publication limit reached", ErrConflict)
-	}
-	now := d.clock().UTC()
-	publicationID := newOpaqueID("pub", c.TenantID+r.Name, uint64(len(a.Publications)+1))
-	revisionID := newOpaqueID("rev", skill.ContentHash, 1)
-	skill = stampOriginRef(skill, publicationID, revisionID)
-	p := Publication{PublicationID: publicationID, RevisionID: revisionID, Name: canonicalName(r.Name), ContentHash: skill.ContentHash, State: StateActive, Generation: 1, RuntimeID: d.runtime, CreatedAt: now, UpdatedAt: now, Skill: cloneSkill(skill)}
-	p.Revisions = []Revision{currentRevision(p)}
-	a.Publications = append(a.Publications, p)
-	receipt := Receipt{OperationID: r.IdempotencyKey, Operation: "publish", PublicationID: p.PublicationID, RevisionID: p.RevisionID, Generation: p.Generation, State: p.State, AfterHash: p.ContentHash, UpdatedAt: now}
-	result := metadata(p)
 	a.Operations[opKey] = operation{Fingerprint: fp, Receipt: receipt, ResultMetadata: result}
 	if err := d.saveAggregate(ctx, c.TenantID, old, present, a); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
@@ -1178,6 +1078,79 @@ func (d *StateStoreStore) Publish(ctx context.Context, c identity.Quadruple, r P
 	}
 	return result, receipt, nil
 }
+func (a *durableAggregate) index(publicationID string) int {
+	for i, p := range a.Publications {
+		if p.PublicationID == publicationID {
+			return i
+		}
+	}
+	return -1
+}
+
+func (a *durableAggregate) find(publicationID string) (Publication, error) {
+	if i := a.index(publicationID); i >= 0 {
+		return clonePublication(a.Publications[i]), nil
+	}
+	return Publication{}, ErrNotFound
+}
+
+// publishNew appends a new publication to the aggregate. It is a pure
+// mutation (no I/O): Publish and the atomic candidate accept both apply it
+// and persist the result under their own compare-and-set. skill is already
+// validated for name.
+func (a *durableAggregate) publishNew(runtime string, now time.Time, tenant, name string, skill skills.Skill, operationID string) (Metadata, Receipt, error) {
+	name = canonicalName(name)
+	for _, p := range a.Publications {
+		if p.Name == name {
+			return Metadata{}, Receipt{}, ErrConflict
+		}
+	}
+	if len(a.Publications) >= maxPublications {
+		return Metadata{}, Receipt{}, fmt.Errorf("%w: publication limit reached", ErrConflict)
+	}
+	publicationID := newOpaqueID("pub", tenant+name, uint64(len(a.Publications)+1))
+	revisionID := newOpaqueID("rev", skill.ContentHash, 1)
+	skill = stampOriginRef(skill, publicationID, revisionID)
+	p := Publication{PublicationID: publicationID, RevisionID: revisionID, Name: name, ContentHash: skill.ContentHash, State: StateActive, Generation: 1, RuntimeID: runtime, CreatedAt: now, UpdatedAt: now, Skill: cloneSkill(skill)}
+	p.Revisions = []Revision{currentRevision(p)}
+	a.Publications = append(a.Publications, p)
+	receipt := Receipt{OperationID: operationID, Operation: "publish", PublicationID: p.PublicationID, RevisionID: p.RevisionID, Generation: p.Generation, State: p.State, AfterHash: p.ContentHash, UpdatedAt: now}
+	return metadata(p), receipt, nil
+}
+
+// publishSuccessor appends an immutable successor revision under the exact
+// generation/hash predicates. Like publishNew it is a pure mutation.
+func (a *durableAggregate) publishSuccessor(now time.Time, publicationID string, expectedGeneration uint64, expectedHash string, skill skills.Skill, operationID string) (Metadata, Receipt, error) {
+	idx := a.index(publicationID)
+	if idx < 0 {
+		return Metadata{}, Receipt{}, ErrNotFound
+	}
+	p := clonePublication(a.Publications[idx])
+	if canonicalName(skill.Name) != p.Name {
+		return Metadata{}, Receipt{}, fmt.Errorf("%w: successor skill name must match publication name", ErrInvalidRequest)
+	}
+	if p.State == StateRetired {
+		return Metadata{}, Receipt{}, ErrRetired
+	}
+	if p.Generation != expectedGeneration || p.ContentHash != expectedHash {
+		return Metadata{}, Receipt{}, ErrConflict
+	}
+	if len(p.Revisions) >= maxRevisions {
+		return Metadata{}, Receipt{}, fmt.Errorf("%w: revision limit reached", ErrConflict)
+	}
+	revisionID := newOpaqueID("rev", skill.ContentHash, p.Generation+1)
+	skill = stampOriginRef(skill, p.PublicationID, revisionID)
+	p.RevisionID = revisionID
+	p.ContentHash = skill.ContentHash
+	p.Generation++
+	p.UpdatedAt = now
+	p.Skill = cloneSkill(skill)
+	p.Revisions = append(p.Revisions, currentRevision(p))
+	a.Publications[idx] = p
+	receipt := Receipt{OperationID: operationID, Operation: "publish_successor", PublicationID: p.PublicationID, RevisionID: p.RevisionID, Generation: p.Generation, State: p.State, BeforeHash: expectedHash, AfterHash: p.ContentHash, UpdatedAt: now}
+	return metadata(p), receipt, nil
+}
+
 func (d *StateStoreStore) loadPubs(ctx context.Context, c identity.Quadruple) (durableAggregate, state.StateRecord, bool, error) {
 	return d.loadAggregate(ctx, c.TenantID)
 }
@@ -1311,17 +1284,6 @@ func (d *StateStoreStore) PublishSuccessor(ctx context.Context, c identity.Quadr
 	if !present {
 		return Metadata{}, Receipt{}, ErrNotFound
 	}
-	if err := checkReservedExtra(skill, r.Candidate); err != nil {
-		return Metadata{}, Receipt{}, err
-	}
-	if r.Candidate != nil {
-		if res, ok := candidateRevision(a.Publications, r.Candidate.CandidateID); ok {
-			return res.Publication, res.Receipt, nil
-		}
-		if err := checkFence(a.CandidateFenceTokens, r.Candidate); err != nil {
-			return Metadata{}, Receipt{}, err
-		}
-	}
 	fp := fmt.Sprintf("successor\x00%s\x00%d\x00%s\x00%s", r.PublicationID, r.ExpectedGeneration, r.ExpectedContentHash, skill.ContentHash)
 	opKey := durableOpKey(c, r.IdempotencyKey)
 	if prior, ok := a.Operations[opKey]; ok {
@@ -1334,34 +1296,10 @@ func (d *StateStoreStore) PublishSuccessor(ctx context.Context, c identity.Quadr
 		}
 		return replayOperationMetadata(prior, metadata(p)), prior.Receipt, nil
 	}
-	p, idx, err := d.findPublication(a, r.PublicationID)
+	result, receipt, err := a.publishSuccessor(d.clock().UTC(), r.PublicationID, r.ExpectedGeneration, r.ExpectedContentHash, skill, r.IdempotencyKey)
 	if err != nil {
 		return Metadata{}, Receipt{}, err
 	}
-	if canonicalName(skill.Name) != p.Name {
-		return Metadata{}, Receipt{}, fmt.Errorf("%w: successor skill name must match publication name", ErrInvalidRequest)
-	}
-	if p.State == StateRetired {
-		return Metadata{}, Receipt{}, ErrRetired
-	}
-	if p.Generation != r.ExpectedGeneration || p.ContentHash != r.ExpectedContentHash {
-		return Metadata{}, Receipt{}, ErrConflict
-	}
-	if len(p.Revisions) >= maxRevisions {
-		return Metadata{}, Receipt{}, fmt.Errorf("%w: revision limit reached", ErrConflict)
-	}
-	now := d.clock().UTC()
-	revisionID := newOpaqueID("rev", skill.ContentHash, p.Generation+1)
-	skill = stampOriginRef(skill, p.PublicationID, revisionID)
-	p.RevisionID = revisionID
-	p.ContentHash = skill.ContentHash
-	p.Generation++
-	p.UpdatedAt = now
-	p.Skill = cloneSkill(skill)
-	p.Revisions = append(p.Revisions, currentRevision(p))
-	a.Publications[idx] = p
-	receipt := Receipt{OperationID: r.IdempotencyKey, Operation: "publish_successor", PublicationID: p.PublicationID, RevisionID: p.RevisionID, Generation: p.Generation, State: p.State, BeforeHash: r.ExpectedContentHash, AfterHash: p.ContentHash, UpdatedAt: now}
-	result := metadata(p)
 	a.Operations[opKey] = operation{Fingerprint: fp, Receipt: receipt, ResultMetadata: result}
 	if err := d.saveAggregate(ctx, c.TenantID, old, present, a); err != nil {
 		if errors.Is(err, state.ErrConditionFailed) {
