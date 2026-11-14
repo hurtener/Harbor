@@ -31,7 +31,12 @@ Two versions move independently in Harbor (RFC §5.3):
   read-reach bearer may also call an App's tools with a render admission
   when a turn of its own session recorded exactly that App
   (`turns.AppChecker`), and may restore its own saved user profile
-  (`agent_config.user.reconcile_live_profile`). `start`, other
+  (`agent_config.user.reconcile_live_profile`). The MCP provider records each
+  App on a session App ledger before publishing `mcp.app_available`, and an
+  App returned by an admitted callback joins the same ledger, so buttons work
+  the moment an App appears and inside nested Apps. Session participants may
+  read and call the shared session's Apps (ledger-checked; a render admission
+  is always required). `start`, other
   agent-configuration methods and every other agent-addressed write still
   require `agent_reach`.
 

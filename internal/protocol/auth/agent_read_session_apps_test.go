@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -30,5 +32,25 @@ func TestParseAgentReadSessionApps(t *testing.T) {
 	}
 	if !AgentReadSessionAppsAllowed(WithAgentReadSessionApps(context.Background(), true)) {
 		t.Fatal("seated opt-in not visible")
+	}
+}
+
+// TestParticipantRoutesIncludeSessionApps pins D-510: a shared-session
+// participant may reach the App routes (each handler then requires the App to
+// be on the shared session's ledger), and still nothing partition-wide.
+func TestParticipantRoutesIncludeSessionApps(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/v1/control/mcp.servers.read_resource":        true,
+		"/v1/control/mcp.apps.call_tool":               true,
+		"/v1/control/mcp.apps.tool_context":            true,
+		"/v1/control/mcp.servers.resources":            false,
+		"/v1/tools/list":                               false,
+		"/v1/agent_config/user/reconcile_live_profile": false,
+		"/v1/sessions/list":                            false,
+	} {
+		r := httptest.NewRequest(http.MethodPost, path, nil)
+		if got := participantRouteAllowed(r); got != want {
+			t.Fatalf("participant route %s = %v, want %v", path, got, want)
+		}
 	}
 }

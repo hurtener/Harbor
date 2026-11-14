@@ -1538,7 +1538,22 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 // source of truth — so a missing identity or a publish failure logs and
 // returns rather than failing the call.
 func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef, toolName string) {
-	if p.cfg.Bus == nil || ref == nil {
+	if ref == nil {
+		return
+	}
+	// D-510: record the App on the session's ledger before the render event
+	// leaves, so the own-session App check never lags what the person sees.
+	if recorder, ok := p.cfg.ToolContext.(SessionAppRecorder); ok {
+		agentID, _ := tools.EffectiveAgentConfigFrom(ctx)
+		if err := recorder.RecordSessionApp(ctx, agentID, string(p.source), ref.ResourceURI); err != nil {
+			p.logger.Warn("mcp: record session app failed",
+				slog.String("source", string(p.source)),
+				slog.String("resource_uri", ref.ResourceURI),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+	if p.cfg.Bus == nil {
 		return
 	}
 	id, ok := identity.From(ctx)

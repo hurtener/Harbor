@@ -17310,10 +17310,15 @@ each narrowly:
 
 - **App callbacks.** A `mcp.apps.call_tool` that carries a render admission
   (never the legacy binding or a bare call), names the agent, server and
-  resource explicitly, and whose exact (agent, server, resource) App is
-  recorded on a retained turn of the caller's own session
-  (`protocol.SessionAppChecker`, served by `turns.AppChecker` over the turn
-  projection). The render admission is still verified against the current
+  resource explicitly, and whose exact (agent, server, resource) App the
+  caller's own session rendered (`protocol.SessionAppChecker`). The proof is
+  the **session App ledger** (`mcpconsole.ToolContextStore`), which the MCP
+  provider writes **before** it publishes the `mcp.app_available` event, so a
+  button pressed the moment the App appears is never refused; the turn
+  projection (`turns.AppChecker`) is a fallback for Apps recorded before the
+  ledger existed. An App returned by an admitted callback (a nested App) is
+  written to the same session's ledger under the same effective agent before
+  the reply leaves, so its own buttons pass the same check. The render admission is still verified against the current
   tuple and the invocation keeps every approval, OAuth, policy, redaction and
   audit gate. Without the session proof wired, read-reach callbacks are
   refused.
@@ -17323,7 +17328,15 @@ each narrowly:
   identity and `agent_config:user` checks.
 
 Neither makes a model call, opens a run, selects an agent or changes the
-agent's configuration, which is why they fit a read entitlement. Everything
+agent's configuration, which is why they fit a read entitlement.
+
+**Session participants (D-509).** A participant bearer may now also call
+`mcp.servers.read_resource`, `mcp.apps.call_tool` and `mcp.apps.tool_context`.
+The ledger lives in the session's owner partition, so a participant sees the
+shared session's Apps. A participant reads or calls only Apps that ledger
+recorded, and a participant call always needs a render admission, whatever
+its agent reach. Everything else partition-wide stays closed to participants,
+including the live-profile restore. Everything
 else that executes, selects or mutates keeps calling `AdmitEffectiveAgent`
 and still requires `agent_reach`: `start`, `mcp.apps.call_tool` without the
 session proof, every other agent-configuration method, skill publication

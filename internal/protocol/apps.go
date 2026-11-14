@@ -76,6 +76,8 @@ type AppsSurface struct {
 	admissionGate RenderAdmissionGate
 	// sessionApps is the optional D-510 session App-reference proof.
 	sessionApps SessionAppChecker
+	// sessionAppRecorder is the optional D-510 nested-App ledger write.
+	sessionAppRecorder SessionAppRecorder
 }
 
 // RenderAdmissionAuthority is the narrow, stateless, sealed
@@ -418,6 +420,16 @@ type AppsDeps struct {
 	// admitted only if a turn of the caller's own session recorded exactly
 	// that (agent, server, resource) App. Nil refuses every read-reach call.
 	SessionApps SessionAppChecker
+	// SessionAppRecorder is the OPTIONAL ledger write for an App returned by
+	// an admitted `mcp.apps.call_tool` (a nested App, D-510). It records the
+	// App for the same session and effective agent before the reply leaves,
+	// so the nested App's own buttons pass the same own-session check.
+	SessionAppRecorder SessionAppRecorder
+}
+
+// SessionAppRecorder records an App on the ctx identity's session ledger.
+type SessionAppRecorder interface {
+	RecordSessionApp(ctx context.Context, agentID, serverID, resourceURI string) error
 }
 
 // SessionAppChecker reports whether the session of id holds a turn App
@@ -510,6 +522,7 @@ func NewAppsSurface(deps AppsDeps) (*AppsSurface, error) {
 		admissionAuthority: admissionAuthority,
 		admissionGate:      admissionGate,
 		sessionApps:        deps.SessionApps,
+		sessionAppRecorder: deps.SessionAppRecorder,
 	}, nil
 }
 
@@ -573,6 +586,14 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	idCtx, effectiveID, err := AdmitEffectiveAgentForRead(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
 	if err != nil {
 		return nil, err
+	}
+	// D-510: a session participant reads only Apps the shared session
+	// rendered (the same exact-session rule as its other routes).
+	if participant, ok := identity.ParticipantFrom(ctx); ok && participant.IsGuest(id) {
+		if !s.sessionHasApp(idCtx, id, effectiveID, r.ServerID, r.ResourceURI) {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: session participants may read only Apps this session rendered", string(method))
+		}
 	}
 	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
 	if r.AppOperation != "" {
@@ -750,6 +771,14 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		}
 		idCtx, effectiveID = readCtx, readID
 	}
+	// D-510: a session participant may call only Apps the shared session
+	// rendered, through a render admission, whatever its agent reach.
+	if participant, ok := identity.ParticipantFrom(ctx); ok && participant.IsGuest(id) {
+		if r.RenderAdmission == "" || !s.sessionHasApp(idCtx, id, effectiveID, r.ServerID, r.ResourceURI) {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: session participants may call only Apps this session rendered", string(method))
+		}
+	}
 	idCtx = tools.WithEffectiveAgentConfig(idCtx, effectiveID)
 	// The invoker re-enters the EXISTING approval / OAuth / identity
 	// tool-invocation path — a gated tool parks on the unified pause
@@ -851,6 +880,13 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		resp.Content = res.Inline
 	}
 	if res.App != nil {
+		// D-510: a nested App returned by an admitted callback joins the
+		// same session's ledger under the same effective agent before the
+		// reply leaves, so its buttons pass the own-session check. A failed
+		// write is not a failed call; the nested App then fails closed.
+		if s.sessionAppRecorder != nil {
+			_ = s.sessionAppRecorder.RecordSessionApp(idCtx, effectiveID, res.App.ServerID, res.App.ResourceURI)
+		}
 		resp.App = &types.MCPAppRef{
 			AgentID:        effectiveID,
 			ServerID:       res.App.ServerID,
@@ -877,11 +913,20 @@ func (s *AppsSurface) admitReadReachAppCall(ctx context.Context, id identity.Ide
 	if err != nil || auth.AuthorizeAdmittedAgentRead(readCtx, effectiveID) != nil {
 		return ctx, "", auth.ErrAgentReachDenied
 	}
-	has, err := s.sessionApps.SessionHasApp(readCtx, id, effectiveID, r.ServerID, r.ResourceURI)
-	if err != nil || !has {
+	if !s.sessionHasApp(readCtx, id, effectiveID, r.ServerID, r.ResourceURI) {
 		return ctx, "", auth.ErrAgentReachDenied
 	}
 	return readCtx, effectiveID, nil
+}
+
+// sessionHasApp is the fail-closed own-session App proof: unwired or a
+// lookup error answers false.
+func (s *AppsSurface) sessionHasApp(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) bool {
+	if s.sessionApps == nil {
+		return false
+	}
+	has, err := s.sessionApps.SessionHasApp(ctx, id, agentID, serverID, resourceURI)
+	return err == nil && has
 }
 
 // handleToolContext serves mcp.apps.tool_context — the tool-context read.

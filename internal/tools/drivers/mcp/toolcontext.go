@@ -73,3 +73,12 @@ func ToolCallID(runID, serverID, tool string, args json.RawMessage) string {
 	sum := h.Sum(nil)
 	return hex.EncodeToString(sum[:16])
 }
+
+// SessionAppRecorder is implemented by a ToolContextCapturer that also keeps
+// the ledger of Apps a session rendered (D-510). The provider records an App
+// BEFORE it publishes the event that renders it, so a person pressing a
+// button the instant the App appears is already covered by the own-session
+// App check; a read-reach bearer never races the turn projection.
+type SessionAppRecorder interface {
+	RecordSessionApp(ctx context.Context, agentID, serverID, resourceURI string) error
+}

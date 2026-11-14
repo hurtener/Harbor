@@ -241,3 +241,129 @@ func TestAppsSurface_ReadReachAppCallNeedsRenderAdmissionAndSessionApp(t *testin
 		t.Fatal("unwired session proof admitted a read-reach callback")
 	}
 }
+
+type recordingSessionApps struct {
+	sessionAppSpy
+	recorded [][3]string
+}
+
+func (r *recordingSessionApps) RecordSessionApp(ctx context.Context, agentID, serverID, resourceURI string) error {
+	if _, ok := identity.From(ctx); !ok {
+		return protocol.ErrAccessorNotFound
+	}
+	r.recorded = append(r.recorded, [3]string{agentID, serverID, resourceURI})
+	if r.apps == nil {
+		r.apps = map[[3]string]bool{}
+	}
+	r.apps[[3]string{agentID, serverID, resourceURI}] = true
+	return nil
+}
+
+// TestAppsSurface_NestedAppJoinsTheSessionLedger pins D-510 nested Apps: an
+// App returned by an admitted callback is recorded for the same session and
+// effective agent before the reply leaves, so its own buttons then pass.
+func TestAppsSurface_NestedAppJoinsTheSessionLedger(t *testing.T) {
+	const server, uri, nested = "srv", "ui://app/main.html", "ui://app/detail.html"
+	ledger := &recordingSessionApps{sessionAppSpy: sessionAppSpy{apps: map[[3]string]bool{{"agent-read", server, uri}: true}}}
+	inv := &stubInvoker{res: protocol.MCPAppToolResultRow{Tool: "srv_open", App: &protocol.MCPAppRefRow{ServerID: server, ResourceURI: nested}}}
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource:                 &stubResourceReader{content: protocol.MCPResourceContent{ResourceURI: uri, MIMEType: "text/html", Inline: []byte("<html>x</html>")}},
+		Invoker:                  inv,
+		ToolContext:              &stubToolContextReader{},
+		AgentResolver:            &stubAppsAgentResolver{},
+		AgentReach:               auth.NewAgentReachAuthorizer(),
+		RenderAdmissionAuthority: newFakeAdmissionAuthority(t),
+		RenderAdmissionGate:      &fixedGenerationGate{gen: "gen-1"},
+		SessionApps:              ledger,
+		SessionAppRecorder:       ledger,
+	})
+	if err != nil {
+		t.Fatalf("NewAppsSurface: %v", err)
+	}
+	ctx := auth.WithAgentReadSessionApps(readReachCtx(t), true)
+	admit := func(resource string) string {
+		resp, err := s.Dispatch(ctx, methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+			Identity: validScope(), AgentID: "agent-read", ServerID: server, ResourceURI: resource, RequestRenderAdmission: true,
+		})
+		if err != nil {
+			t.Fatalf("read %s: %v", resource, err)
+		}
+		return resp.(*types.ReadMCPResourceResponse).RenderAdmission.Token
+	}
+	call := func(resource, token string) error {
+		_, err := s.Dispatch(ctx, methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+			Identity: validScope(), AgentID: "agent-read", ServerID: server, ResourceURI: resource, RenderAdmission: token, Tool: "srv_open",
+		})
+		return err
+	}
+	if err := call(uri, admit(uri)); err != nil {
+		t.Fatalf("outer App callback: %v", err)
+	}
+	if len(ledger.recorded) != 1 || ledger.recorded[0] != [3]string{"agent-read", server, nested} {
+		t.Fatalf("nested App ledger writes = %v", ledger.recorded)
+	}
+	if err := call(nested, admit(nested)); err != nil {
+		t.Fatalf("nested App callback: %v", err)
+	}
+}
+
+// TestAppsSurface_ParticipantUsesOnlyTheSharedSessionsApps pins D-510 for
+// session participants: a participant reads and calls an App only when the
+// shared session's ledger recorded it, and a call needs a render admission.
+func TestAppsSurface_ParticipantUsesOnlyTheSharedSessionsApps(t *testing.T) {
+	const server, uri = "srv", "ui://app/main.html"
+	ledger := &sessionAppSpy{apps: map[[3]string]bool{{"agent-read", server, uri}: true}}
+	inv := &stubInvoker{res: protocol.MCPAppToolResultRow{Tool: "srv_cb"}}
+	s, err := protocol.NewAppsSurface(protocol.AppsDeps{
+		Resource:                 &stubResourceReader{content: protocol.MCPResourceContent{ResourceURI: uri, MIMEType: "text/html", Inline: []byte("<html>x</html>")}},
+		Invoker:                  inv,
+		ToolContext:              &stubToolContextReader{},
+		AgentResolver:            &stubAppsAgentResolver{},
+		AgentReach:               auth.NewAgentReachAuthorizer(),
+		RenderAdmissionAuthority: newFakeAdmissionAuthority(t),
+		RenderAdmissionGate:      &fixedGenerationGate{gen: "gen-1"},
+		SessionApps:              ledger,
+	})
+	if err != nil {
+		t.Fatalf("NewAppsSurface: %v", err)
+	}
+	// The partition is the owner's (t-1/u-1/s-1); the participant is u-guest.
+	ctx, err := identity.WithParticipant(auth.WithAgentReadSessionApps(readReachCtx(t), true), identity.Participant{UserID: "u-guest", Speaker: "Guest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(resource string) (*types.ReadMCPResourceResponse, error) {
+		resp, err := s.Dispatch(ctx, methods.MethodMCPReadResource, &types.ReadMCPResourceRequest{
+			Identity: validScope(), AgentID: "agent-read", ServerID: server, ResourceURI: resource, RequestRenderAdmission: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return resp.(*types.ReadMCPResourceResponse), nil
+	}
+	if _, err := read("ui://app/other.html"); err == nil {
+		t.Fatal("participant read an App the shared session never rendered")
+	}
+	out, err := read(uri)
+	if err != nil {
+		t.Fatalf("participant read of the session's App: %v", err)
+	}
+	if _, err := s.Dispatch(ctx, methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: validScope(), AgentID: "agent-read", ServerID: server, ResourceURI: uri, RenderAdmission: out.RenderAdmission.Token, Tool: "srv_cb",
+	}); err != nil {
+		t.Fatalf("participant App callback: %v", err)
+	}
+	// Even with agent_reach, a participant call needs a render admission and
+	// the session proof.
+	selecting, err := identity.WithParticipant(auth.WithAgentReach(verifiedCtx(t), []string{"agent-read"}), identity.Participant{UserID: "u-guest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Dispatch(selecting, methods.MethodMCPAppsCallTool, &types.MCPAppCallToolRequest{
+		Identity: validScope(), AgentID: "agent-read", ServerID: server, Tool: "srv_cb",
+	})
+	assertCode(t, err, protoerrors.CodeScopeMismatch)
+	if inv.admittedCalls != 1 {
+		t.Fatalf("participant admitted calls = %d, want 1", inv.admittedCalls)
+	}
+}

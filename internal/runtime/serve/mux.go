@@ -506,7 +506,8 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			AgentReach:               in.AgentReach,
 			RenderAdmissionAuthority: in.RenderAdmissionAuthority,
 			RenderAdmissionGate:      in.RenderAdmissionGate,
-			SessionApps:              sessionAppChecker(in.TurnsStore),
+			SessionApps:              sessionAppChecker(in.MCPToolContext, in.TurnsStore),
+			SessionAppRecorder:       sessionAppRecorder(in.MCPToolContext),
 		})
 		if asErr != nil {
 			return nil, wrapErr("mcp apps surface", asErr)
@@ -1091,11 +1092,45 @@ func wrapErr(ctx string, err error) error {
 	return fmt.Errorf("%s: %w", ctx, err)
 }
 
-// sessionAppChecker is the D-510 session App-reference proof over the turn
-// projection; nil (read-reach App callbacks refused) when it is unwired.
-func sessionAppChecker(store turns.Store) protocol.SessionAppChecker {
-	if store == nil {
+// sessionAppChecker is the D-510 own-session App proof: the session App
+// ledger the MCP providers write before publishing a render event, then the
+// turn projection for Apps recorded before the ledger existed. Nil (read-reach
+// App callbacks refused) when neither is wired.
+func sessionAppChecker(ledger *mcpconsole.ToolContextStore, store turns.Store) protocol.SessionAppChecker {
+	var checkers sessionAppCheckers
+	if ledger != nil {
+		checkers = append(checkers, ledger)
+	}
+	if store != nil {
+		checkers = append(checkers, turns.AppChecker{Store: store})
+	}
+	if len(checkers) == 0 {
 		return nil
 	}
-	return turns.AppChecker{Store: store}
+	return checkers
+}
+
+func sessionAppRecorder(ledger *mcpconsole.ToolContextStore) protocol.SessionAppRecorder {
+	if ledger == nil {
+		return nil
+	}
+	return ledger
+}
+
+// sessionAppCheckers answers true when any source recorded the App. A source
+// error is returned only when no source said yes.
+type sessionAppCheckers []protocol.SessionAppChecker
+
+func (c sessionAppCheckers) SessionHasApp(ctx context.Context, id identity.Identity, agentID, serverID, resourceURI string) (bool, error) {
+	var firstErr error
+	for _, checker := range c {
+		has, err := checker.SessionHasApp(ctx, id, agentID, serverID, resourceURI)
+		if err == nil && has {
+			return true, nil
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return false, firstErr
 }
