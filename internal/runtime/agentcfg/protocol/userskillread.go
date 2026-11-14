@@ -162,7 +162,7 @@ func supportFileContent(entry skillpkg.SupportFile, data []byte) *prototypes.Ski
 	}
 	if len(data) > MaxSupportFileReadBytes {
 		cut := MaxSupportFileReadBytes
-		for cut > 0 && !utf8.RuneStart(data[cut]) {
+		for cut > 0 && !utf8.RuneStart(data[cut]) { //nolint:gosec // G602 false positive: len(data) > MaxSupportFileReadBytes >= cut
 			cut--
 		}
 		data = data[:cut]

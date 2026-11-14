@@ -146,7 +146,10 @@ func mcpStructuredErrorCode(object map[string]any, providerText string) (MCPTool
 			return MCPToolErrorTransient, "", false
 		}
 	}
-	code, _ := object["code"].(string)
+	code, ok := object["code"].(string)
+	if !ok {
+		return MCPToolErrorTransient, "", false
+	}
 	var class MCPToolErrorClass
 	switch code {
 	case "invalid_argument":

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/hurtener/Harbor/internal/state"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	sqlitedriver "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 )
@@ -176,7 +176,7 @@ func TestCandidateStore_ConcurrentSubmitsAndClaims(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			var wg sync.WaitGroup
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
@@ -192,7 +192,7 @@ func TestCandidateStore_ConcurrentSubmitsAndClaims(t *testing.T) {
 			// Exactly one of N concurrent distinct claims wins.
 			target := all[0]
 			var wins atomic.Int32
-			for i := 0; i < 20; i++ {
+			for i := range 20 {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
@@ -293,7 +293,7 @@ func TestCandidateQuotaCountsOnlyPendingAndPrunesHistory(t *testing.T) {
 	store := NewMemoryCandidateStore("rt")
 	alice := publicationIdentity("tenant-a", "alice", "s-alice")
 	seen := map[string]bool{}
-	for i := 0; i < maxRetainedTerminal+50; i++ {
+	for i := range maxRetainedTerminal + 50 {
 		c := submit(t, store, "alice", fmt.Sprintf("k-%d", i), "triage")
 		if seen[c.CandidateID] {
 			t.Fatalf("candidate id reused after pruning: %s", c.CandidateID)
@@ -313,7 +313,7 @@ func TestCandidateQuotaCountsOnlyPendingAndPrunesHistory(t *testing.T) {
 		t.Fatalf("history not pruned: %d candidates", len(all))
 	}
 	// One person's open requests are capped.
-	for i := 0; i < maxPendingPerUser; i++ {
+	for i := range maxPendingPerUser {
 		submit(t, store, "carol", fmt.Sprintf("p-%d", i), fmt.Sprintf("skill-%d", i))
 	}
 	sk := publicationSkill("one-more", "step")

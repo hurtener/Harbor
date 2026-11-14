@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/hurtener/Harbor/internal/config"
-	sqlitedriver "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -20,6 +19,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/skills/publication"
+	sqlitedriver "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 )
 
 type candidateFixture struct {
@@ -222,7 +222,7 @@ func TestCandidates_ConcurrentAcceptPublishesOnce(t *testing.T) {
 	f := newCandidateFixture(t)
 	c := f.submit(t, "alice", "triage", "k1")
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -719,7 +719,7 @@ func TestCandidates_FenceOrderingIgnoresTheClock(t *testing.T) {
 				_, err := surface.Dispatch(admin, methods.MethodSkillsPublicationsCandidatesAccept, &types.SkillPublicationCandidateAcceptRequest{Identity: candID("admin"), CandidateID: id, ExpectedGeneration: 1, Mode: "new", Name: name, IdempotencyKey: key})
 				return err
 			}
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				if err := accept("", fmt.Sprintf("clash-%d", i)); candCode(err) != protoerrors.CodeSkillPublicationConflict {
 					t.Fatalf("clash %d err=%v", i, err)
 				}

@@ -315,17 +315,6 @@ const StaleClaimAfter = 2 * time.Minute
 // shorter than StaleClaimAfter so a stale claim never has a publish in flight.
 const AcceptPublishDeadline = 60 * time.Second
 
-// finalizeResolved finishes an acceptance whose publish is proven applied.
-func (s *SkillPublicationsSurface) finalizeResolved(ctx context.Context, method methods.Method, caller identity.Quadruple, candidateID string, res publication.CandidateResolution) (any, error) {
-	final, err := s.candidates.FinalizeAccept(ctx, caller, candidateID, publication.AcceptResult{
-		PublicationID: res.Publication.PublicationID, RevisionID: res.Publication.RevisionID, PriorContentHash: res.PriorContentHash, Receipt: res.Receipt,
-	})
-	if err != nil {
-		return nil, mapPublicationError(method, err)
-	}
-	return &types.SkillPublicationCandidateAcceptResponse{Candidate: candidateToWire(final), Publication: metadataToWire(res.Publication), Receipt: receiptToWire(res.Receipt), ProtocolVersion: types.ProtocolVersion}, nil
-}
-
 // errStaleResolutionUnknown means a stale acceptance could not be proven
 // applied or not applied (for example a catalog read failed). The claim is
 // kept and the caller may retry.
@@ -386,7 +375,7 @@ func (s *SkillPublicationsSurface) clearStaleClaim(ctx context.Context, caller i
 // no-op) and retried a few times on transient store conflicts.
 func (s *SkillPublicationsSurface) releaseClaim(ctx context.Context, caller identity.Quadruple, candidateID string, seq uint64) error {
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		if err = s.candidates.ReleaseClaim(ctx, caller, candidateID, seq); err == nil || ctx.Err() != nil {
 			return err
 		}

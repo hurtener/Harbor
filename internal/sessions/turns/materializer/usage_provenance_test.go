@@ -129,7 +129,7 @@ func TestMaterialize_ReportedAttemptsKeepExactCost(t *testing.T) {
 	quad := testQuad(h.id, "run-r")
 	reported := llm.Usage{ReportPresent: true, PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
 	h.src.publish(t, spawnEv(h.id, quad.RunID, "task-r", tasks.KindForeground, ""))
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		h.src.publish(t, contextPreparedEv(h.id, quad.RunID))
 		h.src.publish(t, provenanceCostEv(h.id, quad.RunID, reported, llm.Cost{ReportPresent: true, TotalCost: 0.01, Currency: "USD"}))
 	}
