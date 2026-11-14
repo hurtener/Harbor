@@ -1782,6 +1782,28 @@ Upper bound on `artifacts.put` upload body size (Phase 73l / D-120).
 Default: `4 MiB` (`DefaultMaxRequestBytes`). Bodies above this fail
 with HTTP 413.
 
+### protocol.steering_requires_agent_reach
+
+Opt-in (D-513). Default: `false`. When `true`, the steering controls that
+add input to a run (`user_message`, `redirect`, `inject_context`) also
+require the verified bearer's signed `agent_reach` to name the agent the
+run executes under. That agent is read from the task record (the start
+admission receipt, else the agent named at start, else the configured
+default agent), never from the request. Authorship is still checked
+first. `cancel`, `pause`, `resume`, `approve` and `reject` stay
+authorship-only. The `admin` scope is not an exemption. A refusal is HTTP
+403 `scope_mismatch`. Restart-required.
+
+### protocol.require_execution_proof
+
+Opt-in (D-513). Default: `false`. When `true`, `start` is refused with HTTP
+403 `scope_mismatch` ("start requires a signed execution proof") unless the
+bearer carries the signed execution start claims, the signed body digest
+matches the raw start body and the signed idempotency key equals the
+start's. `flows.run` cannot carry a proof and is refused with 403
+`scope_mismatch`. The `admin` scope is not an exemption. Tasks a run spawns
+internally are unaffected. Restart-required.
+
 ---
 
 ## CLI

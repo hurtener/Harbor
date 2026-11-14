@@ -121,6 +121,12 @@ type ControlSurface struct {
 	reachAdmissions  *tasks.AgentReachAdmissionAuthority
 	pauseCoordinator pauseresume.Coordinator
 	preparer         SessionPreparer // optional; `prepare` answers CodeUnknownMethod without it
+	// steeringRequiresAgentReach gates the input-adding steering controls
+	// on signed agent reach to the run's recorded agent (opt-in).
+	steeringRequiresAgentReach bool
+	// requireExecutionProof refuses a start without a verified signed
+	// execution start proof (opt-in).
+	requireExecutionProof bool
 }
 
 // SessionEnsurer is the create-on-first-use seam the `start` method
@@ -185,6 +191,27 @@ func NewControlSurface(taskRegistry tasks.TaskRegistry, steeringRegistry *steeri
 		opt(s)
 	}
 	return s, nil
+}
+
+// WithSteeringRequiresAgentReach makes `user_message`, `redirect` and
+// `inject_context` additionally require that the verified bearer's signed
+// agent reach names the agent the target run executes under. The agent is
+// read from the task record, never from the request. Authorship is still
+// checked first, and the controls that only reduce or decide a run
+// (`cancel`, `pause`, `resume`, `approve`, `reject`) are unaffected. The
+// admin scope is not an exemption. Off by default.
+func WithSteeringRequiresAgentReach(required bool) Option {
+	return func(s *ControlSurface) { s.steeringRequiresAgentReach = required }
+}
+
+// WithRequireExecutionProof makes `start` refuse a request that carries no
+// verified signed execution start proof. The auth middleware seats the
+// proof only after the signed body digest matched the raw start bytes; the
+// surface also requires the signed idempotency key to equal the start's.
+// The admin scope is not an exemption. Tasks a run spawns internally do not
+// pass through `start` and are unaffected. Off by default.
+func WithRequireExecutionProof(required bool) Option {
+	return func(s *ControlSurface) { s.requireExecutionProof = required }
 }
 
 // WithTopologyAccessor wires the engine topology accessor into

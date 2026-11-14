@@ -806,6 +806,8 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		protocol.WithAgentReachAuthorizer(agentReach),
 		protocol.WithAgentReachAdmissionAuthority(agentReachAdmissions),
 		protocol.WithSessionPreparer(prepareBridge),
+		protocol.WithSteeringRequiresAgentReach(cfg.Protocol.SteeringRequiresAgentReach),
+		protocol.WithRequireExecutionProof(cfg.Protocol.RequireExecutionProof),
 	)
 	if err != nil {
 		closeAll(ctx)

@@ -556,6 +556,21 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	if err != nil {
 		return nil, err
 	}
+	// Opt-in execution-proof admission. Runs before the session ensurer so
+	// a refused start creates nothing. The proof is present on ctx only
+	// when the auth middleware verified the signed digest of the raw start
+	// body; the signed retry key must also name this start.
+	if s.requireExecutionProof {
+		proof, ok := auth.ExecutionOperationFrom(ctx)
+		if !ok {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: start requires a signed execution proof", string(method))
+		}
+		if proof.IdempotencyKey != sr.IdempotencyKey {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: signed execution operation does not match start idempotency key", string(method))
+		}
+	}
 	if sr.ToolAllowlist != nil {
 		if len(*sr.ToolAllowlist) > 64 {
 			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: tool allowlist exceeds 64 names", string(method))
@@ -839,6 +854,11 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 	if err := steering.CheckScope(ctrlType, scope, caller.TenantID, q); err != nil {
 		return nil, mapSteeringError(string(method), err)
 	}
+	if s.steeringRequiresAgentReach && addsRunInput(ctrlType) {
+		if err := s.authorizeRunAgentReach(ctx, string(method), q); err != nil {
+			return nil, err
+		}
+	}
 
 	// Look up the run's live inbox. A run with no inbox (never started,
 	// or already ended) fails closed with CodeNotFound.
@@ -881,6 +901,65 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 		Method:          string(method),
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+// addsRunInput reports whether a steering control adds caller input to a
+// run's model context. Controls that only reduce or decide a run (cancel,
+// pause, resume, approve, reject) and the admin-only prioritize do not.
+func addsRunInput(t steering.ControlType) bool {
+	switch t {
+	case steering.ControlUserMessage, steering.ControlRedirect, steering.ControlInjectContext:
+		return true
+	default:
+		return false
+	}
+}
+
+// authorizeRunAgentReach requires the verified bearer's signed agent reach
+// to name the agent the target run executes under. The agent comes from
+// the task record (recordedRunAgent), never from the request body. A task
+// that cannot be read, or whose agent cannot be determined, is refused.
+func (s *ControlSurface) authorizeRunAgentReach(ctx context.Context, method string, run identity.Quadruple) error {
+	denied := protoerrors.Newf(protoerrors.CodeScopeMismatch,
+		"method %q: steering this run requires agent reach to the run's agent", method)
+	if s.tasks == nil || s.reach == nil {
+		return denied
+	}
+	lookupCtx, err := identity.With(ctx, run.Identity)
+	if err != nil {
+		return denied
+	}
+	task, err := s.tasks.Get(lookupCtx, tasks.TaskID(run.RunID))
+	if err != nil || task == nil || task.Identity.Identity != run.Identity {
+		return denied
+	}
+	agentID := s.recordedRunAgent(lookupCtx, task)
+	if agentID == "" || s.reach.AuthorizeAgentReach(ctx, agentID) != nil {
+		return denied
+	}
+	return nil
+}
+
+// recordedRunAgent returns the agent a task's run executes under, chosen
+// the way the run-loop driver chooses it: the sealed start admission
+// receipt's agent when it verifies, else the agent named at spawn, else
+// the configured default agent. The context Restore returns is discarded:
+// only the receipt's agent id is used.
+func (s *ControlSurface) recordedRunAgent(ctx context.Context, task *tasks.Task) string {
+	if s.reachAdmissions != nil {
+		if _, admitted, ok := s.reachAdmissions.Restore(ctx, task); ok && admitted != "" {
+			return admitted
+		}
+	}
+	if task.AgentID != "" {
+		return task.AgentID
+	}
+	if resolver, ok := s.agents.(EffectiveAgentResolver); ok {
+		if id, err := resolver.EffectiveAgentID(""); err == nil {
+			return id
+		}
+	}
+	return ""
 }
 
 // callerWroteRun narrows the owner tier in a multi-participant session: a

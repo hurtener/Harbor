@@ -665,7 +665,8 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		if fiErr != nil {
 			return nil, wrapErr("flow protocol invoker", fiErr)
 		}
-		flowsSurface, fsErr := flowprotocol.NewSurface(flowCatalog, flowInvoker)
+		flowsSurface, fsErr := flowprotocol.NewSurface(flowCatalog, flowInvoker,
+			flowprotocol.WithRunRequiresExecutionProof(cfg != nil && cfg.Protocol.RequireExecutionProof))
 		if fsErr != nil {
 			return nil, wrapErr("flow protocol surface", fsErr)
 		}

@@ -445,6 +445,9 @@ func classifyFlowsError(err error) (protoerrors.Code, int, string) {
 	case errors.Is(err, flowprotocol.ErrRunScopeRequired):
 		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
 			"flows.run: requires the `admin` scope claim"
+	case errors.Is(err, flowprotocol.ErrRunExecutionProofRequired):
+		return protoerrors.CodeScopeMismatch, http.StatusForbidden,
+			"flows.run: runs require a signed execution proof, which flows.run cannot carry"
 	default:
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			"flows: dispatch failed"

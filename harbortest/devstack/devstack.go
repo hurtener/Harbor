@@ -866,7 +866,9 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			protocol.WithAgentResolver(agentResolver),
 			protocol.WithAgentReachAuthorizer(stack.AgentReach),
 			protocol.WithAgentReachAdmissionAuthority(agentReachAdmissions),
-			protocol.WithSessionPreparer(prepareBridge))
+			protocol.WithSessionPreparer(prepareBridge),
+			protocol.WithSteeringRequiresAgentReach(cfg.Protocol.SteeringRequiresAgentReach),
+			protocol.WithRequireExecutionProof(cfg.Protocol.RequireExecutionProof))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)

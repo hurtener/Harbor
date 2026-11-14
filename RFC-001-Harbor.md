@@ -287,6 +287,15 @@ and identity stamp, user-scope configuration) acts as the participant. Only a
 run's writer (or an admin) may steer it. An optional `speaker` claim labels
 the writer in the model context and on turn rows.
 
+**Opt-in steering reach and start proof (D-513).** Two runtime settings,
+both off by default. `protocol.steering_requires_agent_reach` makes the
+input-adding controls (`user_message`, `redirect`, `inject_context`) also
+require signed `agent_reach` to the agent recorded on the run's task;
+controls that only reduce or decide a run stay authorship-only.
+`protocol.require_execution_proof` refuses a `start` without a verified
+signed execution start proof, and refuses `flows.run`. Neither setting
+exempts the `admin` scope; both refuse with `scope_mismatch`.
+
 **Agent reach is signed resource authority, not isolation (D-397).** Every
 bearer used on an agent-addressed data-plane operation carries a bounded,
 non-empty `agent_reach` claim naming the registration IDs it may address. The

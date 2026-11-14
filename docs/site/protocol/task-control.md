@@ -62,6 +62,15 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
 A `start` on a fresh session id **creates the session**; on a closed session
 it is rejected `invalid_request` ([auth & identity](./auth-and-identity.md)).
 
+A runtime with `protocol.require_execution_proof` set (D-513, off by default)
+refuses a `start` with `403 scope_mismatch` ("start requires a signed
+execution proof") unless the bearer carries the signed execution start
+claims ([auth & identity](./auth-and-identity.md#the-jwt)), the signed digest
+matches the exact request bytes and the signed idempotency key equals
+`idempotency_key`. Nothing is created on refusal, and the `admin` scope is
+not an exemption. `flows.run` cannot carry a proof and is refused on such a
+runtime. Child tasks a run spawns internally do not go through `start`.
+
 ## Naming an agent
 
 By default a run executes under the runtime's configured default agent. Pass
@@ -150,6 +159,19 @@ withdrawn as rejections, not approvals; failed required cleanup terminates the
 run. Already-started sibling calls retain their outcomes. Consumer pending/applied
 UX remains release-acceptance work.
 
+### Agent reach for input-adding controls (opt-in)
+
+Steering is authorized by authorship: the verified caller wrote the run (or
+holds `admin`). A runtime with `protocol.steering_requires_agent_reach` set
+(D-513, off by default) additionally requires, for `user_message`,
+`redirect` and `inject_context`, that the bearer's signed `agent_reach`
+names the agent the run executes under. The runtime reads that agent from
+the task record, never from the request, so a read-only bearer without
+reach cannot add input to a run it wrote. The check runs after authorship,
+and a refusal is `403 scope_mismatch`. The `admin` scope is not an
+exemption. `cancel`, `pause`, `resume`, `approve` and `reject` stay
+authorship-only.
+
 ## Preconditions: controls target LIVE runs
 
 A steering control is delivered to the run's inbox. Three rejection shapes
@@ -159,7 +181,8 @@ matter:
   reached a terminal state. The [quickstart](./quickstart.md) demonstrates
   this deliberately by cancelling a finished run.
 - **`403 scope_mismatch`** — your steering claim is below the method's
-  minimum.
+  minimum, or (with `protocol.steering_requires_agent_reach`) an
+  input-adding control's bearer has no signed reach to the run's agent.
 - **`422 payload_invalid`** — the payload broke a bound or the control's shape.
 
 ## The acknowledgement is not the effect
