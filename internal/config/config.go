@@ -2434,8 +2434,26 @@ type A2APeerConfig struct {
 // truncate. Optional; a zero value resolves to `DefaultMaxRequestBytes`
 // (4 MiB) at load time. Operators with a larger upload need adjust this
 // key and the Console's browser-side size hint accordingly.
+//
+// `SteeringRequiresAgentReach` (default false) additionally requires, for
+// the controls that add input to a run (`user_message`, `redirect`,
+// `inject_context`), that the verified bearer's signed `agent_reach`
+// names the agent the run executes under, as recorded on the task at
+// spawn. A `reject` with a non-empty reason needs the same reach, since the
+// reason reaches the model. Authorship is still checked first; `cancel`,
+// `pause`, `resume`, `approve` and a reason-less `reject` stay
+// authorship-only. Restart-required.
+//
+// `RequireExecutionProof` (default false) refuses every `start` that does
+// not carry a verified signed execution start proof (the signed body
+// digest matched and the signed idempotency key equals the start's), and
+// refuses `flows.run`, which cannot carry one. Admin-scoped bearers are
+// not exempt. Child tasks a run spawns internally are unaffected.
+// Restart-required.
 type ProtocolConfig struct {
-	MaxRequestBytes int `yaml:"max_request_bytes,omitempty"`
+	MaxRequestBytes            int  `yaml:"max_request_bytes,omitempty"`
+	SteeringRequiresAgentReach bool `yaml:"steering_requires_agent_reach,omitempty"`
+	RequireExecutionProof      bool `yaml:"require_execution_proof,omitempty"`
 }
 
 // DefaultMaxRequestBytes is the `ProtocolConfig.MaxRequestBytes` value

@@ -87,6 +87,11 @@ var (
 	// ErrRunScopeRequired — `flows.run` was called without the verified
 	// `auth.ScopeAdmin` claim. Maps onto CodeScopeMismatch / HTTP 403.
 	ErrRunScopeRequired = errors.New("flow/protocol: flows.run requires the admin scope claim")
+	// ErrRunExecutionProofRequired — `flows.run` was called on a runtime
+	// that requires a signed execution proof for every externally started
+	// run. `flows.run` cannot carry one, so it is refused. Maps onto
+	// CodeScopeMismatch / HTTP 403.
+	ErrRunExecutionProofRequired = errors.New("flow/protocol: flows.run is disabled because runs require a signed execution proof")
 	// ErrRuntime — a Catalog / Invoker call failed for a reason the
 	// Surface could not classify. Maps onto CodeRuntimeError / HTTP 500.
 	ErrRuntime = errors.New("flow/protocol: runtime error")
@@ -140,8 +145,20 @@ type Invoker interface {
 // a compiled artifact: catalog + invoker are set once at
 // construction and never mutated; ServeMethod holds no per-call state.
 type Surface struct {
-	catalog Catalog
-	invoker Invoker
+	catalog               Catalog
+	invoker               Invoker
+	requireExecutionProof bool
+}
+
+// SurfaceOption configures a Surface at construction time.
+type SurfaceOption func(*Surface)
+
+// WithRunRequiresExecutionProof refuses every `flows.run` with
+// ErrRunExecutionProofRequired when required is true. A runtime that
+// requires a signed execution proof for every external start sets it,
+// because a flow launch spawns a run and cannot carry that proof.
+func WithRunRequiresExecutionProof(required bool) SurfaceOption {
+	return func(s *Surface) { s.requireExecutionProof = required }
 }
 
 // NewSurface builds the Flows-page Surface over a Catalog + an Invoker.
@@ -149,14 +166,18 @@ type Surface struct {
 // than building a Surface that would nil-panic on the first request
 // (CLAUDE.md §5). The returned *Surface is immutable after construction
 // and safe for concurrent use by N goroutines.
-func NewSurface(catalog Catalog, invoker Invoker) (*Surface, error) {
+func NewSurface(catalog Catalog, invoker Invoker, opts ...SurfaceOption) (*Surface, error) {
 	if catalog == nil {
 		return nil, fmt.Errorf("%w: Catalog is nil", ErrMisconfigured)
 	}
 	if invoker == nil {
 		return nil, fmt.Errorf("%w: Invoker is nil", ErrMisconfigured)
 	}
-	return &Surface{catalog: catalog, invoker: invoker}, nil
+	s := &Surface{catalog: catalog, invoker: invoker}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // List handles `flows.list`. It validates identity, gates a cross-tenant
@@ -282,6 +303,9 @@ func (s *Surface) Run(ctx context.Context, req prototypes.FlowRunRequest, adminS
 	}
 	if !adminScoped {
 		return prototypes.FlowRunResponse{}, ErrRunScopeRequired
+	}
+	if s.requireExecutionProof {
+		return prototypes.FlowRunResponse{}, ErrRunExecutionProofRequired
 	}
 	resp, err := s.invoker.Invoke(ctx, id, req.FlowID, req.Inputs)
 	if err != nil {

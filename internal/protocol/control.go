@@ -556,6 +556,21 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	if err != nil {
 		return nil, err
 	}
+	// Opt-in execution-proof admission. Runs before the session ensurer so
+	// a refused start creates nothing. The proof is present on ctx only
+	// when the auth middleware verified the signed digest of the raw start
+	// body; the signed retry key must also name this start.
+	if s.requireExecutionProof {
+		proof, ok := auth.ExecutionOperationFrom(ctx)
+		if !ok {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: start requires a signed execution proof", string(method))
+		}
+		if proof.IdempotencyKey != sr.IdempotencyKey {
+			return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+				"method %q: signed execution operation does not match start idempotency key", string(method))
+		}
+	}
 	if sr.ToolAllowlist != nil {
 		if len(*sr.ToolAllowlist) > 64 {
 			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest, "method %q: tool allowlist exceeds 64 names", string(method))
@@ -839,6 +854,21 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 	if err := steering.CheckScope(ctrlType, scope, caller.TenantID, q); err != nil {
 		return nil, mapSteeringError(string(method), err)
 	}
+	if s.steeringRequiresAgentReach {
+		if addsRunInput(ctrlType) {
+			if err := s.authorizeRunAgentReach(ctx, string(method), q,
+				"steering this run requires agent reach to the run's agent"); err != nil {
+				return nil, err
+			}
+		} else if ctrlType == steering.ControlReject && rejectCarriesReason(cr.Payload) {
+			// A rejection reason reaches the model as the rejected tool's
+			// error text, so it is input by another door.
+			if err := s.authorizeRunAgentReach(ctx, string(method), q,
+				"a reject reason requires agent reach to the run's agent; reject without a reason instead"); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	// Look up the run's live inbox. A run with no inbox (never started,
 	// or already ended) fails closed with CodeNotFound.
@@ -881,6 +911,79 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 		Method:          string(method),
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+// addsRunInput reports whether a steering control adds caller input to a
+// run's model context. Controls that only reduce or decide a run (cancel,
+// pause, resume, approve, reject) and the admin-only prioritize do not.
+func addsRunInput(t steering.ControlType) bool {
+	switch t {
+	case steering.ControlUserMessage, steering.ControlRedirect, steering.ControlInjectContext:
+		return true
+	default:
+		return false
+	}
+}
+
+// rejectCarriesReason reports whether a reject payload carries a reason.
+// Any present value other than the empty string counts, so a reason of an
+// unexpected type is treated as input rather than ignored.
+func rejectCarriesReason(payload map[string]any) bool {
+	reason, ok := payload["reason"]
+	if !ok || reason == nil {
+		return false
+	}
+	if text, isString := reason.(string); isString {
+		return text != ""
+	}
+	return true
+}
+
+// authorizeRunAgentReach requires the verified bearer's signed agent reach
+// to name the agent the target run executes under. The agent comes from
+// the task record (recordedRunAgent), never from the request body. A task
+// that cannot be read, or whose agent cannot be determined, is refused
+// with the given reason.
+func (s *ControlSurface) authorizeRunAgentReach(ctx context.Context, method string, run identity.Quadruple, reason string) error {
+	denied := protoerrors.Newf(protoerrors.CodeScopeMismatch, "method %q: %s", method, reason)
+	if s.tasks == nil || s.reach == nil {
+		return denied
+	}
+	lookupCtx, err := identity.With(ctx, run.Identity)
+	if err != nil {
+		return denied
+	}
+	task, err := s.tasks.Get(lookupCtx, tasks.TaskID(run.RunID))
+	if err != nil || task == nil || task.Identity.Identity != run.Identity {
+		return denied
+	}
+	agentID := s.recordedRunAgent(lookupCtx, task)
+	if agentID == "" || s.reach.AuthorizeAgentReach(ctx, agentID) != nil {
+		return denied
+	}
+	return nil
+}
+
+// recordedRunAgent returns the agent a task's run executes under, chosen
+// the way the run-loop driver chooses it: the sealed start admission
+// receipt's agent when it verifies, else the agent named at spawn, else
+// the configured default agent. The context Restore returns is discarded:
+// only the receipt's agent id is used.
+func (s *ControlSurface) recordedRunAgent(ctx context.Context, task *tasks.Task) string {
+	if s.reachAdmissions != nil {
+		if _, admitted, ok := s.reachAdmissions.Restore(ctx, task); ok && admitted != "" {
+			return admitted
+		}
+	}
+	if task.AgentID != "" {
+		return task.AgentID
+	}
+	if resolver, ok := s.agents.(EffectiveAgentResolver); ok {
+		if id, err := resolver.EffectiveAgentID(""); err == nil {
+			return id
+		}
+	}
+	return ""
 }
 
 // callerWroteRun narrows the owner tier in a multi-participant session: a

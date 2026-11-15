@@ -17452,3 +17452,108 @@ rejects the same candidate, so every runtime runs 1.55 before candidates are
 used.
 
 **Cross-references:** D-508.
+
+## D-513 — Opt-in steering reach and required start execution proof
+
+**Date:** 2026-11-14
+
+**Decision.** Two protocol settings, both off by default and restart-required.
+Off, behaviour is unchanged.
+
+`protocol.steering_requires_agent_reach` makes the steering controls that add
+input to a run (`user_message`, `redirect`, `inject_context`) also require
+that the verified bearer's signed `agent_reach` names the agent the run
+executes under.
+
+- *Recorded agent.* The agent is read from the task record, chosen the way
+  the run-loop driver chooses it: the agent in the sealed start admission
+  receipt when it verifies, else the agent named at start, else the
+  configured default agent. The request never supplies it; `ControlRequest`
+  has no agent field (strict decode refuses one) and a payload `agent_id` is
+  ignored. A run that names no agent therefore resolves to the current boot
+  default, which is the agent it runs under. A task that cannot be read, or
+  whose agent cannot be determined, is refused.
+- *Ordering.* Authorship (D-509: the run's writer, or `admin`) and the
+  per-control scope minimum are checked first; the reach check runs before
+  the inbox lookup, through the shared signed-reach gate.
+- *Reject reason.* `reject` carries an optional free-text `reason`. When an
+  approval gate owns the pause, the reason becomes the rejected tool's error
+  text ("approval: tool X rejected: reason"), which the run's next planner
+  step sees as the tool's error observation, so it is input by another door.
+  A `reject` whose payload carries a reason (any value other than absent,
+  null or the empty string) therefore needs the same reach, through the
+  same recorded-agent helper; refusal: 403 `scope_mismatch`, "a reject
+  reason requires agent reach to the run's agent; reject without a reason
+  instead". A `reject` without a reason stays authorship-only. The
+  `approve` reason reaches only the approval events and is unaffected.
+- *Scope.* `cancel`, `pause`, `resume`, `approve` and a reason-less
+  `reject` stay authorship-only. `resume` adds no model input: its payload is stored on
+  the pause record and the only registered continuation (MCP connection
+  auth) reads the continuation's own data, not the resume payload. The
+  admin-only `prioritize` is unaffected.
+- *Authority.* The `admin` scope is not an exemption, matching `start`,
+  whose reach check has no admin bypass. Reach is not tenant-qualified; a
+  non-admin bearer never reaches another tenant's run because authorship
+  compares the tenant first.
+- *Refusal.* HTTP 403 `scope_mismatch`, "steering this run requires agent
+  reach to the run's agent", the code a reach-less `start` gets.
+- *Transports.* Both checks live in the shared surfaces every transport
+  converges on (`ControlSurface.Dispatch` for start and steering, the flows
+  surface for `flows.run`), not in a REST handler.
+
+`protocol.require_execution_proof` refuses every `start` that does not carry
+a verified signed execution start proof.
+
+- *Proof.* The auth middleware seats the proof only after the signed
+  `execution_start_sha256` matches the raw start body (a mismatch is already
+  refused there, 403 `scope_mismatch`). The surface then requires the proof
+  to be present and its signed idempotency key to equal the start's.
+- *Refusal.* HTTP 403 `scope_mismatch`, "start requires a signed execution
+  proof", checked right after agent admission and before the session
+  ensurer, so nothing is created.
+- *Authority.* The `admin` scope is not an exemption.
+- *Other external spawn paths.* `start` is the only Protocol method that
+  calls `tasks.Spawn` directly. `flows.run` (admin-only) reaches it through
+  `SpawnTool` as a parentless foreground task that the run-loop driver
+  drives. It cannot carry a proof, so while the setting is on `flows.run`
+  is refused (403 `scope_mismatch`, "flows.run: runs require a signed
+  execution proof, which flows.run cannot carry"), admin included. The
+  admin Console Flows page calls it from the browser, so its run action is
+  unavailable on such a runtime. `prepare` warms a session and spawns nothing;
+  restart redrive re-drives existing tasks and spawns none.
+- *Internal spawns.* Child tasks a run spawns (planner `SpawnTask` through
+  the dispatch executor, deterministic planner steps) and tool tasks go to
+  the task registry directly, never through `start`, and are unaffected.
+  The developer seed path is not a Protocol edge.
+
+**Why.** D-510 recorded that steering is authorized by authorship alone, so
+an issuer that hands a browser a read-only bearer (no `agent_reach`, so no
+`start`) cannot keep that bearer from extending a run the person already
+admitted. Separately, an issuer that admits every run through an external
+operation had no way to make the signed start proof mandatory. Both are
+opt-in admission conditions over existing primitives: the shared
+signed-reach gate and the verified start proof.
+
+**Known limits.**
+
+- *Ungated pauses.* Continuing a pause that no approval gate owns (the
+  step-tranche pause a run takes when its step tranche is used up), through
+  `resume` or `approve`, stays authorship-only with steering reach on. A
+  reach-less author can therefore grant a run further step tranches. The
+  consumer accepted this on 2026-11-14: the bound is the consumer's own
+  admission policy, and a run's frozen run limits (duration, tokens) still
+  apply when set. When run limits are unset there is no total step cap,
+  because tranche mode does not apply `MaxSteps`.
+- *Child agents.* Steering reach is checked against each run's own recorded
+  agent. A child task running as a different agent (a virtual agent) needs
+  reach to that agent to receive `user_message`, `redirect`,
+  `inject_context` or a reasoned `reject`; `cancel` and `pause` still work
+  on it by authorship alone.
+- The settings are per runtime. A deployment that mixes runtimes with and
+  without them enforces each runtime's own setting.
+
+**Compatibility.** No wire change and no new handshake capability. The new
+refusals reuse `scope_mismatch`. This supersedes D-510's statement that no
+Harbor control keeps a read-only bearer from steering the person's own runs.
+
+**Cross-references:** D-397, D-509, D-510, RFC §6.3.
