@@ -25,6 +25,10 @@ const (
 	retainedContextVersion   = 4
 	maxRetainedContextActive = 32
 	retainedContextAttempts  = 32
+	// retainedWriteTimeout bounds the terminal-turn write made after execution
+	// has returned. The turn's redaction and encoding finish before it starts;
+	// the conditional read-modify-write loop that follows stays inside it.
+	retainedWriteTimeout = 5 * time.Second
 )
 
 var (
@@ -34,6 +38,11 @@ var (
 	// ErrRetainedContextCapacity means evidence cannot fit the bounded window.
 	// A caller must not blindly repeat writes after an execution-time failure.
 	ErrRetainedContextCapacity = errors.New("run context: retained execution context capacity exceeded")
+	// ErrRetainedCleanupIncomplete means the terminal turn and the sealed
+	// journal committed, but removing the transient dispatch journal did not.
+	// The run's outcome is durable and must not be reported as failed.
+	// Reconciling the same run removes the remaining journal records.
+	ErrRetainedCleanupIncomplete = errors.New("run context: retained journal cleanup incomplete")
 )
 
 type retainedAdmission struct {
@@ -245,22 +254,43 @@ func (r *RetainedRun) Apply(base *planner.RunContext) error {
 // outcomes; no stored action is replayed. It must be called only after the
 // active execution has returned and any final answer has been validated.
 // A failed required write remains an error even when side effects succeeded.
+//
+// Pass a context that is not cancelled with the run (context.WithoutCancel):
+// redaction and encoding use ctx, and only the store writes are bounded by
+// retainedWriteTimeout. Once the terminal turn is committed, a failed journal
+// cleanup returns ErrRetainedCleanupIncomplete, never a failed-write error.
 func (r *RetainedRun) Finish(ctx context.Context, tr *planner.Trajectory, query, answer, status string) error {
-	return r.finishRetained(ctx, tr, query, answer, status, r.now().Add(r.ttl), false)
+	expiresAt := r.now().Add(r.ttl)
+	turn, safe, err := r.prepareTerminal(ctx, tr, query, answer, status, expiresAt)
+	if err != nil {
+		return err
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, retainedWriteTimeout)
+	defer cancel()
+	return r.commitTerminal(writeCtx, tr, turn, safe, status, expiresAt, false)
 }
 
 func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory, query, answer, status string, expiresAt time.Time, mustRetain bool) error {
+	turn, safe, err := r.prepareTerminal(ctx, tr, query, answer, status, expiresAt)
+	if err != nil {
+		return err
+	}
+	return r.commitTerminal(ctx, tr, turn, safe, status, expiresAt, mustRetain)
+}
+
+// prepareTerminal builds and redacts the terminal turn without store I/O.
+func (r *RetainedRun) prepareTerminal(ctx context.Context, tr *planner.Trajectory, query, answer, status string, expiresAt time.Time) (retainedTurn, retainedTurn, error) {
 	if r.journalFailure != nil {
-		return fmt.Errorf("%w: dispatch persistence failed: %w", ErrRetainedContextUnavailable, r.journalFailure)
+		return retainedTurn{}, retainedTurn{}, fmt.Errorf("%w: dispatch persistence failed: %w", ErrRetainedContextUnavailable, r.journalFailure)
 	}
 	if r.journal.Pending {
-		return fmt.Errorf("%w: dispatch outcome is unsettled", ErrRetainedContextUnavailable)
+		return retainedTurn{}, retainedTurn{}, fmt.Errorf("%w: dispatch outcome is unsettled", ErrRetainedContextUnavailable)
 	}
 	if r.finished || tr == nil || r.prefixLen > len(tr.Steps) || !validRetainedStatus(status) || !utf8.ValidString(query) || !utf8.ValidString(answer) {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	if !expiresAt.After(r.now()) {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	turn := retainedTurn{Admission: r.admission, ExpiresAt: expiresAt, Status: status, Query: query, Speaker: r.speaker, Answer: answer}
 	for index, step := range tr.Steps[r.prefixLen:] {
@@ -268,45 +298,50 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 		// diagnostic duplicate, tool handles, credentials, or reasoning trace.
 		modelStep, err := planner.RetainStep(step, r.q.RunID, index)
 		if err != nil {
-			return err
+			return retainedTurn{}, retainedTurn{}, err
 		}
 		encoded, err := json.Marshal(modelStep)
 		if err != nil {
-			return ErrRetainedContextUnavailable
+			return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 		}
 		turn.Steps = append(turn.Steps, encoded)
 	}
 	encoded, err := json.Marshal(turn)
 	if err != nil {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	var evidence any
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.UseNumber()
 	if err := decoder.Decode(&evidence); err != nil {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	redacted, err := r.redactor.Redact(ctx, evidence)
 	if err != nil {
-		return fmt.Errorf("%w: redaction refused retention: %w", ErrRetainedContextUnavailable, err)
+		return retainedTurn{}, retainedTurn{}, fmt.Errorf("%w: redaction refused retention: %w", ErrRetainedContextUnavailable, err)
 	}
 	encoded, err = json.Marshal(redacted)
 	if err != nil {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	var safe retainedTurn
 	if err := decodeRetained(encoded, &safe); err != nil {
-		return err
+		return retainedTurn{}, retainedTurn{}, err
 	}
 	// Administrative metadata cannot be changed by a content redactor.
 	if safe.Admission != turn.Admission || !safe.ExpiresAt.Equal(turn.ExpiresAt) || safe.Status != status || len(safe.Steps) != len(turn.Steps) {
-		return ErrRetainedContextUnavailable
+		return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 	}
 	for index := range turn.Steps {
 		if !sameRetainedStepIdentity(turn.Steps[index], safe.Steps[index]) {
-			return ErrRetainedContextUnavailable
+			return retainedTurn{}, retainedTurn{}, ErrRetainedContextUnavailable
 		}
 	}
+	return turn, safe, nil
+}
+
+// commitTerminal publishes a prepared terminal turn; ctx bounds store I/O.
+func (r *RetainedRun) commitTerminal(ctx context.Context, tr *planner.Trajectory, turn, safe retainedTurn, status string, expiresAt time.Time, mustRetain bool) error {
 	for range retainedContextAttempts {
 		window, recordID, err := r.load(ctx)
 		if err != nil {
@@ -376,7 +411,10 @@ func (r *RetainedRun) finishRetained(ctx context.Context, tr *planner.Trajectory
 			return err
 		}
 		r.finished = true
-		return r.cleanupJournal(ctx)
+		if err := r.cleanupJournal(ctx); err != nil {
+			return fmt.Errorf("%w: %w", ErrRetainedCleanupIncomplete, err)
+		}
+		return nil
 	}
 	return ErrRetainedContextUnavailable
 }

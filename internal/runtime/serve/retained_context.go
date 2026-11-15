@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
+	"log/slog"
 
 	sessionmemory "github.com/hurtener/Harbor/internal/memory/session"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -61,11 +61,14 @@ func (d *RunLoopDriver) runWithRetainedContext(ctx context.Context, spec steerin
 		}
 	}
 	// Execution has returned, including cancellation. Preserve known outcomes
-	// before exposing terminal task status; this bounded write never retries an
-	// external action or treats a lost receipt as proof a write did not happen.
-	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if persistErr := retained.Finish(persistCtx, spec.Base.Trajectory, spec.Base.Query, answer, status); persistErr != nil {
+	// before exposing terminal task status; Finish bounds its store write, which
+	// never retries an external action or treats a lost receipt as proof a write
+	// did not happen. A cleanup failure after the committed turn is not a failed
+	// run: reconciling the same run removes the leftover journal.
+	persistErr := retained.Finish(context.WithoutCancel(ctx), spec.Base.Trajectory, spec.Base.Query, answer, status)
+	if errors.Is(persistErr, sessionmemory.ErrRetainedCleanupIncomplete) {
+		d.logger.Warn("serve: retained context journal cleanup incomplete", slog.String("run_id", spec.Base.Quadruple.RunID), slog.Any("err", persistErr))
+	} else if persistErr != nil {
 		err = errors.Join(err, fmt.Errorf("serve: retained context terminal write: %w", persistErr))
 	}
 	return fin, err

@@ -386,6 +386,8 @@ func (r *RetainedRun) saveTerminal(ctx context.Context, previous state.EventID, 
 // Committed terminal evidence now lives in the bounded session window. Remove
 // transient frames by exact generation; erasure is allowed to have removed them
 // already. A cleanup error is explicit and never permission to replay actions.
+// After a committed terminal turn, Finish reports it as
+// ErrRetainedCleanupIncomplete; reconciling the same run removes the rest.
 func (r *RetainedRun) cleanupJournal(ctx context.Context) error {
 	if r.journalID == "" {
 		return nil
