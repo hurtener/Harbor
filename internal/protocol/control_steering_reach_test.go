@@ -214,7 +214,7 @@ func TestSteeringRequiresAgentReach_CrossTenant(t *testing.T) {
 func TestSteeringRequiresAgentReach_RejectReason(t *testing.T) {
 	fx := newSurfaceFixture(t)
 	s := steerReachSurface(t, fx, true)
-	run := startSteerRun(t, fx, s, steerAuthor, "agent-a", "reject")
+	run := startSteerRun(t, fx, s, steerAuthor, "agent-a", "reject-reason")
 	for _, reason := range []any{"not this tool", " ", 42, map[string]any{"text": "x"}} {
 		err := steer(reachCtx(t, steerAuthor, nil), s, methods.MethodReject, run, map[string]any{"reason": reason})
 		if got := codeOf(t, err); got != protoerrors.CodeScopeMismatch {
