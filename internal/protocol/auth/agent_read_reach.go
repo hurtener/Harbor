@@ -13,7 +13,7 @@ import (
 // person the history of their own session after the session moved to another
 // agent, or after the agent stopped being available to them, while start,
 // App tool calls and every other agent-addressed write still require
-// `agent_reach`. It extends to App resource reads and tool listings.
+// `agent_reach`. The claim also covers App resource reads and tool listings.
 // Steering is authorized by run authorship, never by reach.
 //
 // It is an entitlement, never an isolation principal: the exact-session
