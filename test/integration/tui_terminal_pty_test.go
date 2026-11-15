@@ -594,6 +594,14 @@ func TestE2E_TUIRuntimeControlPTY_MultiplePauseTokensAndReconciliation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This test owns the task lifecycle (Spawn, then MarkRunning). Stop and
+	// join the stack's RunLoopDriver first: it consumes task.spawned and calls
+	// MarkRunning itself, so whichever caller loses that race gets
+	// `invalid lifecycle transition: from="running" to="running"`. Close is
+	// idempotent; the stack cleanup calls it again.
+	if err = stack.RunLoopDriver.Close(context.Background()); err != nil {
+		t.Fatalf("close RunLoopDriver: %v", err)
+	}
 	task, err := stack.Tasks.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: id}, Kind: tasks.KindForeground, Description: "PTY controls", Query: "hold", IdempotencyKey: "pty-runtime-controls"})
 	if err != nil {
 		t.Fatal(err)
