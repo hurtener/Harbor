@@ -377,9 +377,10 @@ type RunSpec struct {
 	// is untouched — so long-running work continues across repeated
 	// cycles as ONE run. ≤ 0 (the default) disables tranche pausing
 	// and the loop is byte-identical to the legacy terminal behaviour
-	// (ErrMaxStepsExceeded at MaxSteps remains the absolute breaker in
-	// both modes; the planner-side absolute breaker is subordinate to
-	// this runtime counter).
+	// (ErrMaxStepsExceeded at MaxSteps is the absolute breaker). In
+	// tranche mode MaxSteps is NOT applied: the tranche is the sole
+	// continuation bound, so a run has no total step cap unless its
+	// run limits (duration or tokens) bound it.
 	//
 	// The park is a first-class pause through the ONE Coordinator: the
 	// same REJECT / timeout / CANCEL terminal behaviours apply
@@ -389,9 +390,10 @@ type RunSpec struct {
 	// planner/run-loop redrive, so a fresh process rejects resume with the
 	// typed pauseresume.ErrRestartUnavailable rather than creating a new task.
 	//
-	// Parked iterations consume loop-budget iterations exactly like a
-	// planner-emitted RequestPause (one iteration per park boundary),
-	// so MaxSteps remains the bounded runaway guard across cycles.
+	// Parked iterations count as loop iterations exactly like a
+	// planner-emitted RequestPause (one iteration per park boundary).
+	// MaxSteps does not bound the cycles; each further tranche needs an
+	// authorised resume, and the run's limits still apply when set.
 	TrancheSteps int
 
 	// MaxConsecutiveInvalidDecisions bounds native-path structural

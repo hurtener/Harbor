@@ -17536,6 +17536,19 @@ signed-reach gate and the verified start proof.
 
 **Known limits.**
 
+- *Ungated pauses.* Continuing a pause that no approval gate owns (the
+  step-tranche pause a run takes when its step tranche is used up), through
+  `resume` or `approve`, stays authorship-only with steering reach on. A
+  reach-less author can therefore grant a run further step tranches. The
+  consumer accepted this on 2026-11-14: the bound is the consumer's own
+  admission policy, and a run's frozen run limits (duration, tokens) still
+  apply when set. When run limits are unset there is no total step cap,
+  because tranche mode does not apply `MaxSteps`.
+- *Child agents.* Steering reach is checked against each run's own recorded
+  agent. A child task running as a different agent (a virtual agent) needs
+  reach to that agent to receive `user_message`, `redirect`,
+  `inject_context` or a reasoned `reject`; `cancel` and `pause` still work
+  on it by authorship alone.
 - The settings are per runtime. A deployment that mixes runtimes with and
   without them enforces each runtime's own setting.
 
