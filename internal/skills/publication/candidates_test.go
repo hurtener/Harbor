@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -584,13 +585,40 @@ func TestStore_ReadVisibility(t *testing.T) {
 }
 
 // Decided candidates never count toward the tenant quota, and only one
-// person's open requests can't fill it.
+// person's open requests can't fill it. The history is seeded at the
+// retention boundary through the state slot, so only a few real rounds cross
+// it (re-encoding the full aggregate on every one of 1,000+ rounds made this
+// test exceed the smoke timeouts under -race).
 func TestCandidateQuotaCountsOnlyPendingAndPrunesHistory(t *testing.T) {
 	ctx := context.Background()
-	store := newCandidateEnv(t, "inmem").cands
+	env := newCandidateEnv(t, "inmem")
+	store := env.cands
 	alice := publicationIdentity("tenant-a", "alice", "s-alice")
+	const rounds = 8
+	// maxRetainedTerminal decided candidates, older than anything submitted
+	// below, each with its idempotency record.
+	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	seeded := candidateAggregate{Operations: map[string]candidateOp{}, Seq: maxRetainedTerminal}
 	seen := map[string]bool{}
-	for i := range maxRetainedTerminal + 50 {
+	for i := range maxRetainedTerminal {
+		at := base.Add(time.Duration(i) * time.Second)
+		id := fmt.Sprintf("cand-seed-%04d", i)
+		seen[id] = true
+		seeded.Candidates = append(seeded.Candidates, Candidate{
+			CandidateID: id, Name: "triage", SubmitterUser: "alice", AgentID: "agent-a",
+			ContentHash: "seed", State: CandidateWithdrawn, Generation: 2,
+			CreatedAt: at, UpdatedAt: at, RuntimeID: "rt", Skill: publicationSkill("triage", "seed"),
+		})
+		seeded.Operations[candidateOpKey(alice, fmt.Sprintf("seed-%d", i))] = candidateOp{Fingerprint: "seed", CandidateID: id}
+	}
+	raw, err := json.Marshal(seeded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.st.SaveIf(ctx, []state.SlotExpectation{{Identity: orgIdentity("tenant-a"), Kind: candidateKind}}, state.StateRecord{ID: state.NewEventID(), Identity: orgIdentity("tenant-a"), Kind: candidateKind, Bytes: raw}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range rounds {
 		c := submit(t, store, "alice", fmt.Sprintf("k-%d", i), "triage")
 		if seen[c.CandidateID] {
 			t.Fatalf("candidate id reused after pruning: %s", c.CandidateID)
@@ -602,12 +630,40 @@ func TestCandidateQuotaCountsOnlyPendingAndPrunesHistory(t *testing.T) {
 	}
 	// Another person can still submit.
 	submit(t, store, "bob", "k", "notes")
-	all, err := store.List(ctx, publicationIdentity("tenant-a", "admin", "s-admin"), ListCandidatesRequest{})
+	all, err := store.List(ctx, publicationIdentity("tenant-a", "admin", "s-admin"), ListCandidatesRequest{All: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) > maxRetainedTerminal+1 {
-		t.Fatalf("history not pruned: %d candidates", len(all))
+	if len(all) != maxRetainedTerminal+1 {
+		t.Fatalf("history not pruned to the bound: %d candidates", len(all))
+	}
+	// The oldest decided candidates went first, with their idempotency
+	// records; the newest seeded and every real round survive.
+	r, err := env.st.Load(ctx, orgIdentity("tenant-a"), candidateKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeCandidates(r.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := map[string]bool{}
+	for _, c := range got.Candidates {
+		kept[c.CandidateID] = true
+	}
+	for i := range maxRetainedTerminal {
+		id := fmt.Sprintf("cand-seed-%04d", i)
+		if want := i >= rounds; kept[id] != want {
+			t.Fatalf("seeded %s kept=%v, want %v (oldest pruned first)", id, kept[id], want)
+		}
+	}
+	for key, op := range got.Operations {
+		if !kept[op.CandidateID] {
+			t.Fatalf("idempotency record %q outlived pruned candidate %s", key, op.CandidateID)
+		}
+	}
+	if got.Seq != maxRetainedTerminal+rounds+1 {
+		t.Fatalf("seq=%d, want %d (monotonic across pruning)", got.Seq, maxRetainedTerminal+rounds+1)
 	}
 	// One person's open requests are capped.
 	for i := range maxPendingPerUser {

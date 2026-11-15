@@ -200,7 +200,7 @@ type Verified struct {
 	AgentReadReach []string
 	// AgentReadSessionApps is the signed opt-in that lets the AgentReadReach
 	// agents also be USED for the caller's own-session App callbacks and own
-	// live-profile restore (D-510). False when absent.
+	// live-profile restore. False when absent.
 	AgentReadSessionApps bool
 	// SessionReach is the signed closed set of session IDs this bearer may
 	// select per request. A nil set means the claim is ABSENT and the

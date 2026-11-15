@@ -170,7 +170,7 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 		// governance accounting. Zeroing it here would silently drop
 		// intermediate-attempt spend. An errored attempt whose driver
 		// still reported usage or cost was billed with a known amount, so
-		// it emits the same observability record (D-507). An errored
+		// it emits the same observability record. An errored
 		// attempt with no report emits nothing; the turn projection sees
 		// a provider attempt without a cost record and marks the turn's
 		// cost incomplete.

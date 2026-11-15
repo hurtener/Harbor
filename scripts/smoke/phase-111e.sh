@@ -36,7 +36,7 @@ source "scripts/smoke/common.sh"
 #    moving the implementation cannot turn this guard into a comment match.
 assert_grep_present '^[[:space:]]*return compressRequest\(' "internal/runtime/steering/runloop.go" \
     "RunLoop request preparation calls the guarded request compactor"
-assert_grep_present '^[[:space:]]*if cerr := compressTrajectory\(' "internal/runtime/steering/runloop.go" \
+assert_grep_present '^[[:space:]]*cerr := compressTrajectory\(plannerCtx, spec, compactionRC\)' "internal/runtime/steering/runloop.go" \
     "RunLoop keeps the standalone planner compaction path"
 assert_grep_present 'compactionRC.Budget.TokenBudget = preparation.InputTarget' "internal/runtime/steering/runloop.go" \
     "standalone compaction receives the prepared working-input target"
@@ -65,7 +65,7 @@ assert_grep_present 'same compactor serves in-run' "internal/llm/summarizer/doc.
 #    onto RunSpec.Base.Budget. Pin source, helper, AND projection — a
 #    refactor that stops the configured budget from reaching the spec
 #    breaks one of the three.
-assert_grep_present 'projection\.ActiveMemoryBudget\(taskCtx, d\.agentConfig, effectiveAgentID, q, d\.tokenBudget, d\.compression != nil\)' "internal/runtime/serve/runloop.go" \
+assert_grep_present 'projection\.ActiveMemoryBudget\(taskCtx, d\.agentConfig, effectiveAgentID, cq, d\.tokenBudget, d\.compression != nil\)' "internal/runtime/serve/runloop.go" \
     "cmd run-loop driver resolves the active identity-scoped memory budget with the configured fallback"
 assert_grep_present 'TokenBudget:[[:space:]]+cfg.Memory.BudgetTokens' "internal/runtime/serve/serve.go" \
     "served assembly reads the canonical memory budget"

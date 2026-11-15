@@ -1214,7 +1214,7 @@ func (h *AgentConfigHandler) serveUserReconcileLiveProfile(w http.ResponseWriter
 		return
 	}
 	req.Identity = wireID
-	// D-510: restoring the caller's OWN saved user profile for an agent they
+	// Restoring the caller's OWN saved user profile for an agent they
 	// may read is a recovery of their own connections: it makes no model
 	// call, opens no run and changes no agent configuration, so a read-reach
 	// bearer may ask for it. Every other agent-config method keeps requiring
@@ -1596,7 +1596,7 @@ func (h *AgentConfigHandler) authorizeAgent(w http.ResponseWriter, r *http.Reque
 
 // admitAgentReadReach seats a read admission for agentID when the bearer
 // cannot select it but its verified agent_read_reach names it. Only the
-// user live-profile restore calls it (D-510).
+// user live-profile restore calls it.
 func (h *AgentConfigHandler) admitAgentReadReach(r *http.Request, agentID string) (context.Context, bool) {
 	if h.reach == nil || !auth.AgentReadSessionAppsAllowed(r.Context()) || h.reach.AuthorizeAgentReach(r.Context(), agentID) == nil {
 		return nil, false

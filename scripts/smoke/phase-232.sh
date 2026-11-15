@@ -37,6 +37,7 @@ declare -a P232_LIFECYCLE_REACH_METHODS=(
     MethodAgentConfigUserReconcileLiveProfile
     MethodAgentConfigUserSkillsList
     MethodAgentConfigUserSkillsExport
+    MethodAgentConfigUserSkillsRead
     MethodAgentConfigUserSkillsUpsert
     MethodAgentConfigUserSkillsDelete
     MethodAgentConfigUserSkillsImportValidate

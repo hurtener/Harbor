@@ -474,8 +474,8 @@ func AdmitEffectiveAgent(ctx context.Context, method string, id identity.Identit
 	return effectiveID, nil
 }
 
-// AdmitEffectiveAgentForRead is AdmitEffectiveAgent for READ-ONLY surfaces
-// (D-510): an effective agent outside the signed agent_reach is still admitted
+// AdmitEffectiveAgentForRead is AdmitEffectiveAgent for READ-ONLY surfaces:
+// an effective agent outside the signed agent_reach is still admitted
 // when the verified agent_read_reach names it. The same reach-before-resolver
 // ordering, retirement and resolution rules apply. When admission came from
 // read reach the returned context carries the read admission, so the console

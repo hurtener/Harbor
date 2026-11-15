@@ -1092,7 +1092,7 @@ func wrapErr(ctx string, err error) error {
 	return fmt.Errorf("%s: %w", ctx, err)
 }
 
-// sessionAppChecker is the D-510 own-session App proof: the session App
+// sessionAppChecker is the own-session App proof: the session App
 // ledger the MCP providers write before publishing a render event, then the
 // turn projection for Apps recorded before the ledger existed. Nil (read-reach
 // App callbacks refused) when neither is wired.
