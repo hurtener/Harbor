@@ -334,10 +334,13 @@ func (s *Stack) RunOnce(
 			retainedTrajectory = &planner.Trajectory{}
 		}
 		// A cancelled execution has already returned; its observed outcomes
-		// still need a bounded terminal write. No tool is retried here.
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
-		defer cancel()
-		if persistErr := retained.Finish(persistCtx, retainedTrajectory, goal, retainedAnswer, retainedStatus); persistErr != nil {
+		// still need a terminal write, whose store I/O Finish bounds. No tool
+		// is retried here. A cleanup failure after the committed turn is not a
+		// failed run: reconciling the same run removes the leftover journal.
+		persistErr := retained.Finish(context.WithoutCancel(runCtx), retainedTrajectory, goal, retainedAnswer, retainedStatus)
+		if errors.Is(persistErr, sessionmemory.ErrRetainedCleanupIncomplete) {
+			logger.Warn("assemble: RunOnce: retained context journal cleanup incomplete", slog.String("run_id", runID), slog.Any("err", persistErr))
+		} else if persistErr != nil {
 			retErr = errors.Join(retErr, persistErr)
 		}
 	}()

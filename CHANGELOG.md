@@ -39,6 +39,17 @@ Two versions move independently in Harbor (RFC §5.3):
   action on such a runtime. Child tasks a run spawns are unaffected. Off by
   default. No wire change.
 
+### Fixed
+
+- **The retained-context terminal write bound no longer covers redaction.**
+  The five-second bound on a run's terminal-turn write now starts after the
+  turn's redaction and encoding, so large turns under CPU load no longer
+  spend it before reaching the store.
+  A run whose final turn is already saved is no longer reported as failed
+  when the later journal cleanup fails or times out: the cleanup failure is
+  logged, and reconciling that run removes the leftover journal. A write
+  failure before the final turn is saved still fails the run.
+
 ## [1.55.0] — 2026-11-14
 
 ### Changed
