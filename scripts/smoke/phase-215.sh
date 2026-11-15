@@ -48,7 +48,9 @@ if grep -q 'AgentID string `json:"agent_id,omitempty"`' internal/protocol/types/
 else
     fail "phase 215 static: StartRequest has no agent_id wire field in internal/protocol/types/control.go — this phase shipped it, so its absence is a regression"
 fi
-if grep -A 70 '"StartRequest"' web/console/src/lib/protocol/wire-manifest.gen.json 2>/dev/null \
+# Extract the WHOLE StartRequest manifest block (a fixed grep -A window
+# silently stops covering fields as the request type grows).
+if awk '/^    "StartRequest": [{]/{f=1} f{print} f&&/^    [}],?$/{exit}' web/console/src/lib/protocol/wire-manifest.gen.json 2>/dev/null \
         | grep -q '"key": "agent_id"'; then
     ok "phase 215 static: agent_id is in the REGENERATED wire manifest for StartRequest"
 else

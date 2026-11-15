@@ -12,7 +12,7 @@ import (
 	mcp "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
-// sessionAppKindPrefix keys the D-510 session App ledger records. Each
+// sessionAppKindPrefix keys the session App ledger records. Each
 // record is the bare fact "this session rendered App (agent, server,
 // resource)"; it carries no content and lives in the session's own state
 // partition, so session erasure removes it with the rest of the session.
