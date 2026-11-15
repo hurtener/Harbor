@@ -108,7 +108,9 @@ fi
 
 # (S2) D-223 lockstep: the REGENERATED manifest knows the field. A hand-mirror
 #      without `make protocol-ts-gen` fails here.
-if grep -A 80 '"StartRequest"' web/console/src/lib/protocol/wire-manifest.gen.json 2>/dev/null \
+# Extract the WHOLE StartRequest manifest block (a fixed grep -A window
+# silently stops covering fields as the request type grows).
+if awk '/^    "StartRequest": [{]/{f=1} f{print} f&&/^    [}],?$/{exit}' web/console/src/lib/protocol/wire-manifest.gen.json 2>/dev/null \
         | grep -q '"key": "caller_memory"'; then
     ok "phase 219 static: caller_memory is in the REGENERATED wire manifest for StartRequest"
 else

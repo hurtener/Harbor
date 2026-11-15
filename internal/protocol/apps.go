@@ -75,9 +75,9 @@ type AppsSurface struct {
 	// production implementation; a plain resource read or a registration
 	// fingerprint does NOT prove the gate's checks.
 	admissionGate RenderAdmissionGate
-	// sessionApps is the optional D-510 session App-reference proof.
+	// sessionApps is the optional session App-reference proof.
 	sessionApps SessionAppChecker
-	// sessionAppRecorder is the optional D-510 nested-App ledger write.
+	// sessionAppRecorder is the optional nested-App ledger write.
 	sessionAppRecorder SessionAppRecorder
 }
 
@@ -415,14 +415,14 @@ type AppsDeps struct {
 	// RenderAdmissionAuthority — the surface rejects a half-wired pair
 	// at construction. Both nil remains the compatible disabled surface.
 	RenderAdmissionGate RenderAdmissionGate
-	// SessionApps is the OPTIONAL session App-reference proof (D-510). When
+	// SessionApps is the OPTIONAL session App-reference proof. When
 	// wired, a render-admission-backed `mcp.apps.call_tool` from a bearer
 	// whose agent_read_reach (not agent_reach) names the effective agent is
 	// admitted only if a turn of the caller's own session recorded exactly
 	// that (agent, server, resource) App. Nil refuses every read-reach call.
 	SessionApps SessionAppChecker
 	// SessionAppRecorder is the OPTIONAL ledger write for an App returned by
-	// an admitted `mcp.apps.call_tool` (a nested App, D-510). It records the
+	// an admitted `mcp.apps.call_tool` (a nested App). It records the
 	// App for the same session and effective agent before the reply leaves,
 	// so the nested App's own buttons pass the same own-session check.
 	SessionAppRecorder SessionAppRecorder
@@ -588,7 +588,7 @@ func (s *AppsSurface) handleReadResource(ctx context.Context, req any) (any, err
 	if err != nil {
 		return nil, err
 	}
-	// D-510: a session participant reads only Apps the shared session
+	// A session participant reads only Apps the shared session
 	// rendered (the same exact-session rule as its other routes).
 	if participant, ok := identity.ParticipantFrom(ctx); ok && participant.IsGuest(id) {
 		if !s.sessionHasApp(idCtx, id, effectiveID, r.ServerID, r.ResourceURI) {
@@ -760,7 +760,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 	}
 	effectiveID, err := AdmitEffectiveAgent(idCtx, string(method), id, r.AgentID, s.agents, s.reach)
 	if err != nil {
-		// D-510: a person reading their own session may press a button in an
+		// A person reading their own session may press a button in an
 		// App a run in THAT session rendered for THAT agent, without being
 		// able to select the agent. Only the render-admission path qualifies,
 		// and only with the session App-reference proof; it makes no model
@@ -772,7 +772,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		}
 		idCtx, effectiveID = readCtx, readID
 	}
-	// D-510: a session participant may call only Apps the shared session
+	// A session participant may call only Apps the shared session
 	// rendered, through a render admission, whatever its agent reach.
 	if participant, ok := identity.ParticipantFrom(ctx); ok && participant.IsGuest(id) {
 		if r.RenderAdmission == "" || !s.sessionHasApp(idCtx, id, effectiveID, r.ServerID, r.ResourceURI) {
@@ -881,7 +881,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 		resp.Content = res.Inline
 	}
 	if res.App != nil {
-		// D-510: a nested App returned by an admitted callback joins the
+		// A nested App returned by an admitted callback joins the
 		// same session's ledger under the same effective agent before the
 		// reply leaves, so its buttons pass the own-session check. A failed
 		// write is not a failed call; the nested App then fails closed.
@@ -904,7 +904,7 @@ func (s *AppsSurface) handleCallTool(ctx context.Context, req any) (any, error) 
 }
 
 // admitReadReachAppCall admits a render-admission-backed App callback from
-// a read-reach bearer (D-510). It requires an explicit agent, server and
+// a read-reach bearer. It requires an explicit agent, server and
 // resource, read-reach admission of that agent and the session proof that a
 // turn of the caller's own session recorded exactly that App. The returned
 // context carries the read admission for that one agent.

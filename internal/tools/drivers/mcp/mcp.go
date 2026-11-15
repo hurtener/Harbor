@@ -1541,7 +1541,7 @@ func (p *Provider) publishAppAvailable(ctx context.Context, ref *AppRef, toolNam
 	if ref == nil {
 		return
 	}
-	// D-510: record the App on the session's ledger before the render event
+	// Record the App on the session's ledger before the render event
 	// leaves, so the own-session App check never lags what the person sees.
 	if recorder, ok := p.cfg.ToolContext.(SessionAppRecorder); ok {
 		agentID, _ := tools.EffectiveAgentConfigFrom(ctx)

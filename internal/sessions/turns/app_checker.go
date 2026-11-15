@@ -18,7 +18,7 @@ const maxAppCheckPages = 1024
 var ErrAppCheckUnbounded = errors.New("turns: session app check exceeded its page bound")
 
 // AppChecker answers "did a turn of this session record exactly this App?"
-// over the turn projection (D-510). It reads only the caller's own session
+// over the turn projection. It reads only the caller's own session
 // partition and is safe for concurrent use.
 type AppChecker struct {
 	Store Store

@@ -77,7 +77,7 @@ var participantRoutes = map[string]struct{}{
 	"GET /v1/events":                 {},
 	"POST /v1/sessions/turns/list":   {},
 	"POST /v1/sessions/turns/get":    {},
-	// D-510: the Apps the shared session rendered. Each handler re-checks
+	// The Apps the shared session rendered. Each handler re-checks
 	// that the App is on this session's ledger before reading or calling.
 	"POST /v1/control/mcp.servers.read_resource": {},
 	"POST /v1/control/mcp.apps.call_tool":        {},

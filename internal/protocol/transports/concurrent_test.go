@@ -251,12 +251,18 @@ func TestConcurrentReuse_StateHistory_NoCrossIdentityBleed(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
 	const n = 144
+	// At most 64 requests dial at once: macOS caps the listen backlog at 128
+	// (kern.ipc.somaxconn), and 144 simultaneous dials on a loaded machine
+	// overflow it into "connection reset by peer" before the handler runs.
+	inflight := make(chan struct{}, 64)
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			inflight <- struct{}{}
+			defer func() { <-inflight }()
 			k := i % identities
 			tenant := fmt.Sprintf("t-%d", k)
 			user := fmt.Sprintf("u-%d", k)

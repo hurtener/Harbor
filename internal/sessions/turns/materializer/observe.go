@@ -1452,7 +1452,7 @@ func costUSD(v any) (float64, error) {
 // not-reported, so zero never becomes a fabricated exact claim).
 func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string, costUnknownSeen bool) (turns.Usage, bool, error) {
 	next := cur
-	// Provenance is per call and sticky per measure (D-507): a measure stays
+	// Provenance is per call and sticky per measure: a measure stays
 	// exact only while every contributing call was a driver report. Token
 	// counts are exact only with Usage.ReportPresent and without
 	// Usage.Estimated (Harbor's backfill). Cost is exact only with
@@ -1586,8 +1586,8 @@ func accumulateUsage(cur turns.Usage, usage, cost map[string]any, model string, 
 	return next, costUnknown, nil
 }
 
-// applyContextPrepared tracks provider attempts for cost provenance
-// (D-507). Every provider attempt is preceded by llm.context.prepared and a
+// applyContextPrepared tracks provider attempts for cost provenance.
+// Every provider attempt is preceded by llm.context.prepared and a
 // reported attempt is followed by llm.cost.recorded. A new attempt while
 // the previous one never recorded a cost means that attempt errored with
 // no usable report: its spend is unknown, so the turn's cost becomes

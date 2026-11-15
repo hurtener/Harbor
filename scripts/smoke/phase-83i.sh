@@ -58,8 +58,10 @@ assert_grep_present 'Emit:\s*emit' "internal/runtime/serve/runloop.go" \
     "runOne populates RunContext.Emit closure"
 assert_grep_present 'ToolExecutor:\s*d\.executor' "internal/runtime/serve/runloop.go" \
     "runOne sets RunSpec.ToolExecutor"
-assert_grep_present 'retained\.Finish\(persistCtx,' "internal/runtime/serve/retained_context.go" \
+assert_grep_present 'retained\.Finish\(context\.WithoutCancel\(ctx\),' "internal/runtime/serve/retained_context.go" \
     "the shared retained owner persists the terminal execution outcome"
+assert_grep_present 'context\.WithTimeout\(ctx, retainedWriteTimeout\)' "internal/memory/session/retained_context.go" \
+    "the terminal retained write is bounded"
 assert_grep_present 'status, answer = "complete", envelope.Answer' "internal/runtime/serve/retained_context.go" \
     "only a validated goal finish becomes a successful retained turn"
 

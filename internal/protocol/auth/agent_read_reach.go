@@ -13,7 +13,7 @@ import (
 // person the history of their own session after the session moved to another
 // agent, or after the agent stopped being available to them, while start,
 // App tool calls and every other agent-addressed write still require
-// `agent_reach`. D-510 extends it to App resource reads and tool listings.
+// `agent_reach`. The claim also covers App resource reads and tool listings.
 // Steering is authorized by run authorship, never by reach.
 //
 // It is an entitlement, never an isolation principal: the exact-session
@@ -76,7 +76,7 @@ func ParseAgentReadReach(raw any) ([]string, error) {
 type agentReadAdmissionKey struct{}
 
 // WithAgentReadAdmission records that a READ-ONLY Protocol surface admitted
-// agentID through agent_read_reach (D-510). Only the read-admission helper in
+// agentID through agent_read_reach. Only the read-admission helper in
 // the protocol package (reads and own-session App callbacks) and the
 // live-profile restore seat it, after the verified read reach authorized the
 // effective agent; downstream source visibility may then honour the same read
@@ -98,7 +98,7 @@ func AuthorizeAdmittedAgentRead(ctx context.Context, agentID string) error {
 }
 
 // AgentReadSessionAppsClaim is the optional signed boolean that opts the
-// agent_read_reach agents into USE inside the caller's own session (D-510):
+// agent_read_reach agents into USE inside the caller's own session:
 // render-admission App callbacks for Apps a turn of that session recorded,
 // and the caller's own live-profile restore. Absent or false keeps read reach
 // strictly read-only (history, App documents, tool listings). An issuer sets
