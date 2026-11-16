@@ -17,6 +17,26 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.57.0] — 2026-11-16
+
+### Fixed
+
+- **Session last activity follows runs (D-514).** A session's `LastSeen` now
+  also moves when a run in it starts and when the run ends (completed, failed
+  or cancelled), including a participant's turn in another user's session.
+  `sessions.list` reports `last_activity_at` as that last activity for open
+  and closed sessions alike, instead of a closed session's close time, so a
+  `last_activity_desc` listing no longer sinks a chat used minutes ago below
+  older ones or floats a chat the idle sweep just closed to the top. The idle
+  sweep now closes a session only after `sessions.idle_ttl` without a run, not
+  `idle_ttl` after it was opened. Marks are applied asynchronously by one
+  bounded worker, so a run never waits on the session store, and shutdown
+  waits for queued marks at most 2 seconds. They are best-effort (a failure
+  never fails a run), coalesced within 5 seconds, and emit no event. Known
+  limit: `last_activity_desc` paging is not a snapshot; a session whose
+  activity moves above the cursor between pages is skipped by later pages
+  (never duplicated), so re-list from the top to refresh. No wire change.
+
 ## [1.56.0] — 2026-11-14
 
 ### Added

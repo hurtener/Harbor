@@ -641,6 +641,59 @@ func (r *Registry) RecordCompletedTurn(ctx context.Context, id string, ident ide
 	return count, nil
 }
 
+// RunActivityCoalesceWindow is how close to the stored LastSeen a run
+// activity mark may land before MarkRunActivity skips the write. A run that
+// starts and finishes inside the window costs one save, not two.
+const RunActivityCoalesceWindow = 5 * time.Second
+
+// MarkRunActivity records run activity on a session: it moves LastSeen
+// forward to now. The run lifecycle calls it when a run starts and when it
+// reaches a terminal state, so LastSeen tracks the latest real use of the
+// session and the idle sweep measures IdleTTL from that use.
+//
+// It is a system-internal mark, not a caller-facing refresh like Touch:
+//
+//   - `ident` is the stored session's own (tenant, user, session) — the run's
+//     storage partition from the verified task record, never a request field
+//     or the ctx identity. A run whose writer is a session participant acting
+//     in another user's session passes that session's owner triple. The
+//     record is loaded under that exact triple and its stored identity must
+//     match it exactly (ErrIdentityMismatch otherwise).
+//   - It never creates a session (unknown / erased → ErrSessionNotFound),
+//     never reopens one, and changes nothing but LastSeen. A run that
+//     finishes after its session was closed still records that activity; the
+//     session stays closed.
+//   - LastSeen only moves forward. A mark within RunActivityCoalesceWindow of
+//     the stored LastSeen is skipped without a write.
+//   - It emits no event: the run's own task events already carry the
+//     activity, and a per-turn session.touched would inflate the session's
+//     durable event log.
+//
+// Callers treat it as best-effort: a failure must never fail or block a run.
+func (r *Registry) MarkRunActivity(ctx context.Context, ident identity.Identity) error {
+	if r.closed.Load() {
+		return ErrRegistryClosed
+	}
+	if err := identity.Validate(ident); err != nil {
+		return err
+	}
+	now := r.clock.Now()
+	_, err := r.mutateSession(ctx, ident, func(stored *Session) error {
+		if !sameIdentity(stored.Identity, ident) {
+			return fmt.Errorf("%w: stored=(%s,%s,%s) caller=(%s,%s,%s)",
+				ErrIdentityMismatch,
+				stored.Identity.TenantID, stored.Identity.UserID, stored.Identity.SessionID,
+				ident.TenantID, ident.UserID, ident.SessionID)
+		}
+		if !now.After(stored.LastSeen.Add(RunActivityCoalesceWindow)) {
+			return errSkipSave
+		}
+		stored.LastSeen = now
+		return nil
+	})
+	return err
+}
+
 // SetTitleAuto sets the session's title from the internal auto-namer. It
 // REFUSES with ErrManualTitle when the current TitleSource is
 // TitleSourceManual — manual wins, structurally, so a human's title is never

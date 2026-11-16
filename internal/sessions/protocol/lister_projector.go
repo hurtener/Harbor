@@ -450,9 +450,18 @@ func projectRow(snap sessions.SessionSnapshot) prototypes.SessionRow {
 	case snap.Closed && snap.ClosedReason == "failed":
 		status = prototypes.SessionStatusFailed
 	}
+	// LastActivityAt is the last real use of the session: LastSeen, which
+	// moves on open/reopen and on every run start and finish. A closed
+	// session reports the same value, not ClosedAt — an idle-sweep close is
+	// not activity, and reporting it would float a long-unused conversation
+	// to the top of a last_activity_desc listing. ClosedAt stays on the
+	// snapshot; it is only the fallback for a record with no LastSeen.
 	lastActivity := snap.LastSeen
-	if snap.Closed && !snap.ClosedAt.IsZero() {
+	if lastActivity.IsZero() {
 		lastActivity = snap.ClosedAt
+	}
+	if lastActivity.IsZero() {
+		lastActivity = snap.OpenedAt
 	}
 	duration := lastActivity.Sub(snap.OpenedAt)
 	if duration < 0 {

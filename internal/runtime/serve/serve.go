@@ -1226,6 +1226,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		ProviderRoute:            opts.ProviderRoute,
 		NamingDefault:            cfg.Runtime.Naming,
 		SessionTitler:            sessionRegistry,
+		SessionActivity:          sessionRegistry,
 		NamingLLM:                stack.LLM,
 	})
 	if err != nil {

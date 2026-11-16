@@ -360,6 +360,21 @@ type RunLoopDriverOptions struct {
 	// flows through (governance/safety via ctx identity). Nil ⇒ no auto-naming
 	// trigger.
 	NamingLLM steering.NamingCompleter
+
+	// SessionActivity records run activity on the run's session (its
+	// LastSeen) when a run starts and when it reaches a terminal state, so
+	// session listings sort by real use and the idle sweep measures from it.
+	// The same *sessions.Registry the sessions Protocol routes project over.
+	// Nil ⇒ no activity marks. Best-effort: a failure never fails a run.
+	SessionActivity SessionActivityMarker
+}
+
+// SessionActivityMarker is the narrow session-registry seam the run lifecycle
+// stamps activity through. `ident` is the run's storage partition (the stored
+// session's own triple), never the writer of a participant turn.
+// *sessions.Registry satisfies it.
+type SessionActivityMarker interface {
+	MarkRunActivity(ctx context.Context, ident identity.Identity) error
 }
 
 // TenantOverrideResolver is the narrow read seam the run loop uses to
@@ -484,6 +499,12 @@ type RunLoopDriver struct {
 	namingDefault config.RuntimeNamingConfig
 	sessionTitler steering.SessionTitler
 	namingLLM     steering.NamingCompleter
+
+	// sessionActivity stamps run start/finish activity on the run's session.
+	// Nil = no marks. Marks are delivered asynchronously through the
+	// bounded queue below (see session_activity.go); the run never waits.
+	sessionActivity SessionActivityMarker
+	activity        *sessionActivityQueue
 
 	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
@@ -613,6 +634,8 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		namingDefault:            opts.NamingDefault,
 		sessionTitler:            opts.SessionTitler,
 		namingLLM:                opts.NamingLLM,
+		sessionActivity:          opts.SessionActivity,
+		activity:                 newSessionActivityQueue(opts.SessionActivity, opts.Logger),
 		trajectories:             make(map[tasks.TaskID]*trackedTrajectory),
 		tokenBudget:              opts.TokenBudget,
 		runLimits:                opts.RunLimits,
@@ -766,6 +789,7 @@ func (d *RunLoopDriver) Start(ctx context.Context) error {
 	}
 	d.sub = sub
 	d.started = true
+	d.activity.start()
 
 	// When the supplied ctx cancels (boot aborted before Close), the
 	// subscription cancels too. This is defence-in-depth — Close
@@ -1464,6 +1488,13 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 			slog.String("err", err.Error()))
 		return
 	}
+	// The run is now live: record session activity at start and again when
+	// runOne returns (every terminal path — complete, failed, cancelled —
+	// returns through here). Keyed by q, the run's storage partition, so a
+	// participant's turn in another user's session marks that session. Both
+	// are non-blocking enqueues; the run never waits on the session store.
+	d.activity.enqueue(q.Identity)
+	defer d.activity.enqueue(q.Identity)
 
 	// build the per-run consumer state BEFORE
 	// handing the RunSpec to the RunLoop. The four primitives the
@@ -2617,6 +2648,8 @@ func (d *RunLoopDriver) Close(_ context.Context) error {
 		}
 		d.subLoopWG.Wait()
 		d.runsWG.Wait()
+		// Every run has returned, so no further mark can be enqueued.
+		d.activity.stop()
 	})
 	return nil
 }

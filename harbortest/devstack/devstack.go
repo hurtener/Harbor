@@ -1010,6 +1010,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				OAuthProviderReconciler:  devProviderReconciler,
 				NamingDefault:            cfg.Runtime.Naming,
 				SessionTitler:            stack.Sessions,
+				SessionActivity:          stack.Sessions,
 				NamingLLM:                stack.LLMClient,
 			})
 			if drvErr != nil {
