@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.57.0] — 2026-11-16
+
 ### Fixed
 
 - **Session last activity follows runs (D-514).** A session's `LastSeen` now
