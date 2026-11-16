@@ -17557,3 +17557,75 @@ refusals reuse `scope_mismatch`. This supersedes D-510's statement that no
 Harbor control keeps a read-only bearer from steering the person's own runs.
 
 **Cross-references:** D-397, D-509, D-510, RFC §6.3.
+
+## D-514 — Session last activity follows runs
+
+**Date:** 2026-11-16
+
+**Decision.** A session's `LastSeen` is its last real activity. It moves on
+open and reopen, as before, and now also when a run in the session starts and
+when it reaches a terminal state (completed, failed or cancelled). The
+run-loop driver queues a mark right after the task is marked running and
+again when the run returns; a worker applies it through an internal registry
+method, `Registry.MarkRunActivity`.
+
+- *Keying.* The mark is keyed by the run's storage partition: the stored
+  session's own `(tenant, user, session)` from the task record, never a
+  request field or the ctx identity. A participant's turn in another user's
+  session (D-509) therefore refreshes that session. The stored identity must
+  match exactly. `Touch` is unchanged: identity-checked against the ctx and
+  refused on a closed session.
+- *Scope.* The mark never creates or reopens a session and changes nothing
+  but `LastSeen`, which only moves forward. A run that finishes after its
+  session was closed records the activity; the session stays closed. It emits
+  no event, because the run's task events already carry the activity and a
+  per-turn `session.touched` would grow the session's durable event log.
+- *Off the run path.* A run never waits on the session store or the
+  registry's record lock (which other registry writes hold across store
+  I/O). It does a non-blocking send to a bounded queue (256 marks; a full
+  queue drops the new mark) drained by one worker per run-loop driver.
+- *Cost.* The worker skips a session it marked within the last 5 seconds
+  before touching the registry (a bounded in-memory map), and the registry
+  skips a write within 5 seconds of the stored `LastSeen`, so a short run
+  costs at most one save.
+- *Best-effort.* Each mark's store call is bounded (2 s) and only logged on
+  failure; a failed or dropped mark never fails a run. On shutdown the driver
+  waits at most 2 seconds for queued marks, then cancels the worker's store
+  calls and returns, so a hung store cannot stall shutdown.
+- *Listing.* `sessions.list` / `sessions.inspect` report `last_activity_at` =
+  `LastSeen` for open and closed sessions alike. A closed session no longer
+  reports its `ClosedAt`; that is used only as a fallback for a record with
+  no `LastSeen`. `duration` is the span from open to last activity. The
+  `last_activity_desc` sort and its cursor read the same projected value.
+- *Idle sweep.* The sweep already measures `sessions.idle_ttl` from
+  `LastSeen` and skips sessions with a running task, so a session is now
+  closed only after `idle_ttl` without a run, not `idle_ttl` after it was
+  opened.
+
+**Why.** `LastSeen` moved only on open and reopen, so a conversation used all
+day was idle-closed 24 hours after it was opened, and its close time became
+its reported last activity. A client sorting by last activity saw a chat used
+minutes ago below old chats, and a chat the sweep had just closed jump to the
+top.
+
+**Known limits.**
+
+- The hard cap (`sessions.hard_cap`) is unchanged: a session in use is still
+  closed `hard_cap` after it was opened or last reopened. The next `start`
+  reopens it.
+- Sessions closed before this change keep the `LastSeen` they had, often
+  their open or reopen time, so they now sort by that rather than by their
+  close time.
+- `last_activity_desc` paging is not a snapshot. A session whose activity
+  moves above the cursor between page requests is skipped by the later
+  pages; values only move forward, so no session appears twice. Clients
+  should treat the first page as authoritative and re-list from the top to
+  refresh.
+- A mark dropped from a full queue or lost at shutdown is not retried; the
+  session's next run start or finish marks it again.
+
+**Compatibility.** No wire change and no new capability. Only the value of
+`last_activity_at` for closed sessions, and how soon idle sessions close,
+change.
+
+**Cross-references:** D-312, D-509, RFC §6.9.

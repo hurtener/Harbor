@@ -1344,6 +1344,8 @@ Additions to this set are RFC PRs.
 
 **`SecurityScheme`** — A2A's discriminated union of supported authentication schemes (API key, HTTP auth, OAuth 2.0, OpenID Connect, mutual TLS). Used by `AgentCard.security_schemes`. Each variant is a distinct Go type implementing the `SecurityScheme` interface; runtime discrimination via `Kind()`. RFC §6.12, D-031.
 
+**Session last activity** — a session's `LastSeen`: stamped on open and reopen and when each run in the session starts and ends (keyed by the run's storage partition, so a participant's turn refreshes the owner's session). `sessions.list` reports it as `last_activity_at` for open and closed sessions, and the idle sweep measures `sessions.idle_ttl` from it. D-514.
+
 **Session participant** — a person other than the session owner taking part in the owner's session (D-509). Signed by the issuer with the optional `session_owner` claim (bound to exactly one `session_reach` session, no elevated scope). The session stays in the owner's `(tenant, owner, session)` partition; the participant is the turn's writer (`Task.Participant`, turn row `participant`), and user-keyed outbound calls act as the writer. Not an isolation component. See also **Speaker label**.
 
 **Speaker label** — the optional signed `speaker` claim: a printable display label for the bearer's user, recorded on the turns it writes and rendered to the model as a quoted display-name label (and `speaker` on historical requests). D-509.

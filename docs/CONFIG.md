@@ -1480,7 +1480,9 @@ No stored historical action is executed by restoration.
 ### sessions.idle_ttl
 
 Time before an idle session is swept. Default: `24h`. Validation:
-> 0 AND <= `hard_cap`.
+> 0 AND <= `hard_cap`. Idle time is measured from the session's last
+activity: open or reopen, and the start and end of every run in it. A
+session with a running task is never swept.
 
 ### sessions.hard_cap
 
