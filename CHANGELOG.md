@@ -17,6 +17,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Changed
+
+- **A participant's turn loads the writer's own personal skills (D-518).**
+  A session participant's turn now sees that participant's own user-scope
+  personal skills; the session owner's personal skills and the session's
+  personal tier stay hidden.
+
 ## [1.57.3] - 2026-11-17
 
 ### Fixed

@@ -1090,16 +1090,31 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 	var resolver *sessionoverlay.SessionSkillResolver
 	// A session participant's turn never sees the partition owner's
 	// personal skills (user rung or session tier); shared and operator
-	// skills remain.
+	// skills remain, and the writer's own user-rung personal skills load
+	// as they would on the writer's own turns.
 	participant, hasParticipant := identity.ParticipantFrom(ctx)
+	guest := hasParticipant && participant.IsGuest(q.Identity)
+	var writer identity.Quadruple
+	var writerNames []string
+	if guest {
+		writer = q
+		writer.UserID = participant.UserID
+		own, err := projection.ActiveSessionSkillMembership(ctx, d.agentConfig, effectiveAgentID, writer)
+		if err != nil {
+			return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("capture writer membership: %w", err)
+		}
+		writerNames = own.UserPersonalNames
+	}
 	resolver, err = sessionoverlay.NewSessionSkillResolver(ctx, sessionoverlay.SessionSkillResolverConfig{
-		Run:             q,
-		AgentID:         effectiveAgentID,
-		Base:            d.skillStore,
-		Personal:        d.sessionPersonalSkills,
-		Cutover:         d.sessionSkillCutover,
-		Membership:      membership,
-		ExcludePersonal: hasParticipant && participant.IsGuest(q.Identity),
+		Run:                 q,
+		AgentID:             effectiveAgentID,
+		Base:                d.skillStore,
+		Personal:            d.sessionPersonalSkills,
+		Cutover:             d.sessionSkillCutover,
+		Membership:          membership,
+		ExcludePersonal:     guest,
+		Writer:              writer,
+		WriterPersonalNames: writerNames,
 	})
 	if err != nil {
 		return skills.RunSkillReaderSnapshot{}, false, fmt.Errorf("build resolver: %w", err)
