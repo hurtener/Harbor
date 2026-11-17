@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.57.1] - 2026-11-17
+
 ### Fixed
 
 - **Routed provider failures keep their HTTP status (D-515).** A failed
