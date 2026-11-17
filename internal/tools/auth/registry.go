@@ -138,6 +138,9 @@ type SignedCapabilityExchangeBinding struct {
 	SinkDigest         string `json:"sink_digest"`
 	Audience           string `json:"audience"`
 	Resource           string `json:"resource"`
+	// AgentScoped marks a shared agent-scope registration (trusted,
+	// process-local). The zero value restricts participants to the signed user.
+	AgentScoped bool `json:"-"`
 	// AuthorityOperationKind and PublisherEpoch bind this process-local
 	// provider to one durable publisher generation. They are deliberately
 	// excluded from the broker actor assertion and every wire projection.

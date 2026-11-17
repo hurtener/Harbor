@@ -331,7 +331,7 @@ func (s *Service) RegisterOAuthMCPCapability(ctx context.Context, req prototypes
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
 	}
-	exchangeBinding := signedCapabilityExchangeBinding(binding, sink, operationKind, op, s.signedOAuthMCPOperations)
+	exchangeBinding := signedCapabilityExchangeBinding(binding, scope, sink, operationKind, op, s.signedOAuthMCPOperations)
 	preparedProvider, err := providerPreparer.PrepareSignedCapabilityProvider(ctx, broker, exchangeBinding, scopes)
 	if err != nil {
 		return prototypes.AgentConfigRegisterOAuthMCPCapabilityResponse{}, err
@@ -514,11 +514,12 @@ func (s *Service) resumeAndRenewSignedOAuthMCPAuthority(ctx context.Context, phy
 	return agentcfg.SignedOAuthMCPOperation{}, fmt.Errorf("%w: authority renewal did not converge", agentcfg.ErrSignedCapabilityPending)
 }
 
-func signedCapabilityExchangeBinding(binding agentcfg.SignedOAuthMCPBinding, sink, operationKind string, op agentcfg.SignedOAuthMCPOperation, authorizer toolauth.SignedCapabilityUseAuthorizer) toolauth.SignedCapabilityExchangeBinding {
+func signedCapabilityExchangeBinding(binding agentcfg.SignedOAuthMCPBinding, scope agentcfg.ConfigScope, sink, operationKind string, op agentcfg.SignedOAuthMCPOperation, authorizer toolauth.SignedCapabilityUseAuthorizer) toolauth.SignedCapabilityExchangeBinding {
 	return toolauth.SignedCapabilityExchangeBinding{
 		TenantID: binding.TenantID, UserID: binding.UserID, SessionID: binding.SessionID, AgentID: binding.AgentID, ProviderName: binding.ProviderName,
 		CapabilityRevision: binding.CapabilityRevision, PairFingerprint: agentcfg.SignedOAuthMCPPairFingerprint(binding),
 		URLDigest: binding.URLDigest, SinkDigest: binding.SinkDigest, Audience: binding.Audience, Resource: sink,
+		AgentScoped:            scope == agentcfg.ConfigScopeAgent && op.ReplayKey.UserID == "" && op.ReplayKey.SessionID == "",
 		AuthorityOperationKind: operationKind, PublisherEpoch: op.PublisherEpoch, UseAuthorizer: authorizer,
 	}
 }

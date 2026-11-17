@@ -1530,10 +1530,9 @@ func (p *provider) validateSignedCapabilityCaller(ctx context.Context, id identi
 	if id.TenantID != p.signedBinding.TenantID {
 		return fmt.Errorf("%w: signed capability tenant mismatch", auth.ErrIdentityRequired)
 	}
-	// A participant acting in another user's session may use only a
-	// capability bound to the participant itself, never the partition
-	// owner's.
-	if sessionOwnerFromCtx(ctx) != "" && id.UserID != p.signedBinding.UserID {
+	// A participant may use only its own personal capability, never the
+	// partition owner's; shared agent-scope capabilities are exempt.
+	if !p.signedBinding.AgentScoped && sessionOwnerFromCtx(ctx) != "" && id.UserID != p.signedBinding.UserID {
 		return fmt.Errorf("%w: signed capability belongs to another user", auth.ErrIdentityRequired)
 	}
 	// Private MCP preparation happens only after registration/recovery has

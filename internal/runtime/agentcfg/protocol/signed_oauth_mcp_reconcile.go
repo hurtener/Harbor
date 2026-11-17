@@ -574,7 +574,7 @@ func (r *SignedOAuthMCPReconciler) ensureAttached(ctx context.Context, q identit
 	binding := agentcfg.SignedOAuthMCPBinding{TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID, AgentID: agentID, Broker: pair.Broker, ProviderName: pair.ProviderName,
 		CapabilityRevision: pair.CapabilityRevision, URLDigest: pair.URLDigest, SinkDigest: pair.SinkDigest,
 		Audience: pair.Audience, Scopes: pair.Scopes, Connection: pair.Connection}
-	provider, err := r.providers.PrepareSignedCapabilityProvider(ctx, pair.Broker, signedCapabilityExchangeBinding(binding, pair.Sink, pair.AuthorityOperationKind, op, r.operations), pair.Scopes)
+	provider, err := r.providers.PrepareSignedCapabilityProvider(ctx, pair.Broker, signedCapabilityExchangeBinding(binding, signedOAuthMCPConfigScope(ctx), pair.Sink, pair.AuthorityOperationKind, op, r.operations), pair.Scopes)
 	if err != nil {
 		return agentcfg.SignedOAuthMCPOperation{}, &signedPreparationError{err: err}
 	}

@@ -17660,3 +17660,20 @@ routed LLM failures by status today; the status is diagnostic only.
 the status suffix when a status exists.
 
 **Cross-references:** D-444.
+
+## D-516 — Shared signed capabilities keep the participant as subject
+
+**Date:** 2026-11-17
+
+**Decision.** A participant may use an agent-scoped signed OAuth MCP
+capability whose signed binding names a service user. Registration and
+restart reconciliation set a process-local `AgentScoped` flag only for
+`ConfigScopeAgent` with an empty replay-key user and session; the zero value
+keeps D-509's participant user check. The exchange subject stays the
+participant (with `session_owner`) and the actor stays the signed binding.
+The flag is excluded from JSON, digests and broker input.
+
+**Why.** D-509's personal-binding rule refused shared agent capabilities
+before the broker exchange.
+
+**Cross-references:** D-509.
