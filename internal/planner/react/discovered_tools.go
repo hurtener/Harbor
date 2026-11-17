@@ -681,15 +681,14 @@ var (
 )
 
 // toolToDeclaration projects a `tools.Tool` view onto the wire-facing
-// `llm.ToolDeclaration`. Carries name + description + the args JSON
-// Schema verbatim — the bifrost translator (and downstream provider
-// adapters) consume this shape directly.
+// `llm.ToolDeclaration`. The provider adapters consume the model-facing
+// argument schema directly.
 func toolToDeclaration(t tools.Tool) llm.ToolDeclaration {
 	return llm.ToolDeclaration{
 		// Sanitize the catalog name to the provider-safe form native
 		// tool-calling requires; the projector reverses it on dispatch.
 		Name:        sanitizeToolName(t.Name),
 		Description: t.Description,
-		Schema:      t.ArgsSchema,
+		Schema:      t.ArgsSchemaForModel(),
 	}
 }

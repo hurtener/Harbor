@@ -975,8 +975,76 @@ func TestEgress_OptionalMappedParameterSkipsEmptyString(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// The attach-time schema check.
+// The model schema projection and the attach-time schema check.
 // ---------------------------------------------------------------------
+
+func TestEgress_ModelSchemaHintsOnlyMappedParameters(t *testing.T) {
+	t.Parallel()
+	p := &Provider{source: "remote", cfg: Config{
+		ArtifactEgress: egressMapping(t, map[string][]string{"ingest": {"doc", "backup?"}}),
+	}}
+	const originalDescription = "Base64 document bytes."
+	schema := map[string]any{
+		"type":     "object",
+		"required": []any{"doc"},
+		"properties": map[string]any{
+			"doc":    map[string]any{"type": "string", "description": originalDescription},
+			"backup": map[string]any{"type": []any{"null", "string"}},
+			"note":   map[string]any{"type": "string", "description": "A note.", "maxLength": json.Number("9007199254740993")},
+		},
+	}
+	original, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, err := p.buildToolDescriptor(&mcpsdk.Tool{Name: "ingest", InputSchema: schema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(desc.Tool.ArgsSchema, original) {
+		t.Fatalf("catalog schema changed: %s", desc.Tool.ArgsSchema)
+	}
+	var projected struct {
+		Properties map[string]map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(desc.Tool.ArgsSchemaForModel(), &projected); err != nil {
+		t.Fatal(err)
+	}
+	for _, param := range []string{"doc", "backup"} {
+		var description string
+		if err := json.Unmarshal(projected.Properties[param]["description"], &description); err != nil {
+			t.Fatalf("%s description: %v", param, err)
+		}
+		if !strings.HasPrefix(description, "Pass the file's artifact id") ||
+			!strings.Contains(description, "The runtime substitutes the file's bytes.") ||
+			!strings.Contains(description, "Do not paste file contents.") {
+			t.Errorf("%s description lacks artifact guidance: %q", param, description)
+		}
+		if param == "doc" && !strings.HasSuffix(description, "\n\n"+originalDescription) {
+			t.Errorf("server description was not retained after the hint: %q", description)
+		}
+	}
+	if got := string(projected.Properties["note"]["description"]); got != `"A note."` {
+		t.Errorf("unmapped description changed: %s", got)
+	}
+	if got := string(projected.Properties["note"]["maxLength"]); got != "9007199254740993" {
+		t.Errorf("unmapped schema number changed: %s", got)
+	}
+	current, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(current, original) {
+		t.Fatalf("discovered schema mutated: %s", current)
+	}
+	unmapped, err := p.buildToolDescriptor(&mcpsdk.Tool{Name: "unmapped", InputSchema: schema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unmapped.Tool.ArgsSchemaForModel(); !bytes.Equal(got, original) {
+		t.Errorf("unmapped tool schema changed: %s", got)
+	}
+}
 
 func TestEgress_SchemaCheck_Refusals(t *testing.T) {
 	cases := []struct {

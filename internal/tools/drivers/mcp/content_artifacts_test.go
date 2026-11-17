@@ -39,6 +39,35 @@ func newContentArtifactStore(t *testing.T) artifacts.ArtifactStore {
 	return store
 }
 
+func TestMCPTypedContent_EmbeddedArtifactIDIsVisibleToModel(t *testing.T) {
+	t.Parallel()
+	lowered, err := lowerCallToolResult(&mcpsdk.CallToolResult{Content: []mcpsdk.Content{
+		&mcpsdk.EmbeddedResource{Resource: &mcpsdk.ResourceContents{
+			URI: "mem://file", MIMEType: "application/octet-stream", Blob: []byte{1, 2, 3},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newContentArtifactStore(t)
+	scope := contentArtifactScope()
+	projected, err := artifactcontent.Materialize(t.Context(), store, scope, lowered, "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err := store.List(t.Context(), scope.Triple())
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("stored artifacts = %v, err = %v", refs, err)
+	}
+	if !strings.Contains(string(encoded), `"artifact":{"id":"`+refs[0].ID+`"`) {
+		t.Errorf("model-facing result lacks the stored artifact id: %s", encoded)
+	}
+}
+
 // TestMCPTypedContent_MaterializesOfficialSDKBlocks proves the generic
 // artifact-content seam against the pinned MCP SDK's actual content types.
 // Binary blocks become individual, typed, identity-scoped artifacts in their

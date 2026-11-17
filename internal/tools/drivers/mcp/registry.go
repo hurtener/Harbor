@@ -840,8 +840,8 @@ func partitionAppVisible(descs []tools.ToolDescriptor) map[string]tools.ToolDesc
 // # Covered fields — every stable semantic field that can affect
 // ordinary / App / resource / prompt catalog meaning
 //
-// name, description, ArgsSchema and OutSchema, SideEffects, Tags,
-// AuthScopes, CostHint, LatencyHint, SafetyNotes, Loading, Examples (in
+// name, description, ArgsSchema, ModelArgsSchema, OutSchema, SideEffects,
+// Tags, AuthScopes, CostHint, LatencyHint, SafetyNotes, Loading, Examples (in
 // order, each with its canonical JSON Args, Description, and Tags),
 // Source, Transport, Policy (TimeoutMS, MaxRetries, BackoffBase,
 // BackoffMult, BackoffMax, RetryOn, Validate), HandlesMIME, Form, and
@@ -858,7 +858,7 @@ func partitionAppVisible(descs []tools.ToolDescriptor) map[string]tools.ToolDesc
 // Set-like fields (Tags, AuthScopes, HandlesMIME, Policy.RetryOn,
 // example Tags) are sorted before encoding, so element ORDER never
 // changes the generation. Order-bearing fields (the Examples list) keep
-// their order. ArgsSchema and OutSchema are canonicalized by SEMANTIC
+// their order. Schemas are canonicalized by SEMANTIC
 // JSON VALUE before the length-prefixed write: each valid document is
 // re-encoded compactly, with deterministic object-key order and an exact
 // canonical number form, so a replica whose discovery serialization
@@ -922,7 +922,7 @@ func currentGenerationFor(descs []tools.ToolDescriptor) string {
 // with identical semantic content produce identical bytes, and changing
 // any covered field changes the bytes. An error means the descriptor's
 // stable fields cannot be canonically encoded (a non-serializable
-// example args map, or an ArgsSchema / OutSchema that is not a single
+// example args map, or a schema that is not a single
 // canonical JSON document) — the caller treats the catalog as
 // non-determinable and the generation as unknown.
 func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
@@ -1064,6 +1064,16 @@ func canonicalDescriptorRow(d tools.ToolDescriptor) ([]byte, error) {
 		writeField("1")
 	} else {
 		writeField("0")
+	}
+	// Keep the row encoding stable when the model uses the original schema.
+	if len(t.ModelArgsSchema) > 0 {
+		modelSchema, err := canonicalJSONSchema(t.ModelArgsSchema)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: model args schema: %w", err)
+		}
+		if modelSchema != argsSchema {
+			writeField(modelSchema)
+		}
 	}
 	return buf.Bytes(), nil
 }
