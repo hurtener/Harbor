@@ -17677,3 +17677,17 @@ The flag is excluded from JSON, digests and broker input.
 before the broker exchange.
 
 **Cross-references:** D-509.
+
+## D-517 — MCP artifact egress parameters tell the model to pass an artifact id
+
+**Date:** 2026-11-17
+
+**Decision.** For each `artifact_params` mapping, prepend artifact-id guidance
+to the parameter description in a copy of the discovered MCP schema for the
+model. Preserve the server description after the guidance. Attach checks and
+outbound validation continue to use the server's schema.
+
+**Why.** The model supplies the stored artifact's `id`. The remote tool's
+description explains the bytes it receives after runtime substitution.
+
+**Cross-references:** D-359.

@@ -76,6 +76,9 @@ func TestCurrentGenerationFor_EverySemanticFieldFamilyMatters(t *testing.T) {
 		{"args schema", func(d *tools.ToolDescriptor) {
 			d.Tool.ArgsSchema = json.RawMessage(`{"type":"object","properties":{"z":{"type":"string"}}}`)
 		}},
+		{"model args schema", func(d *tools.ToolDescriptor) {
+			d.Tool.ModelArgsSchema = json.RawMessage(`{"type":"object","properties":{"x":{"type":"string","description":"Pass an artifact id."}}}`)
+		}},
 		{"out schema", func(d *tools.ToolDescriptor) {
 			d.Tool.OutSchema = json.RawMessage(`{"type":"object","properties":{"w":{"type":"number"}}}`)
 		}},

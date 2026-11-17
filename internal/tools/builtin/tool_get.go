@@ -56,7 +56,7 @@ func toolGetWithScopes(ctx context.Context, _ tools.ToolCatalog, args ToolGetArg
 	return ToolGetOut{
 		Name:        declared,
 		Description: t.Description,
-		ArgsSchema:  string(t.ArgsSchema),
+		ArgsSchema:  string(t.ArgsSchemaForModel()),
 		Server:      t.SourceTitle,
 		Found:       true,
 	}, nil

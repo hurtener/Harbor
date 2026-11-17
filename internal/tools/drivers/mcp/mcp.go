@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -1158,9 +1159,8 @@ func (p *Provider) checkOAuthBindingAmbiguity(toolNames, resourceURIs, promptNam
 }
 
 // buildToolDescriptor maps an MCP Tool into a Harbor ToolDescriptor.
-// The InputSchema is compiled to a `tools.Validate`; on compile
-// failure, ErrSchemaInvalid is returned (the caller skips this
-// tool — see Discover).
+// It preserves the discovered InputSchema and prepares a model-facing
+// copy for mapped tools. The server validates the outbound arguments.
 //
 // The Invoke closure captures `p.session` lazily (via
 // `sessionForRead`) so a ToolPolicy-driven retry that follows a
@@ -1244,6 +1244,12 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	// next attach / reconcile — the next-turn projection posture every
 	// other connection field has.
 	egressParams := p.cfg.ArtifactEgress.ParamsFor(mcpName)
+	if len(egressParams) > 0 && !appOnly {
+		tool.ModelArgsSchema, err = artifactEgressModelSchema(schemaBytes, egressParams)
+		if err != nil {
+			return tools.ToolDescriptor{}, fmt.Errorf("%w: project artifact egress schema: %w", ErrSchemaInvalid, err)
+		}
+	}
 	egressMapping := p.cfg.ArtifactEgress
 	egressMaxBytes := p.cfg.ArtifactEgressMaxBytes
 	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
@@ -1288,6 +1294,39 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 		Invoke:   invoke,
 		Validate: nil, // schemas live on the server side; the wire does the validation.
 	}, nil
+}
+
+// artifactEgressModelSchema adds argument guidance on a private schema copy.
+// Attach validates declarations against the original schema separately.
+func artifactEgressModelSchema(raw json.RawMessage, params []string) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var schema any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&schema); err != nil {
+		return nil, fmt.Errorf("decode schema copy: %w", err)
+	}
+	props, ok := schemaProperties(schema)
+	if !ok {
+		return nil, nil
+	}
+	const hint = "Pass the file's artifact id (the artifact metadata's \"id\" field, typically a namespace followed by an underscore and 12 hexadecimal characters). " +
+		"Use a file available in this conversation, such as one returned by an earlier tool or attached by the user. " +
+		"The runtime substitutes the file's bytes. Do not paste file contents."
+	for _, param := range params {
+		prop, ok := props[param].(map[string]any)
+		if !ok {
+			continue
+		}
+		description := hint
+		if original, ok := prop["description"].(string); ok && original != "" {
+			description += "\n\n" + original
+		}
+		prop["description"] = description
+	}
+	return marshalSchema(schema)
 }
 
 // marshalSchema converts a SDK-side InputSchema (any) into a

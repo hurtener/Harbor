@@ -136,6 +136,9 @@ type Tool struct {
 	// argument shape. Catalogs validate against this before dispatch
 	// — failures yield ErrToolInvalidArgs.
 	ArgsSchema json.RawMessage
+	// ModelArgsSchema optionally overrides ArgsSchema for model-facing tool
+	// declarations and discovery. It is read-only after registration.
+	ModelArgsSchema json.RawMessage `json:"-"`
 	// OutSchema is the JSON-Schema (object) describing the tool's
 	// result shape. Used for output validation when policy enables it.
 	OutSchema json.RawMessage
@@ -219,6 +222,14 @@ type Tool struct {
 	// MCP server, a truncated prefix of its initialize `instructions`).
 	// Indexed for search only; never a dispatch or isolation input.
 	SourceDescription string
+}
+
+// ArgsSchemaForModel returns the argument schema presented to the model.
+func (t Tool) ArgsSchemaForModel() json.RawMessage {
+	if len(t.ModelArgsSchema) > 0 {
+		return t.ModelArgsSchema
+	}
+	return t.ArgsSchema
 }
 
 // MatchesMIME reports whether the tool's HandlesMIME declaration
