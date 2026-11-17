@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -102,6 +103,61 @@ func TestTranslateErrorForContext_RoutedSchemaFailureKeepsDowngradeSignal(t *tes
 		})
 	}
 }
+
+func TestTranslateErrorForContext_RoutedFailureKeepsOnlyStatus(t *testing.T) {
+	ctx := llm.WithResolvedProviderRoute(context.Background(), llm.ResolvedProviderRoute{RouteID: "route"})
+	const secret = "private-endpoint-and-credential"
+	for _, tc := range []struct {
+		name       string
+		status     *int
+		message    string
+		wantStatus int
+		wantSchema bool
+	}{
+		{"context length rejection", routeStatus(400), "maximum context length exceeded: " + secret, 400, false},
+		{"payment required", routeStatus(402), "insufficient credits: " + secret, 402, false},
+		{"rate limited", routeStatus(429), "rate limit reached: " + secret, 429, false},
+		{"provider outage", routeStatus(503), "upstream unavailable: " + secret, 503, false},
+		{"schema rejection", routeStatus(400), "unsupported response_format json_schema: " + secret, 400, true},
+		{"no status", nil, "connection reset: " + secret, 0, false},
+		{"invalid status", routeStatus(999), "odd: " + secret, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := translateErrorForContext(ctx, &bfschemas.BifrostError{
+				StatusCode: tc.status,
+				Error:      &bfschemas.ErrorField{Message: tc.message},
+			}, "ChatCompletionRequest")
+			if !errors.Is(err, llm.ErrProviderRouteProviderFailed) {
+				t.Fatalf("routed failure lost its generic class: %v", err)
+			}
+			if got := llm.IsInvalidJSONSchemaError(err); got != tc.wantSchema {
+				t.Errorf("schema downgrade signal = %v, want %v", got, tc.wantSchema)
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("routed error leaked provider material: %q", err)
+			}
+			var statusErr *llm.ProviderRouteProviderError
+			if tc.wantStatus == 0 {
+				if errors.As(err, &statusErr) {
+					t.Fatalf("status reported without a valid provider status: %v", err)
+				}
+				if err.Error() != llm.ErrProviderRouteProviderFailed.Error() {
+					t.Fatalf("status-free text = %q, want the bare sentinel", err)
+				}
+				return
+			}
+			if !errors.As(err, &statusErr) || statusErr.StatusCode() != tc.wantStatus {
+				t.Fatalf("status lost: %v", err)
+			}
+			wantText := fmt.Sprintf("llm: external provider route provider call failed (status %d)", tc.wantStatus)
+			if !strings.HasPrefix(err.Error(), wantText) {
+				t.Fatalf("error text = %q, want prefix %q", err, wantText)
+			}
+		})
+	}
+}
+
+func routeStatus(v int) *int { return &v }
 
 func TestTranslateErrorForContext_PreservesCancellation(t *testing.T) {
 	for _, routed := range []bool{false, true} {
