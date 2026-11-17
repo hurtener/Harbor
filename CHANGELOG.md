@@ -17,6 +17,12 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- **Shared signed capabilities on participant turns (D-516).** Participants
+  can use agent-scoped signed MCP capabilities under their own exchange
+  subject; personal capabilities remain restricted to their signed user.
+
 ## [1.57.1] - 2026-11-17
 
 ### Fixed
