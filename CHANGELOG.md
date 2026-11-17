@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.57.2] - 2026-11-17
+
 ### Fixed
 
 - **Shared signed capabilities on participant turns (D-516).** Participants
