@@ -29,6 +29,36 @@ var ErrProviderRouteResolutionFailed = errors.New("llm: external provider route 
 // body material.
 var ErrProviderRouteProviderFailed = errors.New("llm: external provider route provider call failed")
 
+// ProviderRouteProviderError is the content-free outcome of a downstream
+// provider failure on an external route that reported an HTTP status. It
+// carries only that status, so operators can tell a rejected request (400)
+// from billing (402), rate limiting (429) or an outage (5xx) without any
+// provider text. It unwraps to ErrProviderRouteProviderFailed.
+type ProviderRouteProviderError struct {
+	statusCode int
+}
+
+// NewProviderRouteProviderError returns the content-free routed provider
+// failure for status. A status outside 100-599 is not a valid HTTP status and
+// yields the bare ErrProviderRouteProviderFailed sentinel.
+func NewProviderRouteProviderError(status int) error {
+	if status < 100 || status > 599 {
+		return ErrProviderRouteProviderFailed
+	}
+	return &ProviderRouteProviderError{statusCode: status}
+}
+
+// Error returns the fixed failure text and the provider's HTTP status.
+func (e *ProviderRouteProviderError) Error() string {
+	return fmt.Sprintf("%s (status %d)", ErrProviderRouteProviderFailed.Error(), e.statusCode)
+}
+
+// Unwrap supports errors.Is with ErrProviderRouteProviderFailed.
+func (*ProviderRouteProviderError) Unwrap() error { return ErrProviderRouteProviderFailed }
+
+// StatusCode returns the HTTP status the provider call failed with.
+func (e *ProviderRouteProviderError) StatusCode() int { return e.statusCode }
+
 // ErrProviderRouteInvalid identifies a malformed intent or a resolver result
 // that does not exactly match its trusted request context.
 var ErrProviderRouteInvalid = errors.New("llm: external provider route is invalid")

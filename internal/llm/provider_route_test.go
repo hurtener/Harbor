@@ -155,3 +155,19 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestProviderRouteProviderErrorCarriesOnlyStatus(t *testing.T) {
+	err := llm.NewProviderRouteProviderError(429)
+	var statusErr *llm.ProviderRouteProviderError
+	if !errors.Is(err, llm.ErrProviderRouteProviderFailed) || !errors.As(err, &statusErr) || statusErr.StatusCode() != 429 {
+		t.Fatalf("status error = %v", err)
+	}
+	if got, want := err.Error(), "llm: external provider route provider call failed (status 429)"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	for _, status := range []int{0, -1, 99, 600} {
+		if got := llm.NewProviderRouteProviderError(status); got != llm.ErrProviderRouteProviderFailed {
+			t.Fatalf("status %d = %v, want the bare sentinel", status, got)
+		}
+	}
+}

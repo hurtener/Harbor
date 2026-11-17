@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Fixed
+
+- **Routed provider failures keep their HTTP status (D-515).** A failed
+  provider call on an external provider route still hides all provider text,
+  but now reports the HTTP status when the provider returned one:
+  `llm: external provider route provider call failed (status 429)`. The error
+  is `llm.ProviderRouteProviderError` and still matches
+  `errors.Is(err, llm.ErrProviderRouteProviderFailed)`. Calls without a status
+  keep the old text. Retry behaviour is unchanged.
+
 ## [1.57.0] — 2026-11-16
 
 ### Fixed

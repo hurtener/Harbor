@@ -747,7 +747,9 @@ func translateError(berr *bfschemas.BifrostError, kind string) error {
 // call carries a resolved external route. Bifrost/provider text can contain
 // the route endpoint, credential, or response body; this error reaches the
 // run loop and is therefore also the value used by persistence and logging.
-// Calls without a resolved route retain the ordinary Bifrost translation.
+// Only the HTTP status, when Bifrost reports one, survives on a routed
+// failure. Calls without a resolved route retain the ordinary Bifrost
+// translation.
 func translateErrorForContext(ctx context.Context, berr *bfschemas.BifrostError, kind string) error {
 	if berr == nil {
 		return nil
@@ -765,12 +767,16 @@ func translateErrorForContext(ctx context.Context, berr *bfschemas.BifrostError,
 		// chain from repairing a provider's schema-class 4xx rejection.
 		// Never infer this signal from a 5xx outage even when its message
 		// happens to mention response_format.
+		providerErr := llm.ErrProviderRouteProviderFailed
+		if berr.StatusCode != nil {
+			providerErr = llm.NewProviderRouteProviderError(*berr.StatusCode)
+		}
 		if berr.StatusCode == nil || *berr.StatusCode == 400 || *berr.StatusCode == 422 {
 			if llm.IsInvalidJSONSchemaError(translateError(berr, kind)) {
-				return fmt.Errorf("%w: %w", llm.ErrProviderRouteProviderFailed, llm.ErrInvalidJSONSchema)
+				return fmt.Errorf("%w: %w", providerErr, llm.ErrInvalidJSONSchema)
 			}
 		}
-		return llm.ErrProviderRouteProviderFailed
+		return providerErr
 	}
 	return translateError(berr, kind)
 }

@@ -17629,3 +17629,34 @@ top.
 change.
 
 **Cross-references:** D-312, D-509, RFC §6.9.
+
+## D-515 — Routed provider failures keep their HTTP status
+
+**Date:** 2026-11-17
+
+**Decision.** A failed provider call on an external provider route (D-444)
+still discards all provider text, but keeps the HTTP status when Bifrost
+reports one. The driver returns `llm.ProviderRouteProviderError`, whose only
+field is the status. It unwraps to `llm.ErrProviderRouteProviderFailed`, so
+`errors.Is` callers are unchanged, and its text is
+`llm: external provider route provider call failed (status N)`.
+
+- A missing status, or one outside 100-599, returns the bare sentinel with its
+  unchanged text.
+- The structured-output repair signal is unchanged: a 400/422 (or status-free)
+  schema rejection still joins `llm.ErrInvalidJSONSchema`, now on top of the
+  status error.
+- Cancellation is unchanged and still reported before any provider outcome.
+
+**Why.** Every routed failure read the same, so an operator could not tell a
+context-length rejection (400) from billing (402), rate limiting (429) or a
+provider outage (5xx). A status code is a bounded number and carries no
+endpoint, credential or response body.
+
+**Known limits.** Retry behaviour is unchanged. No Harbor retry path classifies
+routed LLM failures by status today; the status is diagnostic only.
+
+**Compatibility.** No wire change. Code comparing the error text exactly sees
+the status suffix when a status exists.
+
+**Cross-references:** D-444.
