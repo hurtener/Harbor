@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.57.3] - 2026-11-17
+
 ### Fixed
 
 - MCP tool schemas shown to the model explain how to pass artifact IDs to
