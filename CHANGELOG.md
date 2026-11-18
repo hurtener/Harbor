@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.58.0] - 2026-11-17
+
 ### Changed
 
 - **A participant's turn loads the writer's own personal skills (D-518).**
