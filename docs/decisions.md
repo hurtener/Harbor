@@ -17691,3 +17691,28 @@ outbound validation continue to use the server's schema.
 description explains the bytes it receives after runtime substitution.
 
 **Cross-references:** D-359.
+
+## D-518 — A participant's turn loads the writer's own personal skills
+
+**Date:** 2026-11-17
+
+**Decision.** This supersedes D-509's v1 rule that a participant's turn sees
+no personal skills. A turn written by a session participant in another
+user's session now snapshots the **writer's own** user-scope personal
+skills: the names come from the writer's own `ConfigScopeUser` skills
+membership for the effective agent, and every body is read under a
+quadruple with the run's tenant, session and run and the writer as user
+(`SessionSkillResolverConfig.Writer` / `WriterPersonalNames`). The resolver
+accepts them only together with `ExcludePersonal` and only for another user
+of the same tenant and session. Everything else D-509 hides stays hidden:
+the partition owner's user-scope personal skills (including any admin-pinned
+user rows enumerated for the owner) and the session's personal tier. No other
+participant's personal skills are read. The owner's own turns are unchanged.
+
+**Why.** A participant acts as themselves on their own turns (their
+credentials, configuration and billing, D-509); their own personal skills
+belong to that same identity. Showing them to another person's turn, or
+sharing skills between the people of a session, would be a separate, opt-in
+mechanism and is not part of this decision.
+
+**Cross-references:** D-509, D-345.

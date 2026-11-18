@@ -1196,3 +1196,56 @@ func TestSessionSkillResolver_ExcludePersonalForParticipantTurns(t *testing.T) {
 		}
 	}
 }
+
+// A participant's turn loads the writer's own user-scope personal skills
+// (D-518), read under the writer's identity, while the partition owner's
+// personal skills and the session tier stay excluded, even by name.
+func TestSessionSkillResolver_ParticipantTurnLoadsWritersOwnPersonalSkills(t *testing.T) {
+	st := newDurableState(t)
+	id := durableID("resolver-writer")
+	id.RunID = "run-writer"
+	activateAgent(t, st, id, "agent-a")
+	personal, err := sessionoverlay.NewDurableStore(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := id
+	writer.UserID = "writer-user"
+	base := &resolverReader{}
+	base.add(id, resolverSkill(id, "admin", skills.ScopeGlobal))
+	base.add(id, resolverSkill(id, "owners", skills.ScopeUser))
+	base.add(writer, resolverSkill(writer, "mine", skills.ScopeUser))
+	membership := sessionoverlay.SessionSkillMembership{UserPersonalNames: []string{"owners"}}
+	cfg := resolverConfig(id, personal, base, sessionoverlay.CutoverDualRead, membership)
+	cfg.ExcludePersonal, cfg.Writer, cfg.WriterPersonalNames = true, writer, []string{"mine", "owners"}
+	resolver, err := sessionoverlay.NewSessionSkillResolver(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := resolver.List(context.Background(), id, skills.ListFilter{Limit: 10})
+	if err != nil || fmt.Sprint(skillNames(listed)) != "[admin mine]" {
+		t.Fatalf("names = %v (%v), want [admin mine]", skillNames(listed), err)
+	}
+	if _, err := resolver.Get(context.Background(), id, "owners"); !errors.Is(err, skills.ErrSkillNotFound) {
+		t.Fatalf("the owner's personal skill is readable on a participant turn: %v", err)
+	}
+	if got, err := resolver.Get(context.Background(), id, "mine"); err != nil || got.ScopeProjectID != writer.UserID {
+		t.Fatalf("writer skill = %+v, %v", got, err)
+	}
+
+	// The writer's names are honoured only on a participant turn, for another
+	// user of the same tenant and session.
+	for name, mutate := range map[string]func(*sessionoverlay.SessionSkillResolverConfig){
+		"without exclude":   func(c *sessionoverlay.SessionSkillResolverConfig) { c.ExcludePersonal = false },
+		"writer is owner":   func(c *sessionoverlay.SessionSkillResolverConfig) { c.Writer = id },
+		"other session":     func(c *sessionoverlay.SessionSkillResolverConfig) { c.Writer.SessionID = "other-session" },
+		"other tenant":      func(c *sessionoverlay.SessionSkillResolverConfig) { c.Writer.TenantID = "other-tenant" },
+		"incomplete writer": func(c *sessionoverlay.SessionSkillResolverConfig) { c.Writer = identity.Quadruple{} },
+	} {
+		bad := cfg
+		mutate(&bad)
+		if _, err := sessionoverlay.NewSessionSkillResolver(context.Background(), bad); !errors.Is(err, sessionoverlay.ErrInvalidSessionSkillResolver) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+}

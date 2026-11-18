@@ -73,11 +73,20 @@ type SessionSkillResolverConfig struct {
 	Personal   *DurableStore
 	Cutover    CutoverModeReader
 	Membership SessionSkillMembership
-	// ExcludePersonal hides every personal skill (the user-scope rung and the
-	// session's personal tier) from the run. Set for a turn written by a
-	// session participant in another user's session: the partition owner's
-	// personal skills are never exposed to another person's turn.
+	// ExcludePersonal hides the partition owner's personal skills (the
+	// user-scope rung and the session's personal tier) from the run. Set for
+	// a turn written by a session participant in another user's session: the
+	// partition owner's personal skills are never exposed to another
+	// person's turn.
 	ExcludePersonal bool
+	// Writer and WriterPersonalNames, used only with ExcludePersonal, load
+	// the turn writer's OWN user-scope personal skills instead: the names
+	// come from the writer's own user-scope membership and every body is
+	// read under Writer's identity (same tenant and session as Run, the
+	// writer as user). The owner's and any other person's personal skills
+	// stay excluded, as does the session's personal tier.
+	Writer              identity.Quadruple
+	WriterPersonalNames []string
 }
 
 // SessionSkillResolver is an immutable, per-run SkillReader projection. It
@@ -105,7 +114,11 @@ func NewSessionSkillResolver(ctx context.Context, cfg SessionSkillResolverConfig
 	if err != nil {
 		return nil, fmt.Errorf("%w: admin membership: %w", ErrInvalidSessionSkillResolver, err)
 	}
-	user, err := canonicalMembership(cfg.Membership.UserPersonalNames)
+	userNames := cfg.Membership.UserPersonalNames
+	if cfg.ExcludePersonal {
+		userNames = cfg.WriterPersonalNames
+	}
+	user, err := canonicalMembership(userNames)
 	if err != nil {
 		return nil, fmt.Errorf("%w: user membership: %w", ErrInvalidSessionSkillResolver, err)
 	}
@@ -157,6 +170,17 @@ func validateResolverConfig(cfg SessionSkillResolverConfig) error {
 	}
 	if cfg.Base == nil || cfg.Personal == nil || cfg.Personal.state == nil || cfg.Cutover == nil {
 		return fmt.Errorf("%w: base SkillStore, durable store, and cutover reader are required", ErrInvalidSessionSkillResolver)
+	}
+	if len(cfg.WriterPersonalNames) > 0 {
+		if !cfg.ExcludePersonal {
+			return fmt.Errorf("%w: writer personal skills require ExcludePersonal", ErrInvalidSessionSkillResolver)
+		}
+		if err := identity.Validate(cfg.Writer.Identity); err != nil {
+			return fmt.Errorf("%w: writer identity: %w", ErrInvalidSessionSkillResolver, err)
+		}
+		if cfg.Writer.TenantID != cfg.Run.TenantID || cfg.Writer.SessionID != cfg.Run.SessionID || cfg.Writer.UserID == cfg.Run.UserID {
+			return fmt.Errorf("%w: writer must be another user of the run's tenant and session", ErrInvalidSessionSkillResolver)
+		}
 	}
 	return nil
 }
@@ -239,16 +263,19 @@ func buildResolver(ctx context.Context, cfg SessionSkillResolverConfig, admin, u
 			return nil, err
 		}
 	}
+	// The user rung is read for the run's user, or, on a participant's
+	// turn, only for the writer (WriterPersonalNames): never the owner's.
+	userRun := cfg.Run
 	if cfg.ExcludePersonal {
 		delete(baseByScope, skills.ScopeUser)
-		user = nil
+		userRun = cfg.Writer
 	}
 	for name := range user {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		selected := cfg.Base
-		skill, err := selected.GetScopeAgent(ctx, cfg.Run, cfg.AgentID, name, skills.ScopeUser)
+		skill, err := selected.GetScopeAgent(ctx, userRun, cfg.AgentID, name, skills.ScopeUser)
 		if err != nil {
 			// User-scope membership is only a selection hint for an independently
 			// durable body. A deleted or not-yet-written ScopeUser body is

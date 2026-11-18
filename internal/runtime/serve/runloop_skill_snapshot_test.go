@@ -412,3 +412,59 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// A participant's turn in another user's session snapshots the writer's own
+// user-scope personal skills (D-518); the partition owner's personal skills
+// and the session's personal tier stay hidden. The owner's own turn is
+// unchanged.
+func TestRunLoopDriver_SkillSnapshot_ParticipantTurnUsesWritersOwnPersonalSkills(t *testing.T) {
+	reg := acTestRegistry(t)
+	st := runSnapshotState(t)
+	base := &runSnapshotReader{}
+	q := identity.Quadruple{Identity: identity.Identity{TenantID: "shared-t", UserID: "owner-u", SessionID: "shared-s"}, RunID: "run-1"}
+	writer := q
+	writer.UserID = "writer-u"
+	const agentID = "shared-agent"
+	activateRunSnapshotAgent(t, st, q, agentID)
+	base.put(q, runSnapshotSkill(q, "owner-skill", skills.ScopeUser))
+	base.put(writer, runSnapshotSkill(writer, "writer-skill", skills.ScopeUser))
+	for _, who := range []identity.Quadruple{q, writer} {
+		name := "owner-skill"
+		if who.UserID == writer.UserID {
+			name = "writer-skill"
+		}
+		if _, err := reg.SetRevision(t.Context(), who, agentID, agentcfg.ConfigScopeUser, agentcfg.ConfigPayload{Skills: &agentcfg.SkillsSelection{Names: []string{name}}}, agentcfg.SetOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	driver, personal := newRunSnapshotDriver(t, reg, base, st)
+	if _, err := personal.SavePersonal(t.Context(), q, agentID, runSnapshotSkill(q, "session-skill", skills.ScopeSession), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	names := func(ctx context.Context) []string {
+		t.Helper()
+		snapshot, ok, err := driver.captureRunSkillSnapshot(ctx, agentID, q, nil)
+		if err != nil || !ok {
+			t.Fatalf("capture: ok=%t err=%v", ok, err)
+		}
+		reader, err := skills.ResolveSkillReader(withRunSnapshot(t, q, snapshot), q, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := reader.List(t.Context(), q, skills.ListFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return skillNames(rows)
+	}
+	if got := names(t.Context()); !equalStrings(got, []string{"owner-skill", "session-skill"}) {
+		t.Fatalf("owner turn = %v", got)
+	}
+	ctx, err := identity.WithParticipant(t.Context(), identity.Participant{UserID: writer.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(ctx); !equalStrings(got, []string{"writer-skill"}) {
+		t.Fatalf("participant turn = %v, want only the writer's own personal skill", got)
+	}
+}
