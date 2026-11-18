@@ -166,3 +166,43 @@ func TestDispatchControl_Participant_OnlyTheWriterSteers(t *testing.T) {
 		})
 	}
 }
+
+// TestDispatchStart_LabelledOwner_RetryKeepsTheTurn pins the shape an issuer
+// uses so a model can tell who wrote each turn of a shared session: the
+// partition owner's own bearer carries only a speaker label. The start seats
+// the owner as the writer with that label (never a guest), a retry with the
+// same key and label adopts the same task, and the same key with another
+// label or without one conflicts instead of silently adopting the turn.
+func TestDispatchStart_LabelledOwner_RetryKeepsTheTurn(t *testing.T) {
+	fx := newSurfaceFixture(t)
+	surface := participantSurface(t, fx, recordingEnsurer{missing: true})
+	labelled := participantCtx(t, "owner", "Olivia")
+	first, err := startShared(labelled, surface, "owner-k1")
+	if err != nil {
+		t.Fatalf("labelled owner start: %v", err)
+	}
+	task, err := fx.tasks.Get(authCtx(t, sharedSession), tasks.TaskID(first.TaskID))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if task.Identity.UserID != "owner" || task.Participant == nil || task.Participant.UserID != "owner" || task.Participant.Speaker != "Olivia" {
+		t.Fatalf("task = identity %+v participant %+v, want the owner labelled Olivia", task.Identity, task.Participant)
+	}
+	if task.Participant.IsGuest(sharedSession) {
+		t.Fatal("a labelled owner must never be treated as a guest")
+	}
+
+	retried, err := startShared(participantCtx(t, "owner", "Olivia"), surface, "owner-k1")
+	if err != nil {
+		t.Fatalf("retried labelled owner start: %v", err)
+	}
+	if retried.TaskID != first.TaskID {
+		t.Fatalf("retry task = %s, want the first task %s", retried.TaskID, first.TaskID)
+	}
+	if _, err := startShared(participantCtx(t, "owner", "Olivia R."), surface, "owner-k1"); err == nil {
+		t.Fatal("the same key with another label must conflict")
+	}
+	if _, err := startShared(authCtx(t, sharedSession), surface, "owner-k1"); err == nil {
+		t.Fatal("the same key without the label must conflict")
+	}
+}
