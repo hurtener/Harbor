@@ -83,7 +83,7 @@ func TestService_List_LastActivityDesc_ClosedRowsByLastSeen(t *testing.T) {
 	caller := lifecycleCaller()
 	var got []string
 	cursor := ""
-	for page := 0; page < 10; page++ {
+	for page := range 10 {
 		resp, err := svc.List(context.Background(), prototypes.SessionsListRequest{
 			Identity: prototypes.IdentityScope{Tenant: caller.TenantID, User: caller.UserID, Session: caller.SessionID},
 			Sort:     prototypes.SessionSortLastActivityDesc,

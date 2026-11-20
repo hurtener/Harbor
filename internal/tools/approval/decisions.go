@@ -240,8 +240,8 @@ func NewDecisionRecorder(log DecisionLog) pauseresume.ResolutionRecorder {
 		if !isGatePause(r.Pause) {
 			return nil
 		}
-		tool, _ := r.Pause.Payload["tool"].(string)
-		policyReason, _ := r.Pause.Payload["reason"].(string)
+		tool := payloadString(r.Pause.Payload, "tool")
+		policyReason := payloadString(r.Pause.Payload, "reason")
 		rec := DecisionRecord{
 			Tool:         tool,
 			PauseToken:   string(r.Pause.Token),
@@ -251,7 +251,7 @@ func NewDecisionRecorder(log DecisionLog) pauseresume.ResolutionRecorder {
 			DecidedAt:    r.DecidedAt.UTC(),
 			ArgsSummary:  r.Pause.Payload["args_summary"],
 		}
-		note, _ := r.ResumePayload["reason"].(string)
+		note := payloadString(r.ResumePayload, "reason")
 		switch r.Decision {
 		case pauseresume.DecisionApprove:
 			rec.Outcome, rec.DecisionReason = OutcomeApproved, note
@@ -287,7 +287,7 @@ func ResolveInterruptedApprovals(ctx context.Context, coord pauseresume.Coordina
 	}
 	resolved, err := pauseresume.ResolveInterrupted(ctx, coord, isGatePause, logger)
 	for _, p := range resolved {
-		tool, _ := p.Payload["tool"].(string)
+		tool := payloadString(p.Payload, "tool")
 		decidedAt := time.Now().UTC()
 		if st, serr := coord.Status(ctx, p.Token); serr == nil && !st.ResumedAt.IsZero() {
 			decidedAt = st.ResumedAt.UTC()
@@ -358,3 +358,12 @@ func (r InterventionReader) RecentInterventions(ctx context.Context, id identity
 // InterventionTypeToolApproval is the InterventionSummary.Type of a
 // tool-approval gate decision.
 const InterventionTypeToolApproval = "tool_approval"
+
+// payloadString returns the string stored under key, or "" when the key
+// is absent or holds another type.
+func payloadString(m map[string]any, key string) string {
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
+}

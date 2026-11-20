@@ -299,7 +299,7 @@ func TestSessionActivityQueue_HungStoreNeverBlocksRunsOrShutdown(t *testing.T) {
 	enqueued := make(chan struct{})
 	go func() {
 		defer close(enqueued)
-		for i := 0; i < 4*sessionActivityQueueSize; i++ {
+		for i := range 4 * sessionActivityQueueSize {
 			q.enqueue(identity.Identity{TenantID: "t", UserID: "u", SessionID: fmt.Sprintf("s-%d", i)})
 		}
 	}()

@@ -380,7 +380,7 @@ func (g *ApprovalGate) expire(ctx context.Context, req *ApprovalRequest, pause p
 	res := resolution{reason: ExpiredReason, decidedAt: g.resolvedAt(ctx, pause.Token)}
 	rejected := &ErrToolRejected{Tool: req.Tool.Name, Reason: ExpiredReason, Identity: req.Identity}
 	if err := g.publishRejected(ctx, req, pause.RunID, pause.Token, pauseresume.DecisionTimeout, res); err != nil {
-		return nil, fmt.Errorf("%w: %w (emit failed: %v)", ErrApprovalExpired, rejected, err)
+		return nil, fmt.Errorf("%w: %w (emit failed: %w)", ErrApprovalExpired, rejected, err)
 	}
 	return nil, fmt.Errorf("%w: %w", ErrApprovalExpired, rejected)
 }
@@ -410,8 +410,10 @@ func (g *ApprovalGate) redactNote(ctx context.Context, note string) (string, err
 	if err != nil {
 		return "", fmt.Errorf("approval: redact decision note: %w", err)
 	}
-	m, _ := out.(map[string]any)
-	redacted, _ := m["note"].(string)
+	var redacted string
+	if m, ok := out.(map[string]any); ok {
+		redacted = payloadString(m, "note")
+	}
 	return truncateUTF8(redacted, maxDecisionNoteBytes), nil
 }
 

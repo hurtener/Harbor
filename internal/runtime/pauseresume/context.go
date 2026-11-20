@@ -82,8 +82,10 @@ func WithDecider(ctx context.Context, d Decider) context.Context {
 // DeciderFrom returns the deciding principal seated on ctx, or the zero
 // Decider when none was seated.
 func DeciderFrom(ctx context.Context) Decider {
-	d, _ := ctx.Value(deciderKey{}).(Decider)
-	return d
+	if d, ok := ctx.Value(deciderKey{}).(Decider); ok {
+		return d
+	}
+	return Decider{}
 }
 
 // writerFromContext returns the session participant seated on ctx, or ""

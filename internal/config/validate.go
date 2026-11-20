@@ -2807,7 +2807,7 @@ func validateGlob(pattern string) error {
 		return fmt.Errorf("must not be empty")
 	}
 	if _, err := path.Match(pattern, ""); err != nil {
-		return fmt.Errorf("invalid glob %q: %v", pattern, err)
+		return fmt.Errorf("invalid glob %q: %w", pattern, err)
 	}
 	return nil
 }

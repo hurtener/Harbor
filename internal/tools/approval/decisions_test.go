@@ -201,7 +201,7 @@ func TestDecisionLog_PrunesAndBounds(t *testing.T) {
 	}
 	ctx := context.Background()
 	base := time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < MaxRecordedDecisions+5; i++ {
+	for i := range MaxRecordedDecisions + 5 {
 		if err := log.Record(ctx, testID, DecisionRecord{
 			Tool: "t", PauseToken: fmt.Sprintf("tok-%02d", i), Outcome: OutcomeApproved,
 			DecidedAt: base.Add(time.Duration(i) * time.Minute), ArgsSummary: map[string]any{"big": strings.Repeat("x", 4096)},
@@ -400,7 +400,7 @@ func TestResolveApproval_RetiredEntryIsNeverRestored(t *testing.T) {
 // The waiter is registered before the pause is visible: a resolver that
 // acts on pause.requested immediately always finds it.
 func TestRunGuarded_WaiterRegisteredBeforePauseIsVisible(t *testing.T) {
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		red := patternsAudit.New()
 		bus := mkTestBus(t, red)
 		coord := pauseresume.New(pauseresume.WithBus(bus))
