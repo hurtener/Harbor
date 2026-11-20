@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.60.0] - 2026-11-20
+
 ### Added
 
 - **Per-agent approval rules (D-520).** Set `approval.rules` on an agent-config
