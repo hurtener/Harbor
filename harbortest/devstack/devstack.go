@@ -985,6 +985,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 				SessionSkillCutover:      devSessionPersonalCutover(stack.SessionPersonalSkillAuthority),
 				Catalog:                  stack.Catalog,
 				Executor:                 core.Executor,
+				RevisionApprovalGate:     core.RevisionApprovalGate,
 				MaxStepsRunLoop:          cfg.Planner.MaxSteps,
 				TrancheSteps:             steering.EffectiveTrancheSteps(cfg.Planner.MaxSteps),
 				GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),

@@ -132,7 +132,7 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 	ctx := spawnAwaitIDCtx(t)
 	spawnParent := func(allowed *[]string) planner.RunContext {
 		t.Helper()
-		h, err := reg.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: dispatchTestID}, Kind: tasks.KindForeground, Query: "document discussion", ToolAllowlist: allowed})
+		h, err := reg.Spawn(ctx, tasks.SpawnRequest{Identity: identity.Quadruple{Identity: dispatchTestID}, Kind: tasks.KindForeground, Query: "document discussion", ToolAllowlist: allowed, AgentID: "named-agent"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,6 +141,7 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 			t.Fatal(err)
 		}
 		rc := rcFor(h.ID, cat)
+		rc.ChildConfigAgentID = stored.AgentID
 		rc.ToolAllowlist = stored.ToolAllowlist
 		if stored.ToolAllowlist != nil {
 			rc.Catalog = tools.NewAllowlistView(rc.Catalog, *stored.ToolAllowlist)
@@ -172,6 +173,9 @@ func TestExecutor_SpawnInheritsRunToolFenceAndZeroToolParentCannotSpawn(t *testi
 	}
 	if child.ToolAllowlist == nil || len(*child.ToolAllowlist) != 1 || (*child.ToolAllowlist)[0] != "read_summary" {
 		t.Fatalf("child widened tool policy: %+v", child.ToolAllowlist)
+	}
+	if child.AgentID != "named-agent" || child.AgentReachAdmission != nil {
+		t.Fatalf("child agent ID = %q, has credential admission = %t", child.AgentID, child.AgentReachAdmission != nil)
 	}
 	childRun := rcFor(childID, cat)
 	childRun.ToolAllowlist = child.ToolAllowlist

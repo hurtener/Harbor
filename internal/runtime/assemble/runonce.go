@@ -41,6 +41,7 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // Sentinel errors RunOnce returns when the stack is not runnable.
@@ -297,6 +298,7 @@ func (s *Stack) RunOnce(
 	if err != nil {
 		return planner.AnswerEnvelope{}, fmt.Errorf("assemble: RunOnce identity ctx: %w", err)
 	}
+	runCtx = tools.WithRunToolInvocationWrapper(runCtx, nil)
 
 	logger := s.boundLogger()
 

@@ -120,7 +120,10 @@ func TestExecutor_Batch_DispatchTable(t *testing.T) {
 			{Spec: planner.SpawnSpec{Query: "sub-b"}, CallID: "s1"},
 		},
 	}
-	rawAny, llmAny, err := exec.ExecuteDecision(dispatchTestCtx(t, q), dispatchRunContext(cat, q), d)
+	ctx := dispatchTestCtx(t, q)
+	rc := dispatchRunContext(cat, q)
+	rc.ChildConfigAgentID = "named-agent"
+	rawAny, llmAny, err := exec.ExecuteDecision(ctx, rc, d)
 	if err != nil {
 		t.Fatalf("ExecuteDecision(Batch): %v", err)
 	}
@@ -144,12 +147,20 @@ func TestExecutor_Batch_DispatchTable(t *testing.T) {
 		}
 	}
 	// Spawns index-aligned + registered ({task_id} present, no error).
+	readCtx := spawnAwaitIDCtx(t)
 	for i, want := range []string{"s0", "s1"} {
 		if raw.Spawns[i].CallID != want || raw.Spawns[i].Index != i {
 			t.Errorf("raw.Spawns[%d] = {CallID:%q Index:%d}, want {%q %d}", i, raw.Spawns[i].CallID, raw.Spawns[i].Index, want, i)
 		}
 		if raw.Spawns[i].Error != "" || raw.Spawns[i].TaskID == "" {
 			t.Errorf("spawn branch %d should register: %+v", i, raw.Spawns[i])
+		}
+		child, err := reg.Get(readCtx, tasks.TaskID(raw.Spawns[i].TaskID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if child.AgentID != rc.ChildConfigAgentID || child.AgentReachAdmission != nil {
+			t.Fatalf("child agent ID = %q, has credential admission = %t", child.AgentID, child.AgentReachAdmission != nil)
 		}
 	}
 	// Two ungrouped spawns → exactly one auto-group + two Spawn calls.

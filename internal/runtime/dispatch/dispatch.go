@@ -353,6 +353,10 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
+	if steering.IsTrustedCompletionHook(ctx) {
+		// Terminal egress runs after the inbox stops accepting controls.
+		ctx = tools.WithUnattendedToolInvocation(ctx)
+	}
 	// Seat the run-scoped artifact resolver ONCE, at the single dispatch
 	// entry point, so every tool-invoking shape below (and every shape a
 	// later decision adds) inherits it rather than re-deriving it. The
@@ -576,32 +580,32 @@ func (e *toolExecutor) resolveForRun(ctx context.Context, rc planner.RunContext,
 		// owner-scoped physical descriptor; never resolve the old name again.
 		name = visible.Name
 	}
-	desc, ok := e.cat.Resolve(name)
+	desc, ok := tools.ResolveToolInvocation(ctx, e.cat, name)
 	return desc, ok, nil
 }
 
-type runResolver struct {
-	base  parallel.Resolver
-	view  planner.ToolCatalogView
-	trust bool
+type invocationResolver func(string) (tools.ToolDescriptor, bool)
+
+func (r invocationResolver) Resolve(name string) (tools.ToolDescriptor, bool) {
+	return r(name)
 }
 
 func (e *toolExecutor) resolverForRun(ctx context.Context, rc planner.RunContext) parallel.Resolver {
-	return runResolver{base: e.cat, view: rc.Catalog, trust: steering.IsTrustedCompletionHook(ctx)}
-}
-
-func (r runResolver) Resolve(name string) (tools.ToolDescriptor, bool) {
-	if !r.trust {
-		if r.view == nil {
-			return tools.ToolDescriptor{}, false
+	trusted := steering.IsTrustedCompletionHook(ctx)
+	view := rc.Catalog
+	return invocationResolver(func(name string) (tools.ToolDescriptor, bool) {
+		if !trusted {
+			if view == nil {
+				return tools.ToolDescriptor{}, false
+			}
+			visible, ok := view.Resolve(name)
+			if !ok {
+				return tools.ToolDescriptor{}, false
+			}
+			name = visible.Name
 		}
-		visible, ok := r.view.Resolve(name)
-		if !ok {
-			return tools.ToolDescriptor{}, false
-		}
-		name = visible.Name
-	}
-	return r.base.Resolve(name)
+		return tools.ResolveToolInvocation(ctx, e.cat, name)
+	})
 }
 
 // callParallel dispatches a CallParallel decision (/
@@ -807,6 +811,7 @@ func (e *toolExecutor) spawnOne(taskCtx context.Context, rc planner.RunContext, 
 	}
 	req := tasks.SpawnRequest{
 		Identity:          identity.Quadruple{Identity: rc.Quadruple.Identity},
+		AgentID:           rc.ChildConfigAgentID,
 		Kind:              kind,
 		Description:       d.Spec.Description,
 		Query:             d.Spec.Query,

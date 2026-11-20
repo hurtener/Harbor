@@ -208,6 +208,7 @@ func (s *Service) recordSkillsMembership(ctx context.Context, q identity.Quadrup
 		payload.Naming = active.Payload.Naming
 		payload.Memory = active.Payload.Memory
 		payload.RunLimits = active.Payload.RunLimits.Clone()
+		payload.Approval = active.Payload.Approval.Clone()
 		payload.AgentPacks = copyAgentPackItems(active.Payload.AgentPacks)
 		// The ordered additive prompt blocks are a sibling section like any
 		// other: this verb replaces only its own, so the blocks survive.

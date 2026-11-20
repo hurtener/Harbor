@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 498 canonical Harbor Protocol wire types, generated from the single-source
+The 501 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -345,6 +345,35 @@ Declared in `internal/protocol/types`.
 | `skill` | `types.AgentConfigSkillSummary` — see [`AgentConfigSkillSummary`](./types.md#agentconfigskillsummary) |  |
 | `hash` | `string` |  |
 | `protocol_version` | `string` |  |
+
+## AgentConfigApproval
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `rules` | `[]types.AgentConfigApprovalRule` — see [`AgentConfigApprovalRule`](./types.md#agentconfigapprovalrule) | optional (`omitempty`) |
+
+## AgentConfigApprovalPolicy
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `policy` | `string` |  |
+| `reason` | `string` | optional (`omitempty`) |
+| `require_tags` | `[]string` | optional (`omitempty`) |
+
+## AgentConfigApprovalRule
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `tools` | `[]string` | optional (`omitempty`) |
+| `sources` | `[]string` | optional (`omitempty`) |
+| `annotations` | `[]string` | optional (`omitempty`) |
+| `approval` | `types.AgentConfigApprovalPolicy` — see [`AgentConfigApprovalPolicy`](./types.md#agentconfigapprovalpolicy) |  |
 
 ## AgentConfigCompositionPreviewItem
 
@@ -725,6 +754,7 @@ Declared in `internal/protocol/types`.
 | `naming` | `*types.AgentConfigNaming` — see [`AgentConfigNaming`](./types.md#agentconfignaming) | optional (`omitempty`) |
 | `memory` | `*types.AgentConfigMemory` — see [`AgentConfigMemory`](./types.md#agentconfigmemory) | optional (`omitempty`) |
 | `run_limits` | `*types.AgentConfigRunLimits` — see [`AgentConfigRunLimits`](./types.md#agentconfigrunlimits) | optional (`omitempty`) |
+| `approval` | `*types.AgentConfigApproval` — see [`AgentConfigApproval`](./types.md#agentconfigapproval) | optional (`omitempty`) |
 | `extra_system_blocks` | `*types.AgentConfigExtraSystemBlocks` — see [`AgentConfigExtraSystemBlocks`](./types.md#agentconfigextrasystemblocks) | optional (`omitempty`) |
 | `agent_packs` | `[]types.AgentConfigAgentPackItem` — see [`AgentConfigAgentPackItem`](./types.md#agentconfigagentpackitem) | optional (`omitempty`) |
 

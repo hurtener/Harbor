@@ -384,6 +384,9 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		muxOpts = append(muxOpts, transports.WithSkillPublicationsSurface(skillPublications))
 	}
 
+	driver := in.RunLoopDriver
+	dynamicApprovalRulesAvailable := driver != nil && driver.agentConfig != nil &&
+		driver.catalog != nil && driver.executor != nil && driver.revisionApprovalGate != nil
 	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
 		Build: types.RuntimeInfo{
 			BuildVersion:       in.BuildVersion,
@@ -435,6 +438,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		ExternalGrant:                       in.ExternalGrantReadiness,
 		TopologyAvailable:                   in.TopologyAvailable,
 		AgentConfigAvailable:                in.AgentConfig != nil,
+		DynamicApprovalRulesAvailable:       dynamicApprovalRulesAvailable,
 		MemoryBudgetAvailable:               in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil,
 		StateSnapshotsAvailable:             stateSnapshotsAvailable,
 		SessionLifecycleAvailable:           sessionLifecycleAvailable,
@@ -938,6 +942,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 		}
 		agentConfigOpts := []agentcfgprotocol.Option{
 			agentcfgprotocol.WithMemoryBudget(in.RunLoopDriver != nil && in.RunLoopDriver.compression != nil),
+			agentcfgprotocol.WithDynamicApprovalRules(dynamicApprovalRulesAvailable),
 			agentcfgprotocol.WithLogger(logger),
 			agentcfgprotocol.WithSkillStore(in.Skills),
 			agentcfgprotocol.WithBus(bus),

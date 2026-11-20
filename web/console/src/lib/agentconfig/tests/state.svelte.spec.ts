@@ -88,7 +88,7 @@ const CANONICAL_PREVIEW = {
 	protocol_version: '0.1.0'
 };
 
-function fakeClient(overrides: Record<string, unknown> = {}): ProtocolClient {
+function fakeClient(overrides: Record<string, unknown> = {}, capabilities: string[] = []): ProtocolClient {
 	const agentConfig = {
 		get: vi.fn(async () => ({ revision: ACTIVE_REVISION, set: true, protocol_version: '0.1.0' })),
 		listRevisions: vi.fn(async () => ({
@@ -153,7 +153,11 @@ function fakeClient(overrides: Record<string, unknown> = {}): ProtocolClient {
 		...overrides
 	};
 	const events = { subscribeURL: vi.fn(() => 'http://127.0.0.1:18080/v1/events') };
-	return { agentConfig, events } as unknown as ProtocolClient;
+	return {
+		agentConfig,
+		events,
+		capabilities: vi.fn(async () => new Set(capabilities))
+	} as unknown as ProtocolClient;
 }
 
 /** Typed accessor for the injected agent-config mocks (avoids `any`). */
@@ -610,7 +614,7 @@ describe('AgentConfigPanelState.revisionSummary — derived, client-side (92i)',
 describe('AgentConfigPanelState — atomic "Save all" (92i)', () => {
 	it('commits staged edits across areas as ONE set_revision (full merged payload)', async () => {
 		seedConnection();
-		const client = fakeClient();
+		const client = fakeClient({}, ['approval_rules_dynamic']);
 		const state = new AgentConfigPanelState();
 		await state.load(client); // active = rev-2 (prompt + exposure + skills)
 		expect(state.stagedAreaCount).toBe(0);
@@ -631,7 +635,10 @@ describe('AgentConfigPanelState — atomic "Save all" (92i)', () => {
 		expect(mocks.setRevision).toHaveBeenCalledTimes(1);
 		expect(mocks.setPromptLayers).not.toHaveBeenCalled();
 		expect(mocks.setLlmParams).not.toHaveBeenCalled();
+		expect(client.capabilities).not.toHaveBeenCalled();
 		const payload = mocks.setRevision.mock.calls[0][1];
+		expect(mocks.setRevision.mock.calls[0]).toEqual([state.agentId, payload]);
+		expect(payload).not.toHaveProperty('approval');
 		expect(payload.prompt_layers.base).toBe('A new base.');
 		expect(payload.llm_params).toEqual({ model: 'model-x', temperature: 0.4 });
 		// Non-form sections carried forward from the active revision (whole-
@@ -644,19 +651,57 @@ describe('AgentConfigPanelState — atomic "Save all" (92i)', () => {
 		});
 	});
 
-	it('Save all preserves a versioned memory budget during unrelated edits', async () => {
-		await seedConnection();
-		const revision = { ...ACTIVE_REVISION, payload: { ...ACTIVE_REVISION.payload, memory: { budget_tokens: 64000 } } };
+	it('Save all preserves the versioned memory budget and approval rules during unrelated edits', async () => {
+		seedConnection();
+		const approval = {
+			rules: [{ tools: ['crm_delete_*'], approval: { policy: 'deny-all', reason: 'review deletes' } }]
+		};
+		const revision = {
+			...ACTIVE_REVISION,
+			payload: { ...ACTIVE_REVISION.payload, memory: { budget_tokens: 64000 }, approval }
+		};
 		const client = fakeClient({
 			get: vi.fn(async () => ({ revision, set: true, protocol_version: '0.1.0' })),
 			listRevisions: vi.fn(async () => ({ revisions: [revision], protocol_version: '0.1.0' }))
-		});
+		}, ['approval_rules_dynamic']);
 		const state = new AgentConfigPanelState();
 		await state.load(client);
 		state.promptBase = 'Edited';
 		state.markPromptEdited();
 		await state.saveAll();
-		expect(ac(client).setRevision.mock.calls[0][1].memory).toEqual({ budget_tokens: 64000 });
+		const [, payload, expectedContentHash] = ac(client).setRevision.mock.calls[0];
+		expect(payload.memory).toEqual({ budget_tokens: 64000 });
+		expect(payload.approval).toEqual(approval);
+		expect(expectedContentHash).toBe(revision.content_hash);
+	});
+
+	it('keeps staged edits when the loaded approval revision is no longer active', async () => {
+		seedConnection();
+		const revision = {
+			...ACTIVE_REVISION,
+			payload: { ...ACTIVE_REVISION.payload, approval: { rules: [] } }
+		};
+		const client = fakeClient({
+			get: vi.fn(async () => ({ revision, set: true, protocol_version: '0.1.0' })),
+			listRevisions: vi.fn(async () => ({ revisions: [revision], protocol_version: '0.1.0' })),
+			setRevision: vi.fn(async (_agentId: string, _payload: unknown, expectedContentHash?: string) => {
+				if (expectedContentHash === revision.content_hash) {
+					throw new ProtocolError('revision_conflict', 'The active revision changed', 409);
+				}
+				return { revision: ACTIVE_REVISION, protocol_version: '0.1.0' };
+			})
+		}, ['approval_rules_dynamic']);
+		const state = new AgentConfigPanelState();
+		await state.load(client);
+		state.promptBase = 'Staged prompt';
+		state.markPromptEdited();
+		await state.saveAll();
+
+		expect(ac(client).setRevision.mock.calls[0][2]).toBe(revision.content_hash);
+		expect(state.saveAllPhase).toBe('error');
+		expect(state.hasStagedChanges).toBe(true);
+		expect(state.promptBase).toBe('Staged prompt');
+		expect(ac(client).get).toHaveBeenCalledTimes(1);
 	});
 
 	it('saveAll no-ops when nothing is staged', async () => {

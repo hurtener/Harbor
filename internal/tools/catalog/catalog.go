@@ -376,9 +376,9 @@ func (b *Builder) wrap(_ context.Context, e config.ToolEntryConfig, d tools.Tool
 		if b.deps.AppliedGates != nil {
 			b.deps.AppliedGates[e.Name] = gate
 		}
-		current = WrapWithApproval(current, gate, ApprovalWrapperOptions{
-			Tags: append([]string(nil), e.Approval.RequireTags...),
-		})
+		tags := e.Approval.RequireTags
+		current.ConfiguredApprovalRequired = current.ConfiguredApprovalRequired || configuredApprovalRequired(policy, current.Tool, tags)
+		current = WrapWithApproval(current, gate, ApprovalWrapperOptions{Tags: tags})
 	}
 	return current, nil
 }
@@ -416,6 +416,9 @@ type ApprovalWrapperOptions struct {
 	// approval request originating from this tool. The tagged policy
 	// matches against this list.
 	Tags []string
+
+	// policy is selected by the pinned revision for its shared gate.
+	policy approval.ApprovalPolicy
 }
 
 // WrapWithApproval wraps `d` so every Invoke call routes through the
@@ -439,7 +442,11 @@ func WrapWithApproval(d tools.ToolDescriptor, gate *approval.ApprovalGate, opts 
 			Identity: id,
 			Tags:     tags,
 		}
-		approvedArgs, err := gate.RunGuarded(ctx, req)
+		gateCtx := ctx
+		if opts.policy != nil {
+			gateCtx = context.WithValue(ctx, revisionApprovalPolicyKey{}, opts.policy)
+		}
+		approvedArgs, err := gate.RunGuarded(gateCtx, req)
 		if err != nil {
 			// Gate errors propagate verbatim — the caller (the planner /
 			// runtime dispatcher) reaches `*approval.ErrToolRejected`

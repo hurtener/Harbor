@@ -165,7 +165,6 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *test
 	cat := acToolCatalog(t)
 	const agentID = "harbor-dev-agent"
 	q := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}}
-	filter := tools.CatalogFilter{TenantID: "t", UserID: "u", SessionID: "s"}
 
 	listNames := func(v tools.PlannerCatalogView) map[string]bool {
 		out := map[string]bool{}
@@ -177,9 +176,12 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *test
 
 	// No registry wired → ungated (all three tools visible).
 	bare := &RunLoopDriver{catalog: cat}
-	v, err := bare.projectAgentConfigCatalog(ctx, bare.agentConfigID, q, filter)
+	v, wrap, _, err := bare.projectRunTools(ctx, bare.agentConfigID, q)
 	if err != nil {
 		t.Fatalf("bare: %v", err)
+	}
+	if wrap != nil {
+		t.Fatal("bare driver returned an approval wrapper without a registry")
 	}
 	if len(v.List()) != 3 {
 		t.Fatalf("bare driver filtered the catalog: %v", listNames(v))
@@ -192,9 +194,12 @@ func TestPerTaskRunLoopDriver_ProjectsAgentConfigToolExposure_AtRunStart(t *test
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set revision: %v", err)
 	}
-	v, err = d.projectAgentConfigCatalog(ctx, d.agentConfigID, q, filter)
+	v, wrap, _, err = d.projectRunTools(ctx, d.agentConfigID, q)
 	if err != nil {
 		t.Fatalf("projected: %v", err)
+	}
+	if wrap != nil {
+		t.Fatal("exposure-only revision returned an approval wrapper")
 	}
 	got := listNames(v)
 	if got["srvA_one"] || got["srvA_two"] {

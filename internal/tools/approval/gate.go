@@ -80,10 +80,7 @@ type ApprovalGate struct {
 
 // waitingEntry is the gate's per-pause record. Allocated fresh per
 // RunGuarded invocation; lives on the gate's pending map until
-// ResolveApproval delivers a decision or the caller's ctx cancels
-// (in which case the gate cleans up the entry without notifying — the
-// pause record itself stays parked, observable via Coordinator.Status
-// until an out-of-band resolution lands).
+// ResolveApproval delivers a decision or the waiter stops waiting.
 type waitingEntry struct {
 	// req is the original request, held so the gate can publish
 	// tool.approved / tool.rejected with the right Tool name.
@@ -190,10 +187,9 @@ func (g *ApprovalGate) Close(_ context.Context) error {
 //   - On REJECT: returns `(nil, *ErrToolRejected)`. Publishes
 //     `tool.rejected`.
 //   - On ctx cancellation before resolution: returns
-//     `ErrApprovalCancelled`. The pause record stays parked (the
-//     Coordinator is the source of truth); an out-of-band resolver
-//     can still land an APPROVE / REJECT later, but the original
-//     caller is gone.
+//     `ErrApprovalCancelled` and resolves the pause as interrupted if
+//     no other decision has committed. A failed approval request
+//     publication also interrupts the pause.
 //
 // Concurrent-safe: one ApprovalGate is shared by N runs.
 //
@@ -276,12 +272,10 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 	// Publish tool.approval_requested. A bus publish failure is
 	// loud-and-surfaced — the caller does NOT proceed to invoke a
 	// tool whose approval observers might have missed (§13 fail-
-	// loudly). Cleanup: drop the pending entry; the Coordinator's
-	// pause record stays parked, but the in-process gate state is
-	// rolled back.
+	// loudly). Resolve the pause since this waiter cannot continue.
 	if err := g.publishApprovalRequested(ctx, req, pause.RunID, pause.Token, reason, summary); err != nil {
 		g.retire(pause.Token, entry)
-		return nil, err
+		return nil, errors.Join(err, g.interrupt(req, pause))
 	}
 
 	// Block on resolution. The waiter selects on:
@@ -353,15 +347,30 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 			}
 			return nil, tools.ErrInvocationSuperseded
 		case <-ctx.Done():
-			// Caller's ctx died before resolution. Drop the in-process
-			// entry; the Coordinator's pause record stays parked. An
-			// out-of-band resolver can still APPROVE / REJECT it later
-			// (the Coordinator will accept the Resume), but the original
-			// RunGuarded caller has moved on.
 			g.retire(pause.Token, entry)
-			return nil, fmt.Errorf("%w: %w", ErrApprovalCancelled, ctx.Err())
+			return nil, errors.Join(ErrApprovalCancelled, ctx.Err(), g.interrupt(req, pause))
 		}
 	}
+}
+
+// interrupt resolves a pause after its waiter exits, under the pause's own
+// identity. Its bounded context is independent of the failing invocation.
+func (g *ApprovalGate) interrupt(req *ApprovalRequest, pause pauseresume.Pause) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx, err := identity.With(ctx, pause.Identity)
+	if err != nil {
+		return fmt.Errorf("approval: interrupted pause identity: %w", err)
+	}
+	const reason = "approval waiter stopped before a decision"
+	if err := g.coordinator.Resume(ctx, pause.Token, pauseresume.DecisionInterrupted, map[string]any{"interrupted": true, "reason": reason}); err != nil {
+		if errors.Is(err, pauseresume.ErrAlreadyResumed) {
+			return nil
+		}
+		return fmt.Errorf("approval: interrupt pause: %w", err)
+	}
+	res := resolution{reason: reason, decidedAt: g.resolvedAt(ctx, pause.Token)}
+	return g.publishRejected(ctx, req, pause.RunID, pause.Token, pauseresume.DecisionInterrupted, res)
 }
 
 // timedOut reports whether the Coordinator resolved token with the
@@ -647,8 +656,8 @@ func (g *ApprovalGate) buildRedactedSummary(ctx context.Context, req *ApprovalRe
 }
 
 // publishApprovalRequested emits the typed tool.approval_requested
-// event onto the bus. A publish failure is loud — caller cleans up
-// the pending entry.
+// event onto the bus. A publish failure is loud — the caller interrupts
+// the pause.
 func (g *ApprovalGate) publishApprovalRequested(ctx context.Context, req *ApprovalRequest, runID string, token pauseresume.Token, reason string, summary any) error {
 	ev := events.Event{
 		Type:     EventTypeToolApprovalRequested,
@@ -691,7 +700,7 @@ func (g *ApprovalGate) publishApproved(ctx context.Context, req *ApprovalRequest
 
 // publishRejected emits the typed tool.rejected event onto the bus.
 // THIS is the master-plan acceptance criterion event. decision is the
-// typed outcome (reject / timeout).
+// typed outcome (reject / timeout / interrupted).
 func (g *ApprovalGate) publishRejected(ctx context.Context, req *ApprovalRequest, runID string, token pauseresume.Token, decision pauseresume.Decision, res resolution) error {
 	return publishRejectedEvent(ctx, g.bus, identity.Quadruple{Identity: req.Identity, RunID: runID}, req.Tool.Name, token, decision, res)
 }

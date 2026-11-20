@@ -10,7 +10,7 @@ import (
 func TestMemoryBudgetCapabilityRequiresBothConsumers(t *testing.T) {
 	for _, agentConfig := range []bool{false, true} {
 		for _, compactor := range []bool{false, true} {
-			caps := wiredCapabilitiesFor(false, agentConfig, false, false, false, false, false, false, false, compactor)
+			caps := wiredCapabilitiesFor(false, agentConfig, false, false, false, false, false, false, false, compactor, false)
 			if got := slices.Contains(caps, types.CapAgentConfigMemory); got != (agentConfig && compactor) {
 				t.Fatalf("agent_config=%v compactor=%v: %v", agentConfig, compactor, caps)
 			}

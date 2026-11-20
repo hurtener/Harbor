@@ -116,6 +116,8 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
+	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
+	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 	"github.com/hurtener/Harbor/internal/virtualagent"
 )
 
@@ -187,6 +189,9 @@ type RunLoopDriverOptions struct {
 	Catalog         tools.ToolCatalog
 	Executor        steering.ToolExecutor
 	MaxStepsRunLoop int
+
+	// RevisionApprovalGate serves dynamically configured approval rules.
+	RevisionApprovalGate *toolapproval.ApprovalGate
 
 	// TrancheSteps grants each run a continuable step tranche: when
 	// > 0, the runloop parks the run (a typed constraints_conflict
@@ -423,10 +428,11 @@ type RunLoopDriver struct {
 	publicationRuntimeID  string
 
 	// tool dispatch + Catalog projection.
-	catalog         tools.ToolCatalog
-	executor        steering.ToolExecutor
-	maxStepsRunLoop int
-	trancheSteps    int
+	catalog              tools.ToolCatalog
+	executor             steering.ToolExecutor
+	maxStepsRunLoop      int
+	trancheSteps         int
+	revisionApprovalGate *toolapproval.ApprovalGate
 
 	// operator-declared GrantedScopes.
 	grantedScopes []string
@@ -610,6 +616,7 @@ func NewRunLoopDriver(opts RunLoopDriverOptions) (*RunLoopDriver, error) {
 		executor:              opts.Executor,
 		maxStepsRunLoop:       opts.MaxStepsRunLoop,
 		trancheSteps:          opts.TrancheSteps,
+		revisionApprovalGate:  opts.RevisionApprovalGate,
 		grantedScopes:         append([]string(nil), opts.GrantedScopes...),
 		artifactStore:         opts.ArtifactStore,
 		// disposition policy passthrough.
@@ -1151,16 +1158,22 @@ func (d *RunLoopDriver) captureRunSkillSnapshot(ctx context.Context, effectiveAg
 	return snapshot, true, nil
 }
 
-// projectAgentConfigCatalog builds the run's planner catalog view, applying
-// the agent's active-config tool exposure (paused MCP servers + disabled
-// tools excluded) via the SAME shared projection the devstack twin uses
-// (CLAUDE.md §17.6). Next-turn-only; the live transport stays warm.
-func (d *RunLoopDriver) projectAgentConfigCatalog(ctx context.Context, agentID string, q identity.Quadruple, filter tools.CatalogFilter) (tools.PlannerCatalogView, error) {
+// projectRunTools builds the planner and completion hook catalogs and approval
+// rules from the same active agent revision. Changes take effect next turn.
+func (d *RunLoopDriver) projectRunTools(ctx context.Context, agentID string, q identity.Quadruple) (tools.PlannerCatalogView, func(tools.ToolDescriptor) tools.ToolDescriptor, *steering.CompletionHookSpec, error) {
 	var ownerResolver projection.SourceOwnerResolver
 	if candidate, ok := d.connectionDetacher.(projection.SourceOwnerResolver); ok {
 		ownerResolver = candidate
 	}
-	return projection.ActivePlannerCatalogView(ctx, d.agentConfig, d.sessionOverlay, agentID, q, d.catalog, filter, ownerResolver)
+	view, section, hook, err := projection.ActiveRunToolViews(ctx, d.agentConfig, d.sessionOverlay, agentID, q, d.catalog, tools.CatalogFilter{
+		TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID,
+		GrantedScopes: d.grantedScopes,
+	}, d.runCompletionHook, ownerResolver)
+	if err != nil || section == nil {
+		return view, nil, hook, err
+	}
+	wrap, err := toolcatalog.CompileRevisionApprovalRules(section.ToolApprovalRules(), d.revisionApprovalGate)
+	return view, wrap, hook, err
 }
 
 // projectAgentConfigPromptLayers overlays the agent's durable layered system
@@ -1170,31 +1183,6 @@ func (d *RunLoopDriver) projectAgentConfigCatalog(ctx context.Context, agentID s
 // the immutable per-run snapshot is undisturbed for in-flight runs.
 func (d *RunLoopDriver) projectAgentConfigPromptLayers(ctx context.Context, agentID string, q identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
 	return projection.ApplyPromptLayers(ctx, d.agentConfig, d.sessionOverlay, agentID, q, ov)
-}
-
-// projectRunCompletionHook resolves the effective run-completion hook for
-// this run at run start via the SAME shared projection the devstack twin
-// uses (CLAUDE.md §17.6): agent-config `hooks` section over the static
-// `runtime.hooks.run_completion` yaml over none. Next-turn-only; an edit is
-// invisible to an in-flight run.
-func (d *RunLoopDriver) projectRunCompletionHook(ctx context.Context, agentID string, q identity.Quadruple) (*steering.CompletionHookSpec, error) {
-	hook, _, err := projection.ActiveRunCompletionHook(ctx, d.agentConfig, agentID, q, d.runCompletionHook)
-	if err != nil || hook == nil || d.catalog == nil {
-		return hook, err
-	}
-	var ownerResolver projection.SourceOwnerResolver
-	if candidate, ok := d.connectionDetacher.(projection.SourceOwnerResolver); ok {
-		ownerResolver = candidate
-	}
-	view, err := projection.ActiveCompletionCatalogView(ctx, d.agentConfig, d.sessionOverlay, agentID, q, d.catalog, tools.CatalogFilter{
-		TenantID: q.TenantID, UserID: q.UserID, SessionID: q.SessionID,
-		GrantedScopes: d.grantedScopes,
-	}, ownerResolver)
-	if err != nil {
-		return nil, err
-	}
-	hook.Catalog = view
-	return hook, nil
 }
 
 // projectNaming resolves the effective session auto-naming spec for this run
@@ -1615,6 +1603,10 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		taskCtx = admissionCtx
 		effectiveAgentID = admittedAgentID
 	}
+	var childConfigAgentID string
+	if !agentReachAdmitted {
+		childConfigAgentID = effectiveAgentID
+	}
 	var providerRoute *llm.ProviderRoute
 	if task.ProviderRoute != nil {
 		if !agentReachAdmitted {
@@ -1898,45 +1890,24 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// and the Enricher's tasks.get snapshot (TrajectoryByTaskID) so an
 	// in-flight read never races the append.
 	trajMu := &sync.RWMutex{}
-	var catalogView planner.ToolCatalogView
-	if d.catalog != nil {
-		// the catalog view's CatalogFilter
-		// now receives the operator-configured `tools.granted_scopes`
-		// list. Tools whose AuthScopes exceed this set are invisible
-		// to the planner; an empty list preserves the prior behaviour
-		// (tools without AuthScopes are always visible; tools with
-		// AuthScopes are filtered out).
-		// the per-run view is the promoted
-		// `tools.NewPlannerView` — constructed per run (never cached;
-		// the filter carries the run's identity triple) — wrapped with the
-		// agent-config tool-exposure projection: a paused MCP server's tools
-		// and any disabled tool are excluded from THIS run's view
-		// (next-turn-only; the live transport stays warm). The active
-		// revision is read ONCE at run start; a registry read error fails the
-		// run LOUDLY (the registry IS the runtime StateStore — an error means
-		// the runtime is unhealthy). The shared projection keeps the cmd +
-		// devstack views identical (CLAUDE.md §17.6).
-		view, vErr := d.projectAgentConfigCatalog(taskCtx, effectiveAgentID, cq, tools.CatalogFilter{
-			TenantID:      q.TenantID,
-			UserID:        cq.UserID,
-			SessionID:     q.SessionID,
-			GrantedScopes: d.grantedScopes,
-		})
-		if vErr != nil {
-			d.logger.ErrorContext(taskCtx, "RunLoopDriver: agent-config tool-exposure projection failed; failing run",
+	view, wrapToolInvocation, completionHook, vErr := d.projectRunTools(taskCtx, effectiveAgentID, cq)
+	if vErr != nil {
+		d.logger.ErrorContext(taskCtx, "RunLoopDriver: agent-config run-tool projection failed; failing run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", vErr.Error()))
+		if fErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(vErr, tasks.TaskError{
+			Code:    "runtime_fetch_error",
+			Message: "agent-config run-tool projection failed: " + vErr.Error(),
+		})); fErr != nil {
+			d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 				slog.String("task_id", string(taskID)),
-				slog.String("run_id", q.RunID),
-				slog.String("err", vErr.Error()))
-			if fErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(vErr, tasks.TaskError{
-				Code:    "runtime_fetch_error",
-				Message: "agent-config tool-exposure projection: " + vErr.Error(),
-			})); fErr != nil {
-				d.logger.Warn("RunLoopDriver: MarkFailed(runtime_fetch_error) failed",
-					slog.String("task_id", string(taskID)),
-					slog.String("err", fErr.Error()))
-			}
-			return
+				slog.String("err", fErr.Error()))
 		}
+		return
+	}
+	var catalogView planner.ToolCatalogView
+	if view != nil {
 		catalogView = view
 		if virtualProfile != nil {
 			catalogView = tools.NewExclusionView(catalogView, virtualProfile.Overlay.PausedServers, virtualProfile.Overlay.DisabledTools)
@@ -2189,26 +2160,6 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		tokenBudget = virtualagent.OverlayClampTokenBudget(tokenBudget, profile.Overlay.TokenBudget)
 	}
 
-	// Resolve the effective run-completion hook once at run start (agent-config
-	// over yaml over none) via the shared projection. A read error fails the run
-	// loudly rather than silently dropping the operator's configured hook.
-	completionHook, chErr := d.projectRunCompletionHook(taskCtx, effectiveAgentID, cq)
-	if chErr != nil {
-		d.logger.ErrorContext(taskCtx, "RunLoopDriver: run-completion-hook projection failed; failing run",
-			slog.String("task_id", string(taskID)),
-			slog.String("run_id", q.RunID),
-			slog.String("err", chErr.Error()))
-		if mErr := d.tasks.MarkFailed(taskCtx, taskID, runConfigTaskError(chErr, tasks.TaskError{
-			Code:    planner.TaskErrorCodeRunLoopError,
-			Message: "run-completion-hook projection failed: " + chErr.Error(),
-		})); mErr != nil {
-			d.logger.Warn("RunLoopDriver: MarkFailed after run-completion-hook-projection error failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("run_id", q.RunID),
-				slog.String("err", mErr.Error()))
-		}
-		return
-	}
 	// A run-scoped restriction also fences the trusted completion hook, whose
 	// ordinary dispatch deliberately resolves against the full catalog.
 	if task.ToolAllowlist != nil && completionHook != nil {
@@ -2268,6 +2219,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 		Planner: d.planner,
 		Base: planner.RunContext{
 			Quadruple:            q,
+			ChildConfigAgentID:   childConfigAgentID,
 			ToolAllowlist:        task.ToolAllowlist,
 			ExternalGrant:        externalGrant,
 			Query:                task.Query,
@@ -2334,6 +2286,7 @@ func (d *RunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
 	// Continue from taskCtx, not the pre-restoration admissionCtx: taskCtx now
 	// carries both the verified reach context and the run-scoped quadruple.
 	runCtx := tools.WithInvokingAgent(taskCtx, d.agentConfigID)
+	runCtx = tools.WithRunToolInvocationWrapper(runCtx, wrapToolInvocation)
 	if task.VerifiedExecutionOperationID != "" {
 		runCtx = tools.WithVerifiedExecutionOperation(runCtx, task.VerifiedExecutionOperationID)
 	}

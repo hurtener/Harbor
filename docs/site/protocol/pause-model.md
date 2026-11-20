@@ -58,6 +58,13 @@ Four causes, one event shape (RFC §3.3):
 The closed `Reason` set is `approval_required` / `await_input` /
 `external_event` / `constraints_conflict` (RFC §6.3).
 
+On runtimes that advertise `approval_rules_dynamic`, an agent's active
+revision can require approval through `approval.rules`. A revision rule can
+add approval, never remove it. Each call parks at most once. These rules use
+the same `pause.list` rows, redacted `args_summary`, decision events and decider
+attribution as boot-configured approval gates. The same timeout and
+interruption behavior applies.
+
 ## The park, on the stream
 
 A planner picks an approval-gated tool (`deploy_to_production`, gated

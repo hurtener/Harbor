@@ -913,12 +913,8 @@ export class AgentConfigPanelState {
 	/* Atomic multi-section save — "Save all" (92i)                      */
 	/* ================================================================ */
 
-	/** The active revision's payload (or {} when none) — the base the
-	 * Save-all merge carries the non-form sections (skills / connections)
-	 * forward from. */
-	private activePayload(): AgentConfigPayload {
-		const active = this.revisions.find((r) => r.revision_id === this.activeRevisionId);
-		return active?.payload ?? {};
+	private activeRevision(): AgentConfigRevisionView | undefined {
+		return this.revisions.find((revision) => revision.revision_id === this.activeRevisionId);
 	}
 
 	/**
@@ -928,20 +924,26 @@ export class AgentConfigPanelState {
 	 * prompt + temperature + model in one revision"). `set_revision` is a
 	 * whole-envelope replace, so the merged payload is built from the CURRENT
 	 * form values for the three form sections (prompt / model-&-sampling / MCP
-	 * exposure) PLUS the non-form sections (skills / connections) carried
+	 * exposure) PLUS the non-form sections carried
 	 * forward from the active revision — so unedited sections are preserved.
 	 * A failed write keeps the staged edits + surfaces the error (no silent
 	 * drop — §13); a confirmed success re-seeds the forms (clearing dirty).
 	 */
 	async saveAll(): Promise<void> {
-		if (this.#client === null || !this.hasAdminScope) return;
+		const client = this.#client;
+		if (client === null || !this.hasAdminScope) return;
 		if (!this.hasStagedChanges) return;
-		const base = this.activePayload();
+		const agentId = this.agentId;
+		const active = this.activeRevision();
+		const base = active?.payload ?? {};
 		const payload: AgentConfigPayload = {
 			skills: base.skills,
 			connections: base.connections,
 			memory: base.memory
 		};
+		if (base.approval !== undefined) {
+			payload.approval = base.approval;
+		}
 		if (this.promptBase !== '' || this.promptUser !== '') {
 			payload.prompt_layers = {
 				base: this.promptBase || undefined,
@@ -962,7 +964,12 @@ export class AgentConfigPanelState {
 		this.saveAllError = null;
 		this.saveAllSaved = false;
 		try {
-			await this.#client.agentConfig.setRevision(this.agentId, payload);
+			if ((base.approval !== undefined || payload.approval !== undefined) &&
+				(await client.capabilities()).has('approval_rules_dynamic')) {
+				await client.agentConfig.setRevision(agentId, payload, active?.content_hash ?? '-');
+			} else {
+				await client.agentConfig.setRevision(agentId, payload);
+			}
 			this.saveAllSaved = true;
 			this.saveAllPhase = 'ready';
 			// Re-seed the forms + clear every dirty flag from the new active
@@ -977,8 +984,7 @@ export class AgentConfigPanelState {
 	/** discardStaged drops all staged form edits, re-seeding the forms from
 	 * the active revision (no write). */
 	discardStaged(): void {
-		const active = this.revisions.find((r) => r.revision_id === this.activeRevisionId) ?? null;
-		this.seedFromRevision(active);
+		this.seedFromRevision(this.activeRevision() ?? null);
 		this.saveAllSaved = false;
 		this.saveAllError = null;
 		this.saveAllPhase = 'idle';
@@ -1079,7 +1085,7 @@ export class AgentConfigPanelState {
 
 	/** The active revision's runtime-added MCP connections (the editor rows). */
 	get activeConnections(): AgentConfigMCPConnectionDescriptor[] {
-		return this.activePayload().connections?.servers ?? [];
+		return this.activeRevision()?.payload.connections?.servers ?? [];
 	}
 
 	/** The editor input value for a connection: the pending draft when the
@@ -1168,7 +1174,7 @@ export class AgentConfigPanelState {
 	/** The active revision's Protocol-installed OAuth providers (card rows + the
 	 * Add-connection binding SELECT feed). */
 	get installedProviders(): AgentConfigOAuthProviderDescriptor[] {
-		return this.activePayload().oauth_providers?.providers ?? [];
+		return this.activeRevision()?.payload.oauth_providers?.providers ?? [];
 	}
 
 	/** The installed provider NAMES — the option set for the Add-connection

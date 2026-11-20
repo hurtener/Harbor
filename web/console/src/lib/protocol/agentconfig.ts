@@ -281,6 +281,24 @@ export interface AgentConfigRunLimitsDiff {
 	max_tokens_to: string;
 }
 
+export interface AgentConfigApprovalPolicy {
+	policy: string;
+	reason?: string;
+	require_tags?: string[];
+}
+
+export interface AgentConfigApprovalRule {
+	tools?: string[];
+	sources?: string[];
+	annotations?: string[];
+	approval: AgentConfigApprovalPolicy;
+}
+
+/** Ordered approval rules for subsequent runs of this agent. */
+export interface AgentConfigApproval {
+	rules?: AgentConfigApprovalRule[];
+}
+
 export interface AgentConfigNaming {
 	auto?: boolean;
 	after_turns?: number;
@@ -335,6 +353,7 @@ export interface AgentConfigPayload {
 	naming?: AgentConfigNaming;
 	memory?: AgentConfigMemory;
 	run_limits?: AgentConfigRunLimits;
+	approval?: AgentConfigApproval;
 	extra_system_blocks?: AgentConfigExtraSystemBlocks;
 	/** Read-only; generic set_revision must not author or clear this field. */
 	signed_oauth_mcp_pair?: AgentConfigSignedOAuthMCPPair;

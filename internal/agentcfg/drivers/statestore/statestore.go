@@ -337,6 +337,9 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err != nil {
 		return agentcfg.Revision{}, err
 	}
+	if err := payload.Approval.Validate(scope); err != nil {
+		return agentcfg.Revision{}, err
+	}
 	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -379,6 +382,11 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		}
 	}
 	if scope == agentcfg.ConfigScopeAgent {
+		// Carry omitted approval through from the same active revision used
+		// by the publication CAS. An explicit empty section clears the rules.
+		if hasActive && payload.Approval == nil {
+			payload.Approval = active.Payload.Approval
+		}
 		payload, err = preserveSignedOAuthMCPPairs(ctx, active, hasActive, payload)
 		if err != nil {
 			return agentcfg.Revision{}, err

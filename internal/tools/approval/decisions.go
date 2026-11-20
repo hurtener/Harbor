@@ -39,8 +39,7 @@ const (
 	// OutcomeExpired — the max-park deadline elapsed with no decision;
 	// the tool did not run.
 	OutcomeExpired DecisionOutcome = "expired"
-	// OutcomeInterrupted — the runtime restarted while the approval
-	// waited; the tool did not run.
+	// OutcomeInterrupted — the approval waiter could no longer continue.
 	OutcomeInterrupted DecisionOutcome = "interrupted"
 )
 
@@ -260,7 +259,10 @@ func NewDecisionRecorder(log DecisionLog) pauseresume.ResolutionRecorder {
 		case pauseresume.DecisionTimeout:
 			rec.Outcome, rec.DecisionReason = OutcomeExpired, ExpiredReason
 		case pauseresume.DecisionInterrupted:
-			rec.Outcome, rec.DecisionReason = OutcomeInterrupted, InterruptedReason
+			if note == "" {
+				note = InterruptedReason
+			}
+			rec.Outcome, rec.DecisionReason = OutcomeInterrupted, note
 		default:
 			return nil
 		}

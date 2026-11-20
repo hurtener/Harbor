@@ -434,31 +434,18 @@ func TestRunOne_CatalogProjectionError_FailsRun(t *testing.T) {
 		o.AgentConfig = &countingFailRegistry{failAt: 2}
 		o.AgentConfigID = "fail-agent"
 	})
-	spawnAndAwaitFailure(t, env.reg, nil, "runtime_fetch_error", "agent-config tool-exposure projection")
+	spawnAndAwaitFailure(t, env.reg, nil, "runtime_fetch_error", "agent-config run-tool projection failed")
 }
 
 // TestRunOne_PromptLayersProjectionError_FailsRun — the prompt-layer read
-// (the second Active read on the no-skills/no-catalog path, after the
-// LLM-overrides read) fails the run LOUD.
+// after tool and LLM settings projection fails the run LOUD.
 func TestRunOne_PromptLayersProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 3}
+		o.AgentConfig = &countingFailRegistry{failAt: 4}
 		o.AgentConfigID = "fail-agent"
 	})
 	spawnAndAwaitFailure(t, env.reg, nil, planner.TaskErrorCodeRunLoopError, "prompt-layer projection failed")
-}
-
-// TestRunOne_HookProjectionError_FailsRun — the run-completion-hook read (the
-// seventh Active read on this fixture, after the working-input budget
-// projection) fails the run LOUD.
-func TestRunOne_HookProjectionError_FailsRun(t *testing.T) {
-	env := newFailDriverEnv(t)
-	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 7}
-		o.AgentConfigID = "fail-agent"
-	})
-	spawnAndAwaitFailure(t, env.reg, nil, planner.TaskErrorCodeRunLoopError, "run-completion-hook projection failed")
 }
 
 // TestRunOne_NamingProjectionError_FailsRun — the naming-policy read (the

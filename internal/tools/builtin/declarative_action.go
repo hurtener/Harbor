@@ -223,7 +223,7 @@ func declarativeActionWithScopes(ctx context.Context, cat tools.ToolCatalog, arg
 			Error:      fmt.Sprintf("tool %q not found in declared catalog", envelope.Tool),
 		}, nil
 	}
-	desc, ok := cat.Resolve(visible.Name)
+	desc, ok := tools.ResolveToolInvocation(ctx, cat, visible.Name)
 	if !ok {
 		return DeclarativeActionOut{
 			Dispatched: false,

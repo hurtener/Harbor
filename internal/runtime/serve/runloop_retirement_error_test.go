@@ -37,16 +37,19 @@ func TestRunOne_RetirementDuringConfigProjectionKeepsTypedRefusal(t *testing.T) 
 		read int32
 		text string
 	}{
-		{"llm overrides", 2, "tenant-override resolution failed"},
-		{"agent prompt", 3, "prompt-layer projection failed"},
-		{"user prompt", 4, "prompt-layer projection failed"},
-		{"prompt blocks", 5, "prompt-layer projection failed"},
-		{"memory budget", 6, "memory-budget projection failed"},
-		{"completion hook", 7, "run-completion-hook projection failed"},
+		{"tool configuration", 2, "agent-config run-tool projection failed"},
+		{"llm overrides", 3, "tenant-override resolution failed"},
+		{"agent prompt", 4, "prompt-layer projection failed"},
+		{"user prompt", 5, "prompt-layer projection failed"},
+		{"prompt blocks", 6, "prompt-layer projection failed"},
+		{"memory budget", 7, "memory-budget projection failed"},
 	} {
 		for _, retired := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/retired=%t", stage.name, retired), func(t *testing.T) {
 				reason, code, text := errInjected, planner.TaskErrorCodeRunLoopError, stage.text
+				if stage.read == 2 {
+					code = "runtime_fetch_error"
+				}
 				if retired {
 					reason, code, text = agentcfg.ErrAgentRetired, string(protoerrors.CodeAgentRetired), "agent is retired"
 				}

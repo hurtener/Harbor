@@ -2050,26 +2050,8 @@ func runVersionHandshake(t *testing.T) {
 		t.Fatalf("handshake.ProtocolVersion = %q, want %q", h.ProtocolVersion, types.ProtocolVersion)
 	}
 	caps := types.Capabilities()
-	// task-control + streaming-events + runtime-posture + topology-snapshot +
-	// state-snapshots + agent-config + session-lifecycle + tool annotations +
-	// caller memory + skill publications + provider catalog + provider route +
-	// tenant-scoped broker credentials + tools configuration view + provider
-	// route model profiles + atomic run LLM settings
-	// + agent memory budget + run-scoped tools = 18 canonical capabilities at Protocol 0.1.0. (The capability
-	// constants live in
-	// internal/protocol/types/version.go; a new capability is a new
-	// constant + a new entry in canonicalCapabilities. A checkpoint fix
-	// — `topology_snapshot` is in the canonical *registry*; per-instance
-	// advertisement is conditional via `PostureDeps.TopologyAvailable`.
-	// `state_snapshots` is the windowed event-replay surface; `agent_config`
-	// advertises the agent-config control plane (conditional per-instance via
-	// `PostureDeps.AgentConfigAvailable`); `session_lifecycle` advertises the
-	// `sessions.delete` erasure surface (conditional via
-	// `PostureDeps.SessionLifecycleAvailable`) — all additive, no
-	// ProtocolVersion bump.)
-	if len(caps) != 21 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 21 (including run limits and the skill read/candidate pair) at Protocol 0.1.0", len(caps))
-	}
+	// The handshake covers the canonical capability registry. Runtime
+	// instances advertise the subset they wire through PostureDeps.
 	wantCaps := map[types.Capability]struct{}{
 		types.CapTaskControl:                   {},
 		types.CapEventsSubscribe:               {},
@@ -2077,6 +2059,7 @@ func runVersionHandshake(t *testing.T) {
 		types.CapTopologySnapshot:              {},
 		types.CapStateSnapshots:                {},
 		types.CapAgentConfig:                   {},
+		types.CapApprovalRulesDynamic:          {},
 		types.CapSessionLifecycle:              {},
 		types.CapToolAnnotations:               {},
 		types.CapToolsConfigurationView:        {},

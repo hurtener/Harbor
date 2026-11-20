@@ -371,6 +371,11 @@ type ToolDescriptor struct {
 	Tool     Tool
 	Invoke   func(ctx context.Context, args json.RawMessage) (ToolResult, error)
 	Validate func(args json.RawMessage) error
+
+	// ConfiguredApprovalRequired reports that the boot approval policy on
+	// this descriptor requires approval. The bundled policies decide from
+	// static configuration and tags.
+	ConfiguredApprovalRequired bool
 }
 
 // CatalogFilter is the predicate ToolCatalog.List applies over the

@@ -440,6 +440,9 @@ const (
 
 	// CapAgentConfigMemory advertises next-run working-input budget overrides.
 	CapAgentConfigMemory Capability = "agent_config_memory_v1"
+
+	// CapApprovalRulesDynamic advertises approval rules on active agent-config revisions.
+	CapApprovalRulesDynamic Capability = "approval_rules_dynamic"
 	// CapSessionLifecycle — the session data-lifecycle surface: the
 	// `sessions.delete` identity-scoped erasure method that deletes a
 	// session and cascades deletion of its scoped State, Memory, and
@@ -533,6 +536,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapStateSnapshots:                {},
 	CapAgentConfig:                   {},
 	CapAgentConfigMemory:             {},
+	CapApprovalRulesDynamic:          {},
 	CapSessionLifecycle:              {},
 	CapToolAnnotations:               {},
 	CapToolsConfigurationView:        {},

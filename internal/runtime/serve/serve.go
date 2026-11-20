@@ -1196,6 +1196,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		SessionSkillCutover:      sessionPersonalCutover,
 		Catalog:                  toolCat,
 		Executor:                 stack.Executor,
+		RevisionApprovalGate:     stack.RevisionApprovalGate,
 		MaxStepsRunLoop:          cfg.Planner.MaxSteps,
 		TrancheSteps:             steering.EffectiveTrancheSteps(cfg.Planner.MaxSteps),
 		GrantedScopes:            append([]string(nil), cfg.Tools.GrantedScopes...),

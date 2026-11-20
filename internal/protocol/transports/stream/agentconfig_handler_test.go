@@ -16,6 +16,15 @@ import (
 
 const userBody = `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"` + acAgent + `","payload":{"user_prompt":"be terse","disabled_servers":["weather"]}}`
 
+func TestAgentConfigHandler_SetRevision_ApprovalRulesUnavailable(t *testing.T) {
+	h := sessionHandler(t)
+	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"agent_id":"` + acAgent + `","payload":{"approval":{"rules":[{"tools":["crm_*"],"approval":{"policy":"deny-all"}}]}}}`
+	status, response := acReq(t, h, "set_revision", body, acID(), []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusNotImplemented || errCode(t, response) != protoerrors.CodeUnknownMethod {
+		t.Fatalf("unsupported rules set_revision = (%d,%s), want 501 unknown_method", status, response)
+	}
+}
+
 // TestAgentConfigHandler_Retire_AdminReplayAndTerminalRefusal proves the
 // lifecycle verb is an admin-only control-plane operation (no reach
 // requirement), preserves exact replay, and closes the existing active read.

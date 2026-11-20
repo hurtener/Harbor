@@ -1376,10 +1376,12 @@ export class AgentConfigNamespace {
 	setRevision(
 		agentId: string,
 		payload: AgentConfigPayload,
+		expectedContentHash?: string,
 	): Promise<AgentConfigSetRevisionResponse> {
 		return this.#t.request<AgentConfigSetRevisionResponse>('/v1/agent_config/set_revision', {
 			agent_id: agentId,
 			payload: payload as unknown as Record<string, unknown>,
+			...(expectedContentHash === undefined ? {} : { expected_content_hash: expectedContentHash }),
 		});
 	}
 	/** `agent_config.list_revisions` — the agent's revision chain, newest-first. */

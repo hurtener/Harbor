@@ -291,6 +291,10 @@ var (
 	// the runtime distinguishes "approver said no" from "ctx died."
 	ErrApprovalCancelled = errors.New("approval: cancelled before resolution")
 
+	// ErrInteractiveApprovalUnavailable means a policy required approval on
+	// an invocation that cannot receive a steering decision.
+	ErrInteractiveApprovalUnavailable = errors.New("approval: interactive decision unavailable")
+
 	// ErrApprovalExpired — the approval's pause outlived the configured
 	// max-park duration (`pauseresume.max_park_duration`) with no
 	// decision, and the pause sweeper resolved it with the typed

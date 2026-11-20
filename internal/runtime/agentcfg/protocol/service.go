@@ -210,12 +210,13 @@ type SignedOAuthMCPUserReconciler interface {
 
 // Service implements the admin-scoped agent-config methods.
 type Service struct {
-	memoryBudgetAvailable bool
-	registry              agentcfg.Registry
-	bootDefaultAgentID    string
-	ensureBootLifecycle   agentcfg.BootLifecycleEnsurer
-	skills                skills.SkillStore // optional — nil ⇒ shared/durable skills methods return ErrSkillsUnavailable
-	sessionPersonalSkills SessionPersonalSkillController
+	memoryBudgetAvailable         bool
+	dynamicApprovalRulesAvailable bool
+	registry                      agentcfg.Registry
+	bootDefaultAgentID            string
+	ensureBootLifecycle           agentcfg.BootLifecycleEnsurer
+	skills                        skills.SkillStore // optional — nil ⇒ shared/durable skills methods return ErrSkillsUnavailable
+	sessionPersonalSkills         SessionPersonalSkillController
 	// agentPackProposer drafts a bounded pack skill body from an operator
 	// intent for `agent_config.agent_packs.propose`. Optional — nil ⇒ propose
 	// returns ErrAgentPackProposeUnavailable (→ 501 at the wire edge). The
@@ -1197,6 +1198,12 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
 	payload := payloadToDomain(req.Payload)
+	if payload.Approval != nil && len(payload.Approval.Rules) > 0 && !s.dynamicApprovalRulesAvailable {
+		return prototypes.AgentConfigSetRevisionResponse{}, ErrDynamicApprovalRulesUnavailable
+	}
+	if err := payload.Approval.Validate(agentcfg.ConfigScopeAgent); err != nil {
+		return prototypes.AgentConfigSetRevisionResponse{}, err
+	}
 	// AgentPacks is server-managed by the dedicated pack verbs.  An omitted
 	// section on the generic whole-payload door therefore means "carry the
 	// current pack forward", never "clear the current pack".
@@ -1534,6 +1541,7 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 		limits := p.RunLimits.Clone()
 		out.RunLimits = &prototypes.AgentConfigRunLimits{MaxDurationSeconds: limits.MaxDurationSeconds, MaxTokens: limits.MaxTokens}
 	}
+	out.Approval = approvalToWire(p.Approval)
 	if p.Naming != nil {
 		out.Naming = &prototypes.AgentConfigNaming{
 			Auto:           p.Naming.Auto,
@@ -1781,6 +1789,7 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 	if p.RunLimits != nil {
 		out.RunLimits = (&agentcfg.RunLimitsSection{MaxDurationSeconds: p.RunLimits.MaxDurationSeconds, MaxTokens: p.RunLimits.MaxTokens}).Clone()
 	}
+	out.Approval = approvalToDomain(p.Approval)
 	if p.Naming != nil {
 		out.Naming = &agentcfg.NamingSection{
 			Auto:           p.Naming.Auto,

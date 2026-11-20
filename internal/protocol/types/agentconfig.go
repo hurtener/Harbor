@@ -492,6 +492,29 @@ type AgentConfigNaming struct {
 	ReasoningMode string `json:"reasoning_mode,omitempty"`
 }
 
+// AgentConfigApprovalPolicy is the action and operator-facing reason for a
+// matching approval rule. The tagged policy also requires a list of tags.
+type AgentConfigApprovalPolicy struct {
+	Policy      string   `json:"policy"`
+	Reason      string   `json:"reason,omitempty"`
+	RequireTags []string `json:"require_tags,omitempty"`
+}
+
+// AgentConfigApprovalRule selects tools by catalog-name glob, source glob,
+// and MCP annotation, with the same matching semantics as YAML approval rules.
+type AgentConfigApprovalRule struct {
+	Tools       []string                  `json:"tools,omitempty"`
+	Sources     []string                  `json:"sources,omitempty"`
+	Annotations []string                  `json:"annotations,omitempty"`
+	Approval    AgentConfigApprovalPolicy `json:"approval"`
+}
+
+// AgentConfigApproval pins the ordered approval rules for subsequent runs of
+// an agent.
+type AgentConfigApproval struct {
+	Rules []AgentConfigApprovalRule `json:"rules,omitempty"`
+}
+
 // AgentConfigPayload is the wire projection of an agent-config envelope.
 // Every section is optional so later consumers extend it without a schema
 // break.
@@ -537,6 +560,10 @@ type AgentConfigPayload struct {
 	// RunLimits, when non-nil, replaces the runtime-default per-run limits
 	// (maximum active duration and cumulative tokens) for subsequent runs.
 	RunLimits *AgentConfigRunLimits `json:"run_limits,omitempty"`
+	// Approval pins this agent's ordered approval rules for subsequent runs.
+	// In set_revision, omitting approval preserves the active section. An
+	// explicit empty rules list clears the rules.
+	Approval *AgentConfigApproval `json:"approval,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent contributes nothing and leaves
 	// the composed system prompt byte-identical.

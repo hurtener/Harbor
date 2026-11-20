@@ -324,6 +324,9 @@ type Stack struct {
 	Gates          map[string]*toolapproval.ApprovalGate
 	OAuthProviders map[string]toolauth.OAuthProvider
 
+	// RevisionApprovalGate serves the immutable policy snapshot of each run.
+	RevisionApprovalGate *toolapproval.ApprovalGate
+
 	// ApprovalRuleMatch reports whether a tools.approval_rules[] rule
 	// gates a tool (nil without rules). Surfaces that invoke descriptors
 	// outside the planner catalog refuse a rule-gated tool.
@@ -1081,6 +1084,21 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 			stack.closers = append(stack.closers, func(closeCtx context.Context) error { return gate.Close(closeCtx) })
 		}
 	}
+	revisionGate, err := toolcatalog.NewRevisionApprovalGate(toolcatalog.Deps{
+		Coordinator: coord,
+		Bus:         stack.Bus,
+		Redactor:    stack.Redactor,
+		Authorizer:  authorizer,
+	})
+	if err != nil {
+		return err
+	}
+	gateKey := "agent_config.approval"
+	for gates[gateKey] != nil {
+		gateKey += "."
+	}
+	gates[gateKey] = revisionGate
+	stack.closers = append(stack.closers, revisionGate.Close)
 
 	// Approvals a previous process left waiting cannot be continued here
 	// (the gated call's arguments and waiter lived in that process; the
@@ -1200,6 +1218,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	stack.Catalog = toolCat
 	stack.Coordinator = coord
 	stack.Gates = gates
+	stack.RevisionApprovalGate = revisionGate
 	stack.ApprovalRuleMatch = ruleGates.Matches
 	stack.OAuthProviders = providers
 	stack.MCPRegistry = mcpRegistry
