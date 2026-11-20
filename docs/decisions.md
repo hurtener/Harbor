@@ -17835,7 +17835,7 @@ human decision after steering has closed. `runtime.info` advertises
 driver are wired. `agent_config.set_revision` rejects non-empty approval
 rules when enforcement is unavailable.
 
-**Known limits**
+Known limits:
 
 - A compiled tool that itself calls another tool through the catalog directly
   is covered by boot rules and `tools.entries[]`, not by revision rules.
