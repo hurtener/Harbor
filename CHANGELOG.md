@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.59.0] - 2026-11-19
+
 ### Upgrade notes
 
 - **Strict clients first (D-519).** `sessions.inspect` now returns
