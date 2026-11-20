@@ -61,6 +61,8 @@ export interface PauseSnapshot {
 	state: PauseSnapshotState;
 	/** The (tenant, user, session [, run]) the pause was recorded under. */
 	identity: ConnectionIdentity & { run?: string };
+	/** The task of the run that parked (a run's task id is its run id). */
+	task_id?: string;
 	/** The wall-clock time the pause was recorded (RFC-3339 UTC). */
 	paused_at: string;
 	/** The wall-clock time Resume was called — omitted unless `state === 'resumed'`. */

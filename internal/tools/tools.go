@@ -211,6 +211,15 @@ type Tool struct {
 	// Exact app-only declarations set both AppVisible and AppOnly. Stamped by
 	// the MCP driver at discovery; every other driver leaves it zero-valued.
 	AppVisible bool
+	// ReadOnlyHint and DestructiveHint carry the provider's declared MCP
+	// tool annotations: readOnlyHint, and an explicit destructiveHint on a
+	// tool not declared read-only. Server-declared hints, not guarantees;
+	// classification-only — read by annotation-matched approval rules
+	// (`tools.approval_rules[].annotations`), never a dispatch or
+	// isolation input. Stamped by the MCP driver at discovery; every other
+	// driver leaves them false.
+	ReadOnlyHint    bool
+	DestructiveHint bool
 	// SourceTitle is the provider's short human-readable label (for an MCP
 	// server, its initialize `serverInfo.title`, else `serverInfo.name`).
 	// Discovery metadata only: it is indexed for search and echoed in

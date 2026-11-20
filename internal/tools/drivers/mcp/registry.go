@@ -403,6 +403,12 @@ type serverEntry struct {
 	// unhashable one, both of which have an unknown ("") currentGeneration;
 	// App admission keeps treating "" as unknown (fail closed).
 	discoveredEmpty bool
+	// currentHints fingerprints the declared annotation hints of the
+	// committed snapshot (hintsFingerprint). It is kept OUT of
+	// currentGeneration so render admissions stay valid across upgrades;
+	// a hint-only change still republishes the catalog so
+	// annotation-matched approval rules re-evaluate.
+	currentHints string
 
 	// stats is the mutable per-server runtime state. Guarded by the
 	// Registry's mu (RWMutex). Documented invariants: every field is
@@ -798,6 +804,7 @@ func registrationEntry(reg ServerRegistration, descs []tools.ToolDescriptor, now
 	// publication, so no stale callback can survive either direction.
 	entry.appVisible = partitionAppVisible(descs)
 	entry.currentGeneration = currentGenerationFor(descs)
+	entry.currentHints = hintsFingerprint(descs)
 	entry.discoveredEmpty = descs != nil && len(descs) == 0
 	if descs != nil {
 		entry.stats.lastDiscoveryAt = now
@@ -909,6 +916,19 @@ func currentGenerationFor(descs []tools.ToolDescriptor) string {
 		h.Write(row)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// hintsFingerprint lists the tools whose declared annotation hints are
+// set, in a stable order. Empty when no tool declares one.
+func hintsFingerprint(descs []tools.ToolDescriptor) string {
+	var rows []string
+	for _, d := range descs {
+		if d.Tool.ReadOnlyHint || d.Tool.DestructiveHint {
+			rows = append(rows, fmt.Sprintf("%s:%t:%t", d.Tool.Name, d.Tool.ReadOnlyHint, d.Tool.DestructiveHint))
+		}
+	}
+	sort.Strings(rows)
+	return strings.Join(rows, "\n")
 }
 
 // canonicalDescriptorRow encodes the stable semantic fields of ONE
@@ -2998,8 +3018,9 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 	// cannot be proven.
 	nextGeneration := currentGenerationFor(descs)
 	nextEmpty := len(descs) == 0
-	unchanged := (nextGeneration != "" && nextGeneration == e.currentGeneration) ||
-		(nextEmpty && e.discoveredEmpty)
+	nextHints := hintsFingerprint(descs)
+	unchanged := ((nextGeneration != "" && nextGeneration == e.currentGeneration) ||
+		(nextEmpty && e.discoveredEmpty)) && nextHints == e.currentHints
 	changed := !unchanged
 	if changed {
 		if e.catalog != nil {
@@ -3018,6 +3039,7 @@ func (r *Registry) RefreshDiscovery(ctx context.Context, name string) (*Discover
 		// registration descriptor did not change.
 		e.appVisible = partitionAppVisible(descs)
 		e.currentGeneration = nextGeneration
+		e.currentHints = nextHints
 		e.discoveredEmpty = nextEmpty
 		r.bumpLocked()
 	}
@@ -3346,6 +3368,7 @@ func (r *Registry) RecordDiscovery(name string, descs []tools.ToolDescriptor) er
 	// pre-discovery stage.
 	e.appVisible = partitionAppVisible(descs)
 	e.currentGeneration = currentGenerationFor(descs)
+	e.currentHints = hintsFingerprint(descs)
 	e.discoveredEmpty = len(descs) == 0
 	r.bumpLocked()
 	return nil

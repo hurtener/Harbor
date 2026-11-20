@@ -1010,8 +1010,11 @@ const (
 	// threshold (RFC §6.5) plus the negotiated `DisplayMode`
 	// snapshot. Powers the Tools-page Content-size card.
 	MethodToolsContentStats Method = "tools.content_stats"
-	// MethodToolsSetApprovalPolicy — ADMIN method: updates a
-	// tool's approval policy. Requires the verified `auth.ScopeAdmin`
+	// MethodToolsSetApprovalPolicy — ADMIN method: records a tool's
+	// approval posture label (auto / gated / denied) that the tool
+	// catalog displays. It does not change runtime gating: approval
+	// gates come only from `tools.entries[].approval` and
+	// `tools.approval_rules[]`. Requires the verified `auth.ScopeAdmin`
 	// claim (there is NO `tools.admin` scope — the closed
 	// two-scope set is the only admit surface). Emits an
 	// `audit.admin_scope_used` event through the shipped audit.Redactor.

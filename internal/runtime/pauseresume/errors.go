@@ -106,4 +106,10 @@ var (
 	// silently spins forever reaping nothing is the §13
 	// silent-degradation shape).
 	ErrSweeperMisconfigured = errors.New("pauseresume: sweeper misconfigured")
+
+	// ErrPauseExpired — a decision arrived at or after the pause's
+	// max-park deadline. Resume committed the typed timeout instead and
+	// returns this joined with ErrAlreadyResumed (the pause resolved,
+	// just not by this caller).
+	ErrPauseExpired = errors.New("pauseresume: pause expired before the decision")
 )

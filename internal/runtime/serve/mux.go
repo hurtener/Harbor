@@ -111,6 +111,10 @@ type MuxInput struct {
 	Coordinator    pauseresume.Coordinator
 	MCPRegistry    *mcpdrv.Registry
 	MCPToolContext *mcpconsole.ToolContextStore
+	// ApprovalRuleMatch reports whether a tools.approval_rules[] rule
+	// gates a tool; rendered-App callbacks refuse a rule-gated tool. Nil
+	// when no rules are configured.
+	ApprovalRuleMatch func(tools.Tool) bool
 	// SourceAuthorizer is the shared effective-source projection for
 	// user-owned MCP attachments. Nil lets BuildMux construct it from the
 	// registry and AgentConfig for compatibility with direct callers.
@@ -488,6 +492,7 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 			AgentID:          in.AgentConfigID,
 			SourceAuthorizer: sourceAuthorizer,
 			SessionOverlay:   in.SessionOverlay,
+			ApprovalGated:    in.ApprovalRuleMatch,
 			// PINNED, not threaded: the MCP Apps reads are
 			// browser-rendered Protocol replies, so they select
 			// inline-versus-reference at the Console inline-payload
@@ -755,6 +760,17 @@ func BuildMux(in MuxInput) (*BuiltMux, error) {
 				sessionEnricher = projectionEnricher
 			}
 			sessionProjectorOpts = append(sessionProjectorOpts, sessionsprotocol.WithEnricher(sessionEnricher))
+		}
+		// Recent interventions: the durable approval decision record the
+		// approval gates write (who decided what, when), over the same
+		// StateStore.
+		if in.State != nil {
+			decisionLog, dErr := toolapproval.NewStateDecisionLog(in.State)
+			if dErr != nil {
+				return nil, wrapErr("sessions/protocol interventions", dErr)
+			}
+			sessionProjectorOpts = append(sessionProjectorOpts,
+				sessionsprotocol.WithInterventions(toolapproval.InterventionReader{Log: decisionLog}))
 		}
 		sessionsProjector, pErr := sessionsprotocol.NewListerProjector(in.Sessions, sessionProjectorOpts...)
 		if pErr != nil {

@@ -17,6 +17,60 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Strict clients first (D-519).** `sessions.inspect` now returns
+  populated `recent_interventions` entries with new optional fields
+  (`tool`, `pause_token`, `decision_reason`, `decided_by`, `decided_at`,
+  `args_summary`), and `pause.list` snapshots add `task_id` and
+  `identity.run`. A client that decodes with `DisallowUnknownFields` must
+  be updated before it talks to a runtime on this version. The repo's own
+  Go client decodes them.
+- **Rolling restarts over a shared state store (D-519).** At boot the
+  runtime resolves leftover approval checkpoints as `interrupted`,
+  assuming no other live process shares the store (as task recovery
+  does). A still-running old process's pending approvals are resolved
+  that way during a rolling restart and their gated calls do not run.
+
+### Added
+
+- **Approval decisions name who decided (D-519).** `tool.approved`,
+  `tool.rejected` and `pause.resumed` carry `DecidedByTenant`,
+  `DecidedByUser`, `DecidedBySession`, `DecidedBySpeaker` and `DecidedAt`
+  for the verified principal of the control (an impersonating admin is
+  named as the admin; a session participant as themselves, with their
+  signed label). `tool.rejected` carries a typed `Decision` (`reject` /
+  `timeout` / `interrupted`); the `tool.*` events carry the gated run.
+- **Approval decision record (D-519).** Each committed resolution is
+  written once (best-effort, never blocking the decision; events stay
+  authoritative); `sessions.inspect` returns the newest five
+  as `recent_interventions` (who decided, when, outcome, redacted bounded
+  args summary). Approver notes are redacted and bounded.
+- **`tools.approval_rules[]` (D-519).** Gate tools discovered at runtime
+  (MCP servers, including owner-scoped and Protocol-installed
+  connections) by name or source glob and by MCP annotation
+  (`destructive`, `not_read_only`). Rule-gated tools are refused from
+  rendered-App callbacks. Unmatched tools behave as before.
+- **`pause.list` for hosts (D-519).** Snapshots carry the run and task;
+  approval pauses carry the redacted `args_summary`; a shared-session
+  participant can list pauses of the runs it wrote.
+
+### Fixed
+
+- **Approvals cannot resolve another run's pause (D-519).** A pending
+  approval is bound to its run; a control for run A no longer resolves
+  run B's approval in a shared session.
+- **Expired approvals (D-519).** A decision after
+  `pauseresume.max_park_duration` loses to the typed timeout, and the
+  gated call fails with `tool.rejected {Decision: "timeout"}` instead of
+  waiting until the run is cancelled.
+- **Approvals pending at a restart are resolved (D-519)** with the new
+  `interrupted` Decision instead of staying in `pause.list` while
+  approving them returns not-found.
+- **`tools.set_approval_policy` audits the posture it wrote (D-519)**
+  (log detail and the audit event's `Posture` field) instead of a
+  constant `auto`; its docs state the gate does not read the label.
+
 ## [1.58.0] - 2026-11-17
 
 ### Changed

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/sessions"
 )
@@ -57,8 +58,27 @@ import (
 // concurrent reuse); every method's per-call state lives in the call's
 // arguments and locals.
 type ListerProjector struct {
-	lister   sessions.SessionLister
-	enricher Enricher
+	lister        sessions.SessionLister
+	enricher      Enricher
+	interventions InterventionReader
+}
+
+// InterventionReader reads a session's recent resolved interventions
+// (the durable approval decision record), most recent first. It is
+// scoped to the inspected session's own identity triple.
+type InterventionReader interface {
+	RecentInterventions(ctx context.Context, id identity.Identity) ([]prototypes.InterventionSummary, error)
+}
+
+// WithInterventions wires the recent-interventions backend that fills
+// `sessions.inspect`'s RecentInterventions on the full projection. A
+// nil reader keeps the slice empty.
+func WithInterventions(r InterventionReader) ListerProjectorOption {
+	return func(p *ListerProjector) {
+		if r != nil {
+			p.interventions = r
+		}
+	}
 }
 
 // maxCounterEnrichmentWorkers bounds the counter reads for requests whose
@@ -345,17 +365,14 @@ func (p *ListerProjector) pageLifecycleOnly(
 }
 
 // InspectSession implements Projector.InspectSession. It lists the one
-// session id and projects the snapshot plus the (currently empty)
-// recent-interventions / recent-artifacts slices.
+// session id and projects the snapshot plus the recent-interventions /
+// recent-artifacts slices.
 //
-// V1 scope note: the recent-interventions / recent-artifacts cards are
-// fed by the Console's own event-stream subscription on the detail
-// route (the page consumes `pause.*` / `artifacts.*` events filtered to
-// the session — page spec §5). `sessions.inspect` ships the Row
-// projection + empty capped slices; the cards populate from the live
-// event stream client-side. A future StateStore-backed enrichment can
-// pre-fill the slices without a wire-shape break (the fields are
-// already on the response).
+// Recent interventions come from the durable approval decision record
+// when an InterventionReader is wired (WithInterventions): resolved tool
+// approvals with who decided and when, readable after the pause is gone
+// and across restarts. The recent-artifacts slice stays empty; that
+// card is fed by the Console's own event-stream subscription.
 func (p *ListerProjector) InspectSession(ctx context.Context, id identity.Identity, sessionID string, adminScoped bool) (prototypes.SessionsInspectResponse, error) {
 	regFilter := sessions.SessionListFilter{
 		SessionIDs:    []string{sessionID},
@@ -376,14 +393,49 @@ func (p *ListerProjector) InspectSession(ctx context.Context, id identity.Identi
 		if snap.ID == sessionID {
 			row := projectRow(snap)
 			p.enrich(ctx, snap, &row)
+			interventions, err := p.recentInterventions(ctx, snap)
+			if err != nil {
+				return prototypes.SessionsInspectResponse{}, err
+			}
 			return prototypes.SessionsInspectResponse{
 				Row:                 row,
-				RecentInterventions: []prototypes.InterventionSummary{},
+				RecentInterventions: interventions,
 				RecentArtifacts:     []prototypes.ArtifactRefSummary{},
 			}, nil
 		}
 	}
 	return prototypes.SessionsInspectResponse{}, fmt.Errorf("%w: session %q", ErrSessionNotFound, sessionID)
+}
+
+// sessionReach is the canonical signed-session-reach gate (stateless).
+var sessionReach = auth.NewSessionReachAuthorizer()
+
+// recentInterventions reads the inspected session's recent resolved
+// interventions under the session's OWN identity (never the caller's,
+// so an admin inspecting another tenant's session reads exactly that
+// session). Empty when no reader is wired.
+func (p *ListerProjector) recentInterventions(ctx context.Context, snap sessions.SessionSnapshot) ([]prototypes.InterventionSummary, error) {
+	if p.interventions == nil {
+		return []prototypes.InterventionSummary{}, nil
+	}
+	// A bearer whose signed session_reach does not include the inspected
+	// session reads no decisions from it (an absent claim keeps today's
+	// dynamic selection). The session row itself is unchanged.
+	if err := sessionReach.AuthorizeSessionReach(ctx, snap.Identity.SessionID); err != nil {
+		return []prototypes.InterventionSummary{}, nil
+	}
+	got, err := p.interventions.RecentInterventions(ctx, identity.Identity{
+		TenantID:  snap.Identity.TenantID,
+		UserID:    snap.Identity.UserID,
+		SessionID: snap.Identity.SessionID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sessions/protocol: inspect interventions: %w", err)
+	}
+	if got == nil {
+		got = []prototypes.InterventionSummary{}
+	}
+	return got, nil
 }
 
 // inspectLifecycleOnly serves a `projection=lifecycle` inspect request: the

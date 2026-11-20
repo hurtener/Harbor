@@ -17716,3 +17716,97 @@ sharing skills between the people of a session, would be a separate, opt-in
 mechanism and is not part of this decision.
 
 **Cross-references:** D-509, D-345.
+
+## D-519 — Approval decisions are attributed, recorded, and resolved across restarts and expiry
+
+**Date:** 2026-11-19
+
+**Decision.** Changes to the tool approval gate, all additive on the wire
+(no Protocol version change):
+
+1. **Who decided.** The Protocol edge builds the decider of an `approve` /
+   `reject` / `resume` control from the VERIFIED identity
+   (`identity.FromVerified`), never the working identity an admin
+   impersonation replaces, overlaid with the signed participant claims
+   (the participant's own user and `speaker`). It rides
+   `steering.ControlEvent.Decider` onto the resolving context
+   (`pauseresume.WithDecider`). `pause.resumed`, `tool.approved` and
+   `tool.rejected` add `DecidedByTenant` / `DecidedByUser` /
+   `DecidedBySession` / `DecidedBySpeaker` / `DecidedAt`;
+   `tool.rejected` adds a typed `Decision` (`reject` / `timeout` /
+   `interrupted`). The `tool.*` envelopes now carry the gated run ID.
+   Attribution is never an authorisation input.
+2. **Run binding.** Each pending approval is bound to the run that
+   requested it. A resolver whose context names another run (the steering
+   bridge resolves under the run that received the control) gets
+   not-found, so a control authorised for run A cannot resolve run B's
+   approval in a shared session.
+3. **Decision record (convenience projection).** The Coordinator's
+   resolution recorder (`pauseresume.WithResolutionRecorder`,
+   `approval.NewDecisionRecorder`) writes each committed gate resolution
+   once, as part of the resolution, with the Coordinator's decision time
+   (the same instant `pause.resumed` and `tool.*` carry). It never gates
+   the decision: a write failure is logged and the decision commits
+   normally; pruning is best-effort and separate. **The events are the
+   source of truth; the per-session record is a convenience projection**
+   that can miss an entry after a store failure. One record per pause
+   token (first writer wins), 20 per session, erased with the session. `sessions.inspect` projects the newest five
+   as `recent_interventions` (`InterventionSummary` gains optional
+   `tool`, `pause_token`, `decision_reason`, `decided_by`, `decided_at`,
+   `args_summary`), and only when the bearer's signed `session_reach`
+   admits the inspected session. The approver's note is redacted with the
+   argument redactor and bounded to 512 bytes before it reaches the pause,
+   the events or the record.
+4. **Restart while waiting.** A gate keeps the original arguments in
+   memory and its waiter dies with the process. Re-arming would require
+   persisting raw arguments, which §7 forbids. A boot pass resolves every
+   gate-shaped checkpoint (approval-required, a tool name, no trajectory,
+   no continuation) with the new typed Decision `interrupted` and emits
+   `tool.rejected {Decision: "interrupted"}`; it finishes before the local
+   pause sweeper starts. **It assumes no other live runtime process shares
+   the checkpoint store**, the same assumption as task recovery. Consequence
+   during a rolling restart over a shared store: the new process resolves
+   the still-running old process's pending approvals as `interrupted`
+   (those gated calls do not run). No ownership fencing is built.
+5. **Expiry.** The Coordinator enforces the park deadline under its
+   decision lock: a decision at or after `expiresAt` commits the typed
+   `timeout` instead and returns `ErrPauseExpired` (joined with
+   `ErrAlreadyResumed`). A waiting gate observes the timeout through the
+   Coordinator's in-process resolution signal (`pauseresume.Resolved`)
+   and fails the call with `ErrApprovalExpired` +
+   `tool.rejected {Decision: "timeout"}`. A losing resolver restores its
+   pending entry only for a retryable failure while the waiter still
+   waits, so expired arguments are never retained. The
+   `max_park_duration` default stays 0.
+6. **Dynamic tools.** `tools.approval_rules[]` gates tools no
+   `tools.entries[]` row can name: name and source globs and MCP
+   annotation selectors (`destructive`, `not_read_only`), with the same
+   approval block. One gate per rule; the catalog applies the rule wrapper
+   on every `Register` / `StageSource` (`tools.WithRegistrationGate`).
+   Globs also match the logical connection name of owner-scoped
+   connections (`<name>~u-…` / `~a-…`) and `<logical>_<tool>`. Rendered-App
+   callbacks cannot park for a decision, so a rule-gated tool is refused
+   on that path (`ErrAppToolApprovalRequired`) instead of running ungated.
+   Tools named in `entries[]` are skipped. The MCP driver stamps
+   `Tool.ReadOnlyHint` / `Tool.DestructiveHint`; these are tracked in a
+   separate per-server fingerprint and do not enter the catalog
+   generation, so existing render admissions stay valid on upgrade.
+   **Annotation selectors trust the server's self-reported hints**: a
+   server claiming `readOnlyHint` can exempt a write from a
+   `not_read_only` rule. Use name / source rules for servers you do not
+   control; no trust system is added.
+7. **`pause.list` for hosts.** Snapshots carry `identity.run` and
+   `task_id`; the gate pause payload adds the bounded redacted
+   `args_summary` (never raw arguments). A shared-session participant may
+   call `pause.list` and sees only pauses of runs it wrote in that session
+   (the pause records its writer); the owner's listing is unchanged.
+8. **Honest admin label.** `tools.set_approval_policy` audits the posture
+   it wrote (log detail and the `audit.admin_scope_used` payload's new
+   `Posture` field) and documents that the gate does not read it.
+
+**Why.** Hosts could not show who approved a tool call or read the outcome
+after the pause was gone; approvals pending at a restart looked
+actionable but could not be approved; MCP-discovered tools could not be
+gated; an expired approval left the gated call blocked.
+
+**Cross-references:** D-071, D-086, D-090, D-096, D-192, D-200, D-509.

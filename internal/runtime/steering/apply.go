@@ -207,6 +207,7 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 // map for backward-compatible payload observers; the typed Decision
 // is the load-bearing channel.
 func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pauseresume.Token) error {
+	ctx = pauseresume.WithDecider(ctx, ev.Decider)
 	if token == "" {
 		return fmt.Errorf("%w: %s control for run %q",
 			ErrNoOutstandingPause, ev.Type, ev.Identity.RunID)
@@ -356,7 +357,7 @@ func (a *applier) routeApprovalControl(ctx context.Context, ev ControlEvent) (bo
 	if !ok {
 		return false, nil
 	}
-	return a.routeThroughGate(ctx, ev, wireToken)
+	return a.routeThroughGate(pauseresume.WithDecider(ctx, ev.Decider), ev, wireToken)
 }
 
 // routeThroughGate is the steering→gate bridge. It iterates the
@@ -435,6 +436,12 @@ func (a *applier) routeThroughGate(ctx context.Context, ev ControlEvent, token p
 		if errors.Is(err, approval.ErrApprovalNotFound) {
 			// This gate did not own the token; try the next gate.
 			continue
+		}
+		if errors.Is(err, pauseresume.ErrAlreadyResumed) {
+			// The owning gate's pause already resolved — the max-park
+			// deadline won (typed timeout). The control is consumed; the
+			// gate ends the gated call as expired.
+			return true, nil
 		}
 		// Substantive error: scope mismatch, gate closed, coordinator
 		// error, etc. Surface loud — never silently degrade to the

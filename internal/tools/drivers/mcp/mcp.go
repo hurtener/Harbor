@@ -1222,6 +1222,10 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 		// shortcut.
 		AppVisible: appVisible,
 		AppOnly:    appOnly,
+		// The server's declared annotations, kept for annotation-matched
+		// approval rules. Hints only; never an authorization shortcut.
+		ReadOnlyHint:    t.Annotations != nil && t.Annotations.ReadOnlyHint,
+		DestructiveHint: destructiveHint(t.Annotations),
 	}
 
 	mcpName := t.Name
@@ -1342,6 +1346,14 @@ func marshalSchema(s any) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.RawMessage(bytes), nil
+}
+
+// destructiveHint reports an explicit destructiveHint=true on a tool not
+// declared read-only (the hint is meaningful only when readOnlyHint is
+// false). An absent hint is not treated as destructive here; the
+// "not_read_only" approval selector covers unannotated tools.
+func destructiveHint(a *mcpsdk.ToolAnnotations) bool {
+	return a != nil && !a.ReadOnlyHint && a.DestructiveHint != nil && *a.DestructiveHint
 }
 
 // deriveSideEffect inspects MCP ToolAnnotations to pick the closest

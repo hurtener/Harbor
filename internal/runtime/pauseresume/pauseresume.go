@@ -147,6 +147,11 @@ type Pause struct {
 	// Identity is the (tenant, user, session) triple the pause was
 	// recorded under. Resume validates the resuming scope against it.
 	Identity identity.Identity
+	// RunID is the run that parked (empty for a session-scoped pause).
+	RunID string
+	// Writer is the session participant that wrote the paused run, when
+	// one was seated on the requesting context; empty otherwise.
+	Writer string
 }
 
 // PauseRequest is the input to Coordinator.Request.
@@ -360,6 +365,9 @@ type ListFilter struct {
 	SessionIDs []string
 	// RunIDs narrows to a run set.
 	RunIDs []string
+	// WriterIDs narrows to pauses whose run a listed session
+	// participant wrote.
+	WriterIDs []string
 	// Reasons narrows to one or more canonical pause reasons.
 	Reasons []Reason
 	// Since is an optional lower bound on PausedAt (inclusive).

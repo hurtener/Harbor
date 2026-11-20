@@ -61,7 +61,7 @@ func parseSessionParticipant(claims map[string]any, id identity.Identity, sessio
 // participantRoutes is the closed set of exact-session requests a
 // participant bearer (one carrying session_owner) may make. Everything else
 // fails closed before any handler runs: session listing, titles, deletion,
-// configuration, memory, search, pause listing and cross-session reads all
+// configuration, memory, search and cross-session reads all
 // resolve against the owner's whole partition and are not part of a
 // participant grant.
 var participantRoutes = map[string]struct{}{
@@ -77,6 +77,8 @@ var participantRoutes = map[string]struct{}{
 	"GET /v1/events":                 {},
 	"POST /v1/sessions/turns/list":   {},
 	"POST /v1/sessions/turns/get":    {},
+	// Narrowed by the handler to pauses of runs the participant wrote.
+	"POST /v1/pause/list": {},
 	// The Apps the shared session rendered. Each handler re-checks
 	// that the App is on this session's ledger before reading or calling.
 	"POST /v1/control/mcp.servers.read_resource": {},

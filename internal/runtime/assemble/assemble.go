@@ -323,6 +323,12 @@ type Stack struct {
 	Coordinator    pauseresume.Coordinator
 	Gates          map[string]*toolapproval.ApprovalGate
 	OAuthProviders map[string]toolauth.OAuthProvider
+
+	// ApprovalRuleMatch reports whether a tools.approval_rules[] rule
+	// gates a tool (nil without rules). Surfaces that invoke descriptors
+	// outside the planner catalog refuse a rule-gated tool.
+	ApprovalRuleMatch func(tools.Tool) bool
+
 	// OAuthProviderSet is the runtime provider SET (boot-seeded from
 	// OAuthProviders + owner-tagged Protocol-installed providers) the MCP attach
 	// path resolves a connection's `oauth_provider` binding against. Nil under
@@ -851,6 +857,62 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	} else {
 		stack.closers = append(stack.closers, func(context.Context) error { return searchCache.Close() })
 	}
+	// The shared pauseresume.Coordinator is the unified pause/resume
+	// primitive — there is NEVER a second
+	// Coordinator instance (CLAUDE.md §13). WithBus(bus) is mandatory:
+	// it is what makes pause.requested / pause.resumed land on the
+	// canonical event stream (.5 §17.5 F1).
+	// WithCheckpointStore(stack.State) is mandatory too (the
+	// the §13 primitive-with-consumer closure): every pause is
+	// checkpointed through the runtime's own StateStore, so pauses
+	// survive a Runtime restart on any durable state driver. Pre-111c
+	// both assemblies constructed the Coordinator storeless with the
+	// store in scope — every pause was process-memory-only.
+	// WithMaxParkDuration threads the pause-lifecycle ceiling
+	// (`pauseresume.max_park_duration`; 0 = never expire, the default).
+	//
+	// The durable approval decision record (who decided what, readable
+	// through sessions.inspect after the pause checkpoint is gone) is the
+	// Coordinator's resolution recorder: a gate decision commits only
+	// after its record persisted.
+	coordOpts := []pauseresume.Option{
+		pauseresume.WithBus(stack.Bus),
+		pauseresume.WithCheckpointStore(stack.State),
+		pauseresume.WithMaxParkDuration(cfg.PauseResume.MaxParkDuration),
+	}
+	if stack.State != nil {
+		decisionLog, dlErr := toolapproval.NewStateDecisionLog(stack.State)
+		if dlErr != nil {
+			return fmt.Errorf("tools/approval: decision log: %w", dlErr)
+		}
+		coordOpts = append(coordOpts, pauseresume.WithResolutionRecorder(toolapproval.NewDecisionRecorder(decisionLog)))
+	}
+	coord := pauseresume.New(coordOpts...)
+
+	// The approval resolve-privilege seam shared by entries[] gates and
+	// approval_rules[] gates. The runtime-vocabulary default admits the
+	// steering bridge (the run's own identity) and control-scoped
+	// operators; the serving binary injects the Protocol-side adapter on
+	// top so wire-scoped resolvers keep today's acceptance.
+	authorizer := opts.ApprovalAuthorizer
+	if authorizer == nil {
+		authorizer = toolapproval.NewIdentityAuthorizer()
+	}
+
+	// tools.approval_rules[]: pattern / annotation-matched approval for
+	// tools registered after boot (MCP discovery, refresh, Protocol-
+	// installed connections). One gate per rule; the catalog applies the
+	// wrapper on every registration.
+	ruleGates, rgErr := toolcatalog.BuildApprovalRules(cfg.Tools.ApprovalRules, cfg.Tools.Entries, toolcatalog.Deps{
+		Coordinator: coord,
+		Bus:         stack.Bus,
+		Redactor:    stack.Redactor,
+		Authorizer:  authorizer,
+	})
+	if rgErr != nil {
+		return fmt.Errorf("tools.approval_rules: %w", rgErr)
+	}
+
 	var catOpts []tools.CatalogOption
 	if searchCache != nil {
 		catOpts = append(catOpts, tools.WithSearchCache(searchCache))
@@ -862,6 +924,9 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// tool.invoked/.completed/.failed events for every transport.
 	if stack.Bus != nil {
 		catOpts = append(catOpts, tools.WithCatalogBus(stack.Bus))
+	}
+	if ruleGates.Wrap != nil {
+		catOpts = append(catOpts, tools.WithRegistrationGate(ruleGates.Wrap))
 	}
 	toolCat := tools.NewCatalog(catOpts...)
 
@@ -932,53 +997,6 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		}
 	}
 
-	// The shared pauseresume.Coordinator is the unified pause/resume
-	// primitive — there is NEVER a second
-	// Coordinator instance (CLAUDE.md §13). WithBus(bus) is mandatory:
-	// it is what makes pause.requested / pause.resumed land on the
-	// canonical event stream (.5 §17.5 F1).
-	// WithCheckpointStore(stack.State) is mandatory too (the
-	// the §13 primitive-with-consumer closure): every pause is
-	// checkpointed through the runtime's own StateStore, so pauses
-	// survive a Runtime restart on any durable state driver. Pre-111c
-	// both assemblies constructed the Coordinator storeless with the
-	// store in scope — every pause was process-memory-only.
-	// WithMaxParkDuration threads the pause-lifecycle ceiling
-	// (`pauseresume.max_park_duration`; 0 = never expire, the default).
-	coord := pauseresume.New(
-		pauseresume.WithBus(stack.Bus),
-		pauseresume.WithCheckpointStore(stack.State),
-		pauseresume.WithMaxParkDuration(cfg.PauseResume.MaxParkDuration),
-	)
-
-	// the pause sweeper: DecisionTimeout's first
-	// producer. Config-gated on max_park_duration > 0 (the validated
-	// sweep_interval is consumed only here). The goroutine is
-	// cancellable + joined on Close (CLAUDE.md §5): the closer cancels
-	// the sweep ctx and blocks on the done channel.
-	if cfg.PauseResume.MaxParkDuration > 0 {
-		// context.Background is deliberate: the sweeper's lifetime is
-		// the stack's (bounded by the closer below), not the assembly
-		// ctx's — same documented bridge as the notifications
-		// subscriber.
-		sweepCtx, sweepCancel := context.WithCancel(context.Background())
-		sweepDone := make(chan struct{})
-		go func() {
-			defer close(sweepDone)
-			if serr := pauseresume.RunSweeper(sweepCtx, coord,
-				pauseresume.WithSweepInterval(cfg.PauseResume.SweepInterval),
-				pauseresume.WithSweeperLogger(logger),
-			); serr != nil && !errors.Is(serr, context.Canceled) {
-				logger.ErrorContext(sweepCtx, "pause sweeper exited", slog.Any("error", serr))
-			}
-		}()
-		stack.closers = append(stack.closers, func(context.Context) error {
-			sweepCancel()
-			<-sweepDone
-			return nil
-		})
-	}
-
 	// OAuth providers BEFORE the catalog Builder runs so the
 	// Builder's Deps.OAuthProviders lookup resolves. Caller-supplied
 	// entries (Options.OAuthProviders) win over same-named cfg
@@ -1038,16 +1056,13 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// middleware. An entry naming an unregistered tool fails the boot
 	// loud (CLAUDE.md §13 amendment). Empty entries = no-op.
 	gates := make(map[string]*toolapproval.ApprovalGate)
+	for key, g := range ruleGates.Gates {
+		gate := g
+		gates[key] = gate
+		stack.closers = append(stack.closers, func(closeCtx context.Context) error { return gate.Close(closeCtx) })
+	}
 	if len(cfg.Tools.Entries) > 0 {
-		// the injected resolve-privilege seam. The
-		// runtime-vocabulary default admits the steering bridge (the
-		// run\'s own identity) and control-scoped operators; the
-		// serving binary injects the Protocol-side adapter on top so
-		// wire-scoped resolvers keep today\'s acceptance.
-		authorizer := opts.ApprovalAuthorizer
-		if authorizer == nil {
-			authorizer = toolapproval.NewIdentityAuthorizer()
-		}
+		entryGates := make(map[string]*toolapproval.ApprovalGate)
 		b := toolcatalog.New(cfg.Tools.Entries, toolcatalog.Deps{
 			Catalog:        toolCat,
 			Coordinator:    coord,
@@ -1055,15 +1070,61 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 			Redactor:       stack.Redactor,
 			Authorizer:     authorizer,
 			OAuthProviders: providers,
-			AppliedGates:   gates,
+			AppliedGates:   entryGates,
 		})
 		if applyErr := b.Apply(ctx); applyErr != nil {
 			return fmt.Errorf("tools/catalog: %w", applyErr)
 		}
-		for _, g := range gates {
+		for name, g := range entryGates {
 			gate := g
+			gates[name] = gate
 			stack.closers = append(stack.closers, func(closeCtx context.Context) error { return gate.Close(closeCtx) })
 		}
+	}
+
+	// Approvals a previous process left waiting cannot be continued here
+	// (the gated call's arguments and waiter lived in that process; the
+	// run's task is failed by task recovery). Resolve them now with the
+	// typed `interrupted` outcome instead of leaving approvals that look
+	// actionable but can no longer be approved.
+	// It runs before the local sweeper starts, so the sweeper cannot claim
+	// an orphan first and leave it without its interrupted outcome. It
+	// assumes no other live runtime process shares the checkpoint store
+	// (the task-recovery assumption): during a rolling restart over a
+	// shared store, a still-running old process's pending approvals are
+	// resolved as interrupted.
+	if n, riErr := toolapproval.ResolveInterruptedApprovals(ctx, coord, stack.Bus, logger); riErr != nil {
+		logger.ErrorContext(ctx, "tools/approval: interrupted-approval pass failed", slog.Any("error", riErr))
+	} else if n > 0 {
+		logger.InfoContext(ctx, "tools/approval: resolved approvals interrupted by a runtime restart", slog.Int("count", n))
+	}
+
+	// the pause sweeper: DecisionTimeout's first
+	// producer. Config-gated on max_park_duration > 0 (the validated
+	// sweep_interval is consumed only here). The goroutine is
+	// cancellable + joined on Close (CLAUDE.md §5): the closer cancels
+	// the sweep ctx and blocks on the done channel.
+	if cfg.PauseResume.MaxParkDuration > 0 {
+		// context.Background is deliberate: the sweeper's lifetime is
+		// the stack's (bounded by the closer below), not the assembly
+		// ctx's — same documented bridge as the notifications
+		// subscriber.
+		sweepCtx, sweepCancel := context.WithCancel(context.Background())
+		sweepDone := make(chan struct{})
+		go func() {
+			defer close(sweepDone)
+			if serr := pauseresume.RunSweeper(sweepCtx, coord,
+				pauseresume.WithSweepInterval(cfg.PauseResume.SweepInterval),
+				pauseresume.WithSweeperLogger(logger),
+			); serr != nil && !errors.Is(serr, context.Canceled) {
+				logger.ErrorContext(sweepCtx, "pause sweeper exited", slog.Any("error", serr))
+			}
+		}()
+		stack.closers = append(stack.closers, func(context.Context) error {
+			sweepCancel()
+			<-sweepDone
+			return nil
+		})
 	}
 
 	// the MCP southbound consumer: per configured
@@ -1139,6 +1200,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	stack.Catalog = toolCat
 	stack.Coordinator = coord
 	stack.Gates = gates
+	stack.ApprovalRuleMatch = ruleGates.Matches
 	stack.OAuthProviders = providers
 	stack.MCPRegistry = mcpRegistry
 

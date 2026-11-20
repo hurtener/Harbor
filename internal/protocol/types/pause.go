@@ -79,6 +79,9 @@ type PauseSnapshot struct {
 	// recorded under. Flat strings — never a re-export of the runtime
 	// identity quadruple.
 	Identity IdentityScope `json:"identity"`
+	// TaskID is the task of the run that parked (a run's task id is its
+	// run id); empty for a session-scoped pause.
+	TaskID string `json:"task_id,omitempty"`
 	// PausedAt is the wall-clock time the pause was recorded.
 	PausedAt time.Time `json:"paused_at"`
 	// ResumedAt is the wall-clock time Resume was called; the zero

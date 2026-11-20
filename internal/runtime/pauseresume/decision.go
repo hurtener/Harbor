@@ -51,17 +51,25 @@ const (
 	// (the REJECT posture applied to deadlines), never a silent
 	// unpark-and-continue.
 	DecisionTimeout Decision = "timeout"
+
+	// DecisionInterrupted — the runtime restarted while the pause
+	// waited and nothing in the new process can continue it (its waiter
+	// lived only in the process that parked it — an approval-gated tool
+	// call holds its original arguments in memory). Produced once at
+	// boot by ResolveInterrupted. Terminal, like DecisionTimeout: the
+	// gated call never runs.
+	DecisionInterrupted Decision = "interrupted"
 	// DecisionCancelled is status-only and is set exclusively by CancelTranche.
 	DecisionCancelled Decision = "cancelled"
 )
 
-// IsValidDecision reports whether d is one of the four resumable canonical
+// IsValidDecision reports whether d is one of the five resumable canonical
 // Decision values. An empty or status-only Decision is rejected loud — a
 // `pause.resumed` event without a Decision is the bug shape this enum
 // closes.
 func IsValidDecision(d Decision) bool {
 	switch d {
-	case DecisionApprove, DecisionReject, DecisionResume, DecisionTimeout:
+	case DecisionApprove, DecisionReject, DecisionResume, DecisionTimeout, DecisionInterrupted:
 		return true
 	default:
 		return false

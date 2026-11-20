@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
@@ -87,6 +88,13 @@ type waitingEntry struct {
 	// req is the original request, held so the gate can publish
 	// tool.approved / tool.rejected with the right Tool name.
 	req *ApprovalRequest
+	// runID is the run that requested the approval. A resolver whose
+	// context names a different run cannot resolve it.
+	runID string
+	// retired is set (under the gate's mu) when the waiter stops
+	// waiting. A resolver never restores a retired entry, so the
+	// original arguments are not retained for a waiter that is gone.
+	retired bool
 	// resolve is the per-entry signal channel. ResolveApproval sends
 	// the decision; RunGuarded selects on it + ctx.Done(). Buffered
 	// so a resolver that wins the race against a cancelled ctx does
@@ -97,8 +105,10 @@ type waitingEntry struct {
 // resolution carries the decision + reason from ResolveApproval to the
 // RunGuarded goroutine. Internal — never exported.
 type resolution struct {
-	decision ApprovalDecision
-	reason   string
+	decision  ApprovalDecision
+	reason    string
+	decider   pauseresume.Decider
+	decidedAt time.Time
 }
 
 // NewApprovalGate constructs an ApprovalGate. Every dep is mandatory;
@@ -151,7 +161,7 @@ func (g *ApprovalGate) Close(_ context.Context) error {
 		// to resolve). We do not send a synthetic resolution; the
 		// RunGuarded waiter falls through to ErrGateClosed via its
 		// post-select check.
-		_ = entry
+		entry.retired = true
 		delete(g.pending, tok)
 	}
 	g.mu.Unlock()
@@ -224,34 +234,44 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 	// resolver's identity AND a small classification footprint
 	// observers can correlate against. The ORIGINAL args stay in the
 	// gate's pending map — never on the pause record's payload.
-	pause, err := g.coordinator.Request(ctx, pauseresume.PauseRequest{
-		Identity: req.Identity,
-		Reason:   pauseresume.ReasonApprovalRequired,
-		Payload: map[string]any{
-			"tool":   req.Tool.Name,
-			"reason": reason,
-		},
-	})
-	if err != nil {
-		// Coordinator sentinels propagate verbatim — caller reaches
-		// them via errors.Is.
-		return nil, fmt.Errorf("approval: coordinator.Request: %w", err)
-	}
-
-	// Register the per-pause resolution channel BEFORE the bus emit
-	// so a resolver that wins a race against the emit still sees the
-	// entry and lands the decision.
+	// The waiter is registered before the pause becomes visible: the gate
+	// lock is held across Coordinator.Request, so a resolver that learns
+	// the token (pause.requested, pause.list) blocks until the entry is in
+	// the pending map instead of missing it and deferring the decision
+	// behind the step that waits for it.
 	entry := &waitingEntry{
 		req:     req,
 		resolve: make(chan resolution, 1),
+	}
+	if q, ok := identity.QuadrupleFrom(ctx); ok {
+		entry.runID = q.RunID
 	}
 	g.mu.Lock()
 	if g.closed.Load() {
 		g.mu.Unlock()
 		return nil, ErrGateClosed
 	}
+	pause, err := g.coordinator.Request(ctx, pauseresume.PauseRequest{
+		Identity: req.Identity,
+		Reason:   pauseresume.ReasonApprovalRequired,
+		Payload: map[string]any{
+			"tool":   req.Tool.Name,
+			"reason": reason,
+			// The same redacted summary the event carries, size-bounded;
+			// never the original arguments.
+			"args_summary": boundSummary(summary),
+		},
+	})
+	if err != nil {
+		g.mu.Unlock()
+		// Coordinator sentinels propagate verbatim — caller reaches
+		// them via errors.Is.
+		return nil, fmt.Errorf("approval: coordinator.Request: %w", err)
+	}
+	entry.runID = pause.RunID
 	g.pending[pause.Token] = entry
 	g.mu.Unlock()
+	defer g.retire(pause.Token, entry)
 
 	// Publish tool.approval_requested. A bus publish failure is
 	// loud-and-surfaced — the caller does NOT proceed to invoke a
@@ -259,73 +279,151 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 	// loudly). Cleanup: drop the pending entry; the Coordinator's
 	// pause record stays parked, but the in-process gate state is
 	// rolled back.
-	if err := g.publishApprovalRequested(ctx, req, pause.Token, reason, summary); err != nil {
-		g.removePending(pause.Token)
+	if err := g.publishApprovalRequested(ctx, req, pause.RunID, pause.Token, reason, summary); err != nil {
+		g.retire(pause.Token, entry)
 		return nil, err
 	}
 
 	// Block on resolution. The waiter selects on:
 	//   - resolve: a ResolveApproval / steering-inbox dispatched
 	//     decision arrived.
+	//   - resolved: the Coordinator resolved this pause out of band; a
+	//     typed `timeout` Decision (the max-park sweeper) means the
+	//     approval expired.
 	//   - ctx.Done(): the caller's ctx was cancelled (e.g. the run
 	//     itself was cancelled).
-	select {
-	case res := <-entry.resolve:
-		// Remove the entry — the Coordinator's pause has been resumed
-		// (ResolveApproval did the Coordinator.Resume already; this
-		// is the post-resume bookkeeping).
-		g.removePending(pause.Token)
-		switch res.decision {
-		case DecisionApprove:
-			if err := g.publishApproved(ctx, req, pause.Token, res.reason); err != nil {
-				// Approval landed but the observability emit failed.
-				// The gate's correctness path (return original args
-				// to the caller) still proceeds — observability is
-				// not the correctness path. Surface the err wrapped
-				// so callers that care can branch.
-				return req.Args, fmt.Errorf("approval: approved but emit failed: %w", err)
+	//
+	// The Coordinator's resolution signal fires for every resolution of
+	// this pause; only a timeout ends the wait there — approve / reject
+	// arrive on entry.resolve.
+	resolved := pauseresume.Resolved(g.coordinator, pause.Token)
+	for {
+		select {
+		case res := <-entry.resolve:
+			// Remove the entry — the Coordinator's pause has been resumed
+			// (ResolveApproval did the Coordinator.Resume already; this
+			// is the post-resume bookkeeping).
+			g.retire(pause.Token, entry)
+			switch res.decision {
+			case DecisionApprove:
+				if err := g.publishApproved(ctx, req, pause.RunID, pause.Token, res); err != nil {
+					// Approval landed but the observability emit failed.
+					// The gate's correctness path (return original args
+					// to the caller) still proceeds — observability is
+					// not the correctness path. Surface the err wrapped
+					// so callers that care can branch.
+					return req.Args, fmt.Errorf("approval: approved but emit failed: %w", err)
+				}
+				return req.Args, nil
+			case DecisionReject:
+				if err := g.publishRejected(ctx, req, pause.RunID, pause.Token, pauseresume.DecisionReject, res); err != nil {
+					// Same posture as approved: the rejection has
+					// happened in the Coordinator; the emit is
+					// best-effort.
+					return nil, fmt.Errorf("approval: rejected but emit failed: %w; original rejection reason: %s",
+						err, res.reason)
+				}
+				return nil, &ErrToolRejected{
+					Tool:     req.Tool.Name,
+					Reason:   res.reason,
+					Identity: req.Identity,
+				}
+			default:
+				// resolve channel buffered to 1; we wrote a real
+				// decision; an empty / pending here would be a
+				// programmer error.
+				g.retire(pause.Token, entry)
+				return nil, fmt.Errorf("%w: %q", ErrInvalidDecision, res.decision)
 			}
-			return req.Args, nil
-		case DecisionReject:
-			if err := g.publishRejected(ctx, req, pause.Token, res.reason); err != nil {
-				// Same posture as approved: the rejection has
-				// happened in the Coordinator; the emit is
-				// best-effort.
-				return nil, fmt.Errorf("approval: rejected but emit failed: %w; original rejection reason: %s",
-					err, res.reason)
+		case <-resolved:
+			resolved = nil
+			if g.timedOut(ctx, pause.Token) {
+				return g.expire(ctx, req, pause)
 			}
-			return nil, &ErrToolRejected{
-				Tool:     req.Tool.Name,
-				Reason:   res.reason,
-				Identity: req.Identity,
+		case <-tools.InvocationInvalidated(ctx):
+			g.retire(pause.Token, entry)
+			// Withdraw this run's obsolete request, never approve it. Required
+			// persistence uses a bounded independent context; a failed withdrawal
+			// remains terminal and cannot become an instruction to retry the action.
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			err := g.coordinator.Resume(cleanupCtx, pause.Token, pauseresume.DecisionReject, map[string]any{"reason": "plan_superseded"})
+			cancel()
+			if err != nil && !errors.Is(err, pauseresume.ErrAlreadyResumed) {
+				return nil, fmt.Errorf("%w: %w: %w", tools.ErrInvocationSuperseded, tools.ErrInvocationCleanupFailed, err)
 			}
-		default:
-			// resolve channel buffered to 1; we wrote a real
-			// decision; an empty / pending here would be a
-			// programmer error.
-			g.removePending(pause.Token)
-			return nil, fmt.Errorf("%w: %q", ErrInvalidDecision, res.decision)
+			return nil, tools.ErrInvocationSuperseded
+		case <-ctx.Done():
+			// Caller's ctx died before resolution. Drop the in-process
+			// entry; the Coordinator's pause record stays parked. An
+			// out-of-band resolver can still APPROVE / REJECT it later
+			// (the Coordinator will accept the Resume), but the original
+			// RunGuarded caller has moved on.
+			g.retire(pause.Token, entry)
+			return nil, fmt.Errorf("%w: %w", ErrApprovalCancelled, ctx.Err())
 		}
-	case <-tools.InvocationInvalidated(ctx):
-		g.removePending(pause.Token)
-		// Withdraw this run's obsolete request, never approve it. Required
-		// persistence uses a bounded independent context; a failed withdrawal
-		// remains terminal and cannot become an instruction to retry the action.
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if err := g.coordinator.Resume(cleanupCtx, pause.Token, pauseresume.DecisionReject, map[string]any{"reason": "plan_superseded"}); err != nil && !errors.Is(err, pauseresume.ErrAlreadyResumed) {
-			return nil, fmt.Errorf("%w: %w: %w", tools.ErrInvocationSuperseded, tools.ErrInvocationCleanupFailed, err)
-		}
-		return nil, tools.ErrInvocationSuperseded
-	case <-ctx.Done():
-		// Caller's ctx died before resolution. Drop the in-process
-		// entry; the Coordinator's pause record stays parked. An
-		// out-of-band resolver can still APPROVE / REJECT it later
-		// (the Coordinator will accept the Resume), but the original
-		// RunGuarded caller has moved on.
-		g.removePending(pause.Token)
-		return nil, fmt.Errorf("%w: %w", ErrApprovalCancelled, ctx.Err())
 	}
+}
+
+// timedOut reports whether the Coordinator resolved token with the
+// typed timeout Decision. A Status error reads as "not a timeout".
+func (g *ApprovalGate) timedOut(ctx context.Context, token pauseresume.Token) bool {
+	st, err := g.coordinator.Status(ctx, token)
+	return err == nil && st.State == pauseresume.StatusResumed && st.Decision == pauseresume.DecisionTimeout
+}
+
+// expire finishes a wait whose pause the max-park deadline resolved
+// with the typed timeout Decision: the tool never runs, `tool.rejected`
+// carries Decision "timeout", and the caller gets ErrApprovalExpired
+// joined with the typed *ErrToolRejected. The Coordinator's resolution
+// recorder wrote the outcome. RunGuarded retires the entry on return.
+func (g *ApprovalGate) expire(ctx context.Context, req *ApprovalRequest, pause pauseresume.Pause) (json.RawMessage, error) {
+	res := resolution{reason: ExpiredReason, decidedAt: g.resolvedAt(ctx, pause.Token)}
+	rejected := &ErrToolRejected{Tool: req.Tool.Name, Reason: ExpiredReason, Identity: req.Identity}
+	if err := g.publishRejected(ctx, req, pause.RunID, pause.Token, pauseresume.DecisionTimeout, res); err != nil {
+		return nil, fmt.Errorf("%w: %w (emit failed: %v)", ErrApprovalExpired, rejected, err)
+	}
+	return nil, fmt.Errorf("%w: %w", ErrApprovalExpired, rejected)
+}
+
+// resolvedAt is the Coordinator's resolution time for token (the
+// instant pause.resumed and the decision record carry), falling back to
+// now when the Coordinator cannot report it.
+func (g *ApprovalGate) resolvedAt(ctx context.Context, token pauseresume.Token) time.Time {
+	if st, err := g.coordinator.Status(ctx, token); err == nil && !st.ResumedAt.IsZero() {
+		return st.ResumedAt.UTC()
+	}
+	return time.Now().UTC()
+}
+
+// maxDecisionNoteBytes bounds the approver's free-form note.
+const maxDecisionNoteBytes = 512
+
+// redactNote runs the approver's note through the audit redactor (the
+// one that redacts arguments) and bounds it, before it reaches the
+// pause record, the event and the decision record. A redactor error
+// fails closed.
+func (g *ApprovalGate) redactNote(ctx context.Context, note string) (string, error) {
+	if note == "" {
+		return "", nil
+	}
+	out, err := g.redactor.Redact(ctx, map[string]any{"note": note})
+	if err != nil {
+		return "", fmt.Errorf("approval: redact decision note: %w", err)
+	}
+	m, _ := out.(map[string]any)
+	redacted, _ := m["note"].(string)
+	return truncateUTF8(redacted, maxDecisionNoteBytes), nil
+}
+
+// truncateUTF8 cuts s to at most n bytes on a rune boundary.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // ResolveApproval is the in-process resolution helper. The run-loop
@@ -391,6 +489,21 @@ func (g *ApprovalGate) ResolveApproval(ctx context.Context, token pauseresume.To
 	if !ok {
 		return fmt.Errorf("%w: token %q", ErrApprovalNotFound, token)
 	}
+	// Run binding: a resolver acting for a run (the steering bridge
+	// resolves under the run that received the control) can only resolve
+	// that run's own approvals — a control authorized for run A never
+	// resolves run B's approval in the same shared session. Answered as
+	// not-found so a foreign token's existence is not revealed.
+	if q, hasRun := identity.QuadrupleFrom(ctx); hasRun && q.RunID != "" && entry.runID != "" && q.RunID != entry.runID {
+		return fmt.Errorf("%w: token %q", ErrApprovalNotFound, token)
+	}
+	// The approver's note is redacted and bounded once, before it reaches
+	// the pause record, the event and the decision record.
+	note, err := g.redactNote(ctx, reason)
+	if err != nil {
+		return err
+	}
+	reason = note
 
 	// Privilege check via the injected seam:
 	// originating identity / control scope by default, protocol scopes
@@ -443,13 +556,16 @@ func (g *ApprovalGate) ResolveApproval(ctx context.Context, token pauseresume.To
 		prDecision = pauseresume.DecisionReject
 	}
 	if err := g.coordinator.Resume(ctx, token, prDecision, payload); err != nil {
-		// Put the entry back so a retry can land — Coordinator.Resume
-		// errors are NOT terminal for the gate's pending state. A
-		// scope-mismatch caller can retry from the right ctx; an
-		// already-resumed Coordinator surfaces ErrAlreadyResumed.
+		// Put the entry back so a retry can land — but only for a
+		// retryable failure and only while its waiter still waits. A pause
+		// that already resolved (a timeout won, or the deadline passed)
+		// is terminal: restoring it would retain the original arguments
+		// for a waiter that is gone.
+		// (ErrPauseNotFound is a scope mismatch here — retryable from the
+		// right identity.)
+		terminal := errors.Is(err, pauseresume.ErrAlreadyResumed)
 		g.mu.Lock()
-		// Only restore if no concurrent resolution intervened.
-		if _, raced := g.pending[token]; !raced {
+		if _, raced := g.pending[token]; !raced && !terminal && !entry.retired {
 			g.pending[token] = entry
 		}
 		g.mu.Unlock()
@@ -457,16 +573,27 @@ func (g *ApprovalGate) ResolveApproval(ctx context.Context, token pauseresume.To
 	}
 
 	// Deliver the decision to the RunGuarded waiter. The resolve
-	// channel is buffered to 1; the send never blocks.
-	entry.resolve <- resolution{decision: decision, reason: reason}
+	// channel is buffered to 1; the send never blocks. The deciding
+	// principal is the one the steering edge seated on ctx from the
+	// verified control caller (zero for an in-process resolver).
+	entry.resolve <- resolution{
+		decision:  decision,
+		reason:    reason,
+		decider:   pauseresume.DeciderFrom(ctx),
+		decidedAt: g.resolvedAt(ctx, token),
+	}
 	return nil
 }
 
-// removePending drops the entry for token from the pending map. Safe
-// to call on a token that is no longer in the map (idempotent).
-func (g *ApprovalGate) removePending(token pauseresume.Token) {
+// retire marks the waiter's entry retired and drops it from the pending
+// map, under the same lock a resolver uses to restore an entry, so a
+// losing resolver can never re-insert it. Idempotent.
+func (g *ApprovalGate) retire(token pauseresume.Token, entry *waitingEntry) {
 	g.mu.Lock()
-	delete(g.pending, token)
+	entry.retired = true
+	if current, ok := g.pending[token]; ok && current == entry {
+		delete(g.pending, token)
+	}
 	g.mu.Unlock()
 }
 
@@ -520,10 +647,10 @@ func (g *ApprovalGate) buildRedactedSummary(ctx context.Context, req *ApprovalRe
 // publishApprovalRequested emits the typed tool.approval_requested
 // event onto the bus. A publish failure is loud — caller cleans up
 // the pending entry.
-func (g *ApprovalGate) publishApprovalRequested(ctx context.Context, req *ApprovalRequest, token pauseresume.Token, reason string, summary any) error {
+func (g *ApprovalGate) publishApprovalRequested(ctx context.Context, req *ApprovalRequest, runID string, token pauseresume.Token, reason string, summary any) error {
 	ev := events.Event{
 		Type:     EventTypeToolApprovalRequested,
-		Identity: identity.Quadruple{Identity: req.Identity},
+		Identity: identity.Quadruple{Identity: req.Identity, RunID: runID},
 		Payload: ToolApprovalRequestedPayload{
 			Tool:        req.Tool.Name,
 			PauseToken:  string(token),
@@ -539,14 +666,19 @@ func (g *ApprovalGate) publishApprovalRequested(ctx context.Context, req *Approv
 }
 
 // publishApproved emits the typed tool.approved event onto the bus.
-func (g *ApprovalGate) publishApproved(ctx context.Context, req *ApprovalRequest, token pauseresume.Token, approverReason string) error {
+func (g *ApprovalGate) publishApproved(ctx context.Context, req *ApprovalRequest, runID string, token pauseresume.Token, res resolution) error {
 	ev := events.Event{
 		Type:     EventTypeToolApproved,
-		Identity: identity.Quadruple{Identity: req.Identity},
+		Identity: identity.Quadruple{Identity: req.Identity, RunID: runID},
 		Payload: ToolApprovedPayload{
-			Tool:           req.Tool.Name,
-			PauseToken:     string(token),
-			ApproverReason: approverReason,
+			Tool:             req.Tool.Name,
+			PauseToken:       string(token),
+			ApproverReason:   res.reason,
+			DecidedByTenant:  res.decider.TenantID,
+			DecidedByUser:    res.decider.UserID,
+			DecidedBySession: res.decider.SessionID,
+			DecidedBySpeaker: res.decider.Speaker,
+			DecidedAt:        res.decidedAt,
 		},
 	}
 	if err := g.bus.Publish(ctx, ev); err != nil {
@@ -556,18 +688,31 @@ func (g *ApprovalGate) publishApproved(ctx context.Context, req *ApprovalRequest
 }
 
 // publishRejected emits the typed tool.rejected event onto the bus.
-// THIS is the master-plan acceptance criterion event.
-func (g *ApprovalGate) publishRejected(ctx context.Context, req *ApprovalRequest, token pauseresume.Token, rejectReason string) error {
+// THIS is the master-plan acceptance criterion event. decision is the
+// typed outcome (reject / timeout).
+func (g *ApprovalGate) publishRejected(ctx context.Context, req *ApprovalRequest, runID string, token pauseresume.Token, decision pauseresume.Decision, res resolution) error {
+	return publishRejectedEvent(ctx, g.bus, identity.Quadruple{Identity: req.Identity, RunID: runID}, req.Tool.Name, token, decision, res)
+}
+
+// publishRejectedEvent is the one tool.rejected emitter, shared by the
+// live gate and the boot-time interrupted-approval pass.
+func publishRejectedEvent(ctx context.Context, bus events.EventBus, q identity.Quadruple, tool string, token pauseresume.Token, decision pauseresume.Decision, res resolution) error {
 	ev := events.Event{
 		Type:     EventTypeToolRejected,
-		Identity: identity.Quadruple{Identity: req.Identity},
+		Identity: q,
 		Payload: ToolRejectedPayload{
-			Tool:       req.Tool.Name,
-			PauseToken: string(token),
-			Reason:     rejectReason,
+			Tool:             tool,
+			PauseToken:       string(token),
+			Reason:           res.reason,
+			Decision:         string(decision),
+			DecidedByTenant:  res.decider.TenantID,
+			DecidedByUser:    res.decider.UserID,
+			DecidedBySession: res.decider.SessionID,
+			DecidedBySpeaker: res.decider.Speaker,
+			DecidedAt:        res.decidedAt,
 		},
 	}
-	if err := g.bus.Publish(ctx, ev); err != nil {
+	if err := bus.Publish(ctx, ev); err != nil {
 		return fmt.Errorf("approval: bus.Publish(tool.rejected): %w", err)
 	}
 	return nil

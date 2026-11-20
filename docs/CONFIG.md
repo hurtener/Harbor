@@ -1540,6 +1540,14 @@ and the waiting run terminates as a constraints-conflict (Phase 111c /
 D-200). Default: `0` — pauses never expire and the sweeper is not
 started. Validation: >= 0.
 
+An approval-gated tool call whose approval expires does not run: the
+gate observes the timeout, emits `tool.rejected` with `Decision:
+"timeout"` and `Reason: "approval expired before a decision"`, records
+outcome `expired` in the session's decision record (`sessions.inspect`
+recent interventions), and the planner sees the call fail (D-519).
+Hosts render `Decision: "timeout"` as "approval expired" and can show the
+deadline as `paused_at + max_park_duration`.
+
 ### pauseresume.sweep_interval
 
 Pause-sweeper scan period (consumed only when `max_park_duration` >
@@ -2091,6 +2099,58 @@ Go wiring code. See `ToolEntryConfig` godoc. Each entry carries:
 
 Validation: an entry must set at least one of `approval`, `oauth`, or
 `loading_mode` (an entry with no fields is a configuration typo).
+
+### tools.approval_rules
+
+Approval for tools that no `tools.entries[]` row can name ahead of time —
+tools an MCP server discovers at runtime, including refreshed and
+Protocol-installed connections (D-519). Default: empty (no rule; every
+tool behaves as before). Restart-required. Each rule carries selectors
+and the same `approval` block as `tools.entries[].approval`:
+
+- `tools` — glob patterns (`path.Match` syntax) over the catalog tool
+  name; an MCP tool's name is `<server>_<tool>`.
+- `sources` — glob patterns over the tool's source id (the MCP server /
+  connection name). In-process tools have no source and never match.
+  Owner-scoped copies of a connection (physical ids `<name>~u-…` /
+  `<name>~a-…`) also match by their logical `<name>`, for both `sources`
+  and `tools` (`<name>_<tool>`).
+- `annotations` — `destructive` (the server declared `destructiveHint:
+  true` and not `readOnlyHint`) and / or `not_read_only` (the server did
+  not declare `readOnlyHint: true`, including tools with no
+  annotations). A rule with `annotations` matches MCP tools only.
+  Annotations are the server's self-reported hints, not guarantees: a
+  server that claims `readOnlyHint: true` exempts that tool from a
+  `not_read_only` rule even if it writes. For servers you do not control,
+  gate by `tools` / `sources` instead.
+- `approval` — `policy` (`deny-all` / `approve-all` / `tagged`),
+  optional `reason`, and `require_tags` for `tagged` (matched against
+  the tool's own tags).
+
+Rules are evaluated in order and the first match gates the tool. All
+selectors a rule sets must match; a selector list matches when any of its
+values matches. A tool named in any `tools.entries[]` row is governed by
+that entry, never by a rule. A rendered App cannot park for a decision,
+so a rule-gated tool called from an App (including App-only callbacks)
+is refused with a scope-mismatch error instead of running ungated.
+
+Validation: at least one of `tools` / `sources` / `annotations`; globs
+must be non-empty and well formed; annotation values must be
+`destructive` or `not_read_only`; the approval block follows the
+`tools.entries[].approval` rules.
+
+```yaml
+tools:
+  approval_rules:
+    - tools: ["crm_delete_*", "crm_update_*"]
+      approval:
+        policy: deny-all
+        reason: "CRM writes need a human"
+    - sources: ["files"]
+      annotations: ["not_read_only"]
+      approval:
+        policy: deny-all
+```
 
 ### tools.oauth_providers
 

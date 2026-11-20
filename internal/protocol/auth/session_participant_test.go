@@ -148,6 +148,8 @@ func TestMiddleware_SessionParticipant_MethodAllowlist(t *testing.T) {
 		{http.MethodGet, "/v1/events"},
 		{http.MethodPost, "/v1/sessions/turns/list"},
 		{http.MethodPost, "/v1/sessions/turns/get"},
+		// Narrowed by the handler to the participant's own runs.
+		{http.MethodPost, "/v1/pause/list"},
 	}
 	denied := []struct{ method, path string }{
 		{http.MethodPost, "/v1/sessions/list"},
@@ -160,7 +162,6 @@ func TestMiddleware_SessionParticipant_MethodAllowlist(t *testing.T) {
 		{http.MethodPost, "/v1/agent_config/user/get"},
 		{http.MethodPost, "/v1/agent_config/session/set_user_prompt"},
 		{http.MethodPost, "/v1/memory/list"},
-		{http.MethodPost, "/v1/pause/list"},
 		{http.MethodPost, "/v1/state/history"},
 		{http.MethodPost, "/v1/events/list"},
 		{http.MethodPost, "/v1/events/aggregate"},

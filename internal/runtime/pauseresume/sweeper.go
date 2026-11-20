@@ -376,11 +376,7 @@ func (c *coordinator) retryPendingDeletes(ctx context.Context, logger *slog.Logg
 		// before its pause.resumed emit, so observers (including a
 		// parked RunLoop waiting on the bus wake) never saw the
 		// terminal event. Emit it now that the record is fully cleaned.
-		c.emit(ctx, EventTypePauseResumed, &e, PauseResumedPayload{
-			Token:    string(e.token),
-			Reason:   string(e.reason),
-			Decision: e.decision,
-		})
+		c.emit(ctx, EventTypePauseResumed, &e, e.resumedPayload())
 		logger.InfoContext(ctx, "pauseresume: sweeper cleared resumed pause's orphaned checkpoint",
 			"token", string(e.token),
 			"tenant_id", e.identity.TenantID,

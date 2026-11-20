@@ -35,6 +35,9 @@ type ToolsAdminActionPayload struct {
 	Method string
 	// ToolID is the catalog key of the tool the action mutated.
 	ToolID string
+	// Posture is the approval posture label `tools.set_approval_policy`
+	// wrote (auto / gated / denied); empty for other methods.
+	Posture string
 }
 
 // emitAdminAudit publishes an `audit.admin_scope_used` event recording
@@ -66,6 +69,9 @@ func (s *Service) emitAdminAudit(ctx context.Context, actor identity.Identity, r
 		Actor:  actor,
 		Method: method,
 		ToolID: toolID,
+		// The posture written by tools.set_approval_policy; the other
+		// admin method passes no detail.
+		Posture: reason,
 	}
 	// Defence-in-depth: run the SafePayload through the redactor when
 	// one is wired (parity with the emit site). A redactor

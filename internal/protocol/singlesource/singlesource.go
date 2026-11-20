@@ -786,6 +786,7 @@ var CanonicalWireTypes = map[string]string{
 	"SessionRow":                       "types",
 	"SessionsListResponse":             "types",
 	"InterventionSummary":              "types",
+	"InterventionDecider":              "types",
 	"ArtifactRefSummary":               "types",
 	"SessionsInspectRequest":           "types",
 	"SessionsInspectResponse":          "types",

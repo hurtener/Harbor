@@ -212,6 +212,16 @@ func (h *PauseListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writePauseListError(w, perr.code, perr.status, perr.message)
 		return
 	}
+	// A session participant acting inside another user's session sees
+	// only pauses of runs it wrote, in that one session; the owner's
+	// listing is unchanged.
+	if p, ok := identity.ParticipantFrom(r.Context()); ok && p.IsGuest(id) {
+		listReq.Filter.TenantIDs = nil
+		listReq.Filter.UserIDs = []string{id.UserID}
+		listReq.Filter.SessionIDs = []string{id.SessionID}
+		listReq.Filter.WriterIDs = []string{p.UserID}
+		listReq.AdminScoped = false
+	}
 
 	resp, lerr := h.coord.List(r.Context(), listReq)
 	if lerr != nil {
@@ -266,7 +276,10 @@ func (h *PauseListHandler) projectResponse(ctx context.Context, resp pauseresume
 				Tenant:  p.Identity.TenantID,
 				User:    p.Identity.UserID,
 				Session: p.Identity.SessionID,
+				Run:     p.RunID,
 			},
+			// A run's task id is its run id.
+			TaskID:    p.RunID,
 			PausedAt:  p.PausedAt,
 			ResumedAt: st.ResumedAt,
 			Available: st.Available,

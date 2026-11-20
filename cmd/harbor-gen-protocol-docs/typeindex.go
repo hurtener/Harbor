@@ -257,6 +257,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"HistogramBucket":                                   reflect.TypeOf(types.HistogramBucket{}),
 	"IdentityScope":                                     reflect.TypeOf(types.IdentityScope{}),
 	"IdentityTierView":                                  reflect.TypeOf(types.IdentityTierView{}),
+	"InterventionDecider":                               reflect.TypeOf(types.InterventionDecider{}),
 	"InterventionSummary":                               reflect.TypeOf(types.InterventionSummary{}),
 	"LLMPostureResponse":                                reflect.TypeOf(types.LLMPostureResponse{}),
 	"LLMProviderOperationResponse":                      reflect.TypeOf(types.LLMProviderOperationResponse{}),
