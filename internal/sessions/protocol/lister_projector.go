@@ -421,8 +421,8 @@ func (p *ListerProjector) recentInterventions(ctx context.Context, snap sessions
 	// A bearer whose signed session_reach does not include the inspected
 	// session reads no decisions from it (an absent claim keeps today's
 	// dynamic selection). The session row itself is unchanged.
-	if err := sessionReach.AuthorizeSessionReach(ctx, snap.Identity.SessionID); err != nil { //nolint:nilerr // out of reach reads as no decisions, not as a failure
-		return []prototypes.InterventionSummary{}, nil
+	if err := sessionReach.AuthorizeSessionReach(ctx, snap.Identity.SessionID); err != nil {
+		return []prototypes.InterventionSummary{}, nil //nolint:nilerr // out of reach reads as no decisions, not as a failure
 	}
 	got, err := p.interventions.RecentInterventions(ctx, identity.Identity{
 		TenantID:  snap.Identity.TenantID,
