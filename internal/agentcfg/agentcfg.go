@@ -829,6 +829,8 @@ type ConfigPayload struct {
 	// RunLimits, when non-nil, replaces the runtime-default per-run limits
 	// (maximum active duration and cumulative tokens) for subsequent runs.
 	RunLimits *RunLimitsSection `json:"run_limits,omitempty"`
+	// Approval pins ordered approval rules for subsequent runs of this agent.
+	Approval *ApprovalSection `json:"approval,omitempty"`
 	// ExtraSystemBlocks, when non-nil, pins the agent's ORDERED list of
 	// named additive prompt blocks. Absent (nil) contributes nothing and
 	// leaves the system prompt byte-identical.
@@ -1007,6 +1009,10 @@ type Registry interface {
 	// byte-identical canonical content (relative to the current active
 	// revision) is a no-op that returns the existing active revision.
 	//
+	// For an agent-scoped write, a nil Approval section carries forward
+	// the approval rules from the active revision used at publication.
+	// A non-nil Approval section with no rules clears them.
+	//
 	// opts carries the optional precondition. Its zero value is the
 	// unconditional write. When opts.ExpectedContentHash is set, the
 	// precondition is evaluated BEFORE the idempotent-re-set
@@ -1154,6 +1160,7 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		out.Memory = &memory
 	}
 	out.RunLimits = p.RunLimits.Clone()
+	out.Approval = p.Approval.Clone()
 	if p.Naming != nil {
 		// A non-nil naming section is ALWAYS preserved (model trimmed to the
 		// canonical "inherit the run's effective model" empty form) — section

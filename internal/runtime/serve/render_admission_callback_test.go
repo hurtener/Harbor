@@ -500,6 +500,57 @@ func TestRenderAdmissionCallback_DisabledCallbackTool_ZeroExecutions(t *testing.
 	}
 }
 
+func TestRenderAdmissionCallback_ApprovalRuleUsesCurrentRevision(t *testing.T) {
+	f := buildAdmissionCallbackFixture(t)
+	out := f.mint(t)
+	if out.RenderAdmission == nil || out.RenderAdmission.Token == "" {
+		t.Fatalf("mint returned no admission: %+v", out.RenderAdmission)
+	}
+	token := out.RenderAdmission.Token
+	if _, perr := f.callback(t, token); perr != nil {
+		t.Fatalf("callback without the approval section: %v", perr)
+	}
+	q := identity.Quadruple{Identity: f.id}
+	setPolicy := func(policy agentcfg.ApprovalPolicy) {
+		t.Helper()
+		if _, err := f.agentCfg.SetRevision(f.reqCtx(t), q, f.agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+			Approval: &agentcfg.ApprovalSection{Rules: []agentcfg.ApprovalRule{
+				{Tools: []string{admissionCallbackTool}, Approval: policy},
+				{Tools: []string{admissionCallbackTool}, Approval: agentcfg.ApprovalPolicy{Policy: "deny-all"}},
+			}},
+		}, agentcfg.SetOptions{}); err != nil {
+			t.Fatalf("set approval rule: %v", err)
+		}
+	}
+	setPolicy(agentcfg.ApprovalPolicy{Policy: "deny-all"})
+	if _, perr := f.callback(t, token); perr == nil || perr.Code != protoerrors.CodeScopeMismatch ||
+		!strings.Contains(perr.Error(), mcpconsole.ErrAppToolApprovalRequired.Error()) {
+		t.Fatalf("callback after adding approval rule: %v, want approval refusal", perr)
+	}
+	if got := f.calls.Load(); got != 1 {
+		t.Fatalf("callback invocations after refusal = %d, want 1", got)
+	}
+	setPolicy(agentcfg.ApprovalPolicy{Policy: "tagged", RequireTags: []string{"write"}})
+	if _, perr := f.callback(t, token); perr != nil {
+		t.Fatalf("callback without the tag required by the first matching rule: %v", perr)
+	}
+	setPolicy(agentcfg.ApprovalPolicy{Policy: "approve-all"})
+	if _, perr := f.callback(t, token); perr != nil {
+		t.Fatalf("callback with first matching approve-all rule: %v", perr)
+	}
+	if _, err := f.agentCfg.SetRevision(f.reqCtx(t), q, f.agentID, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+		Approval: &agentcfg.ApprovalSection{},
+	}, agentcfg.SetOptions{}); err != nil {
+		t.Fatalf("remove approval rule: %v", err)
+	}
+	if _, perr := f.callback(t, token); perr != nil {
+		t.Fatalf("callback after removing approval rule: %v", perr)
+	}
+	if got := f.calls.Load(); got != 4 {
+		t.Fatalf("callback invocations after removal = %d, want 4", got)
+	}
+}
+
 // TestRenderAdmissionCallback_UserExposure_Isolated proves the admitted
 // callback path re-checks the acting user's durable ConfigScopeUser exposure
 // at invocation time. User A's disable and pause are both refused after the

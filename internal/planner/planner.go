@@ -108,6 +108,11 @@ type RunContext struct {
 	// the per-execution scope inside a session.
 	Quadruple identity.Quadruple
 
+	// ChildConfigAgentID selects the same configuration for spawned children
+	// when no sealed agent-reach receipt supplies the selection. It conveys
+	// no credential authority.
+	ChildConfigAgentID string
+
 	// ToolAllowlist is the runtime-owned per-run tool restriction. Nil keeps
 	// ordinary runs unrestricted; a present empty list also forbids planner
 	// spawns, which would otherwise create a fresh unrestricted child.

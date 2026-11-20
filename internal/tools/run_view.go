@@ -7,6 +7,43 @@ import (
 )
 
 type runToolViewCtxKey struct{}
+type runToolInvocationWrapperCtxKey struct{}
+type unattendedToolInvocationCtxKey struct{}
+
+// WithRunToolInvocationWrapper attaches the run's immutable descriptor
+// middleware. A nil wrapper masks any wrapper from an outer run.
+func WithRunToolInvocationWrapper(ctx context.Context, wrap func(ToolDescriptor) ToolDescriptor) context.Context {
+	return context.WithValue(ctx, runToolInvocationWrapperCtxKey{}, wrap)
+}
+
+// WithUnattendedToolInvocation marks a tool call without a live steering
+// inbox to receive an interactive decision.
+func WithUnattendedToolInvocation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, unattendedToolInvocationCtxKey{}, true)
+}
+
+// IsUnattendedToolInvocation reports whether a tool call lacks a live
+// steering inbox.
+func IsUnattendedToolInvocation(ctx context.Context) bool {
+	unattended, ok := ctx.Value(unattendedToolInvocationCtxKey{}).(bool)
+	return ok && unattended
+}
+
+// ResolveToolInvocation resolves an already admitted tool name and applies
+// the calling run's descriptor middleware. The view's visibility check
+// must happen before this lookup, including any alias translation.
+func ResolveToolInvocation(ctx context.Context, resolver interface {
+	Resolve(string) (ToolDescriptor, bool)
+}, name string) (ToolDescriptor, bool) {
+	desc, ok := resolver.Resolve(name)
+	if !ok {
+		return desc, false
+	}
+	if wrap, ok := ctx.Value(runToolInvocationWrapperCtxKey{}).(func(ToolDescriptor) ToolDescriptor); ok && wrap != nil {
+		desc = wrap(desc)
+	}
+	return desc, true
+}
 
 // runToolViewSeat is what WithRunToolView stores: the run's view (nil for
 // the explicit "no view" seat) plus a once-per-seat memo of its discovery

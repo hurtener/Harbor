@@ -205,13 +205,15 @@ type PostureDeps struct {
 	TopologyAvailable bool
 	// AgentConfigAvailable indicates this Runtime mounted the agent-config
 	// control plane. When true, `runtime.info.capabilities` advertises
-	// `agent_config` so a Protocol client gates the surface at attach
-	// rather than method-probing the `agent_config.*` verbs. Optional —
+	// `agent_config` so a Protocol client can discover support at attach. Optional —
 	// defaults false (a Runtime that does not wire the agent-config
 	// service). MUST be set from the same condition that decides whether
 	// the agent-config transport is mounted, so the advertisement cannot
 	// claim a surface the Runtime does not serve.
 	AgentConfigAvailable bool
+	// DynamicApprovalRulesAvailable means the served run driver can enforce
+	// the active agent revision's approval rules.
+	DynamicApprovalRulesAvailable bool
 	// MemoryBudgetAvailable means the served run driver has a compactor.
 	MemoryBudgetAvailable bool
 	// StateSnapshotsAvailable indicates the exact hydration join is mounted:
@@ -327,7 +329,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		displayName:            deps.DisplayName,
 		instanceID:             deps.InstanceID,
 		externalGrant:          deps.ExternalGrant,
-		wiredCaps:              withSkillReviewCapabilities(wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteAvailable, deps.ToolsConfigurationViewAvailable, deps.MemoryBudgetAvailable), deps.SkillPublicationsAvailable && deps.SkillReadsAvailable, deps.SkillPublicationsAvailable && deps.SkillPublicationCandidatesAvailable),
+		wiredCaps:              withSkillReviewCapabilities(wiredCapabilitiesFor(deps.TopologyAvailable, deps.AgentConfigAvailable, deps.StateSnapshotsAvailable, deps.SessionLifecycleAvailable, deps.ToolAnnotationsAvailable, deps.SkillPublicationsAvailable, deps.ProviderCatalogAvailable, deps.ProviderRouteAvailable, deps.ToolsConfigurationViewAvailable, deps.MemoryBudgetAvailable, deps.DynamicApprovalRulesAvailable), deps.SkillPublicationsAvailable && deps.SkillReadsAvailable, deps.SkillPublicationsAvailable && deps.SkillPublicationCandidatesAvailable),
 	}, nil
 }
 
@@ -354,7 +356,7 @@ func withSkillReviewCapabilities(caps []types.Capability, reads, candidates bool
 // Adding a new
 // conditional capability extends this function in tandem with the
 // matching `PostureDeps` field — pure projection, no global state.
-func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable, providerCatalogAvailable, providerRouteAvailable, toolsConfigurationViewAvailable, memoryBudgetAvailable bool) []types.Capability {
+func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshotsAvailable, sessionLifecycleAvailable, toolAnnotationsAvailable, skillPublicationsAvailable, providerCatalogAvailable, providerRouteAvailable, toolsConfigurationViewAvailable, memoryBudgetAvailable, dynamicApprovalRulesAvailable bool) []types.Capability {
 	caps := []types.Capability{
 		types.CapTaskControl,
 		types.CapEventsSubscribe,
@@ -376,6 +378,9 @@ func wiredCapabilitiesFor(topologyAvailable, agentConfigAvailable, stateSnapshot
 	}
 	if agentConfigAvailable {
 		caps = append(caps, types.CapAgentConfig, types.CapTenantScopedBrokerCredentials)
+		if dynamicApprovalRulesAvailable {
+			caps = append(caps, types.CapApprovalRulesDynamic)
+		}
 		if memoryBudgetAvailable {
 			caps = append(caps, types.CapAgentConfigMemory)
 		}

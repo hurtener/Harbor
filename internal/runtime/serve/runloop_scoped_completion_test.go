@@ -3,19 +3,24 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
+	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 )
 
 type completionSourceOwners map[tools.ToolSourceID]toolauth.Owner
@@ -23,6 +28,93 @@ type completionSourceOwners map[tools.ToolSourceID]toolauth.Owner
 func (m completionSourceOwners) OwnerOfSource(source tools.ToolSourceID) (toolauth.Owner, bool) {
 	owner, ok := m[source]
 	return owner, ok
+}
+
+// Supply successive active-pointer values without relying on scheduling.
+type advancingToolConfig struct {
+	agentcfg.Registry
+	revisions  []agentcfg.ConfigPayload
+	agentReads int
+}
+
+func (r *advancingToolConfig) Active(_ context.Context, _ identity.Quadruple, _ string, scope agentcfg.ConfigScope) (agentcfg.Revision, bool, error) {
+	if scope != agentcfg.ConfigScopeAgent {
+		return agentcfg.Revision{}, false, nil
+	}
+	index := min(r.agentReads, len(r.revisions)-1)
+	r.agentReads++
+	return agentcfg.Revision{Payload: r.revisions[index]}, true, nil
+}
+
+func TestRunLoopDriver_ToolConfigurationUsesOneAgentRevision(t *testing.T) {
+	const agent = "configured-agent"
+	const source = "capture~a-first"
+	const physicalTool = source + "_ingest"
+	q := identity.Quadruple{Identity: runLoopDriverTestID, RunID: "run-tool-config"}
+	ctx, err := identity.With(t.Context(), q.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = identity.WithRun(ctx, q.Identity, q.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := &advancingToolConfig{revisions: []agentcfg.ConfigPayload{
+		{
+			Connections:  &agentcfg.ConnectionsSection{Servers: []agentcfg.MCPConnectionDescriptor{{Name: "capture", URL: "https://example.test/mcp"}}},
+			ToolExposure: &agentcfg.ToolExposure{DisabledTools: []string{"capture_ingest"}},
+			Hooks:        &agentcfg.HooksSection{RunCompletion: &agentcfg.RunCompletionHook{Tool: "capture_ingest"}},
+			Approval: &agentcfg.ApprovalSection{Rules: []agentcfg.ApprovalRule{
+				{Tools: []string{physicalTool}, Approval: agentcfg.ApprovalPolicy{Policy: "deny-all"}},
+			}},
+		},
+		{Hooks: &agentcfg.HooksSection{}},
+	}}
+	cat := tools.NewCatalog()
+	if err := cat.Register(tools.ToolDescriptor{
+		Tool: tools.Tool{Name: physicalTool, Source: source, Transport: tools.TransportMCP},
+		Invoke: func(context.Context, json.RawMessage) (tools.ToolResult, error) {
+			t.Error("unattended approval-required tool was invoked")
+			return tools.ToolResult{}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	gate, err := toolcatalog.NewRevisionApprovalGate(toolcatalog.Deps{
+		Coordinator: pauseresume.New(), Bus: bus, Redactor: red, Authorizer: approval.NewIdentityAuthorizer(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &RunLoopDriver{agentConfig: reg, catalog: cat, revisionApprovalGate: gate,
+		connectionDetacher: completionSourceOwners{source: {Tenant: q.TenantID, Agent: agent}},
+	}
+	view, wrap, hook, err := d.projectRunTools(ctx, agent, q)
+	if err != nil || wrap == nil || hook == nil || hook.Catalog == nil || hook.Tool != "capture_ingest" {
+		t.Fatalf("first revision: wrapper = %t, hook = %+v, error = %v", wrap != nil, hook, err)
+	}
+	if reg.agentReads != 1 {
+		t.Fatalf("agent-scope config reads = %d, want 1", reg.agentReads)
+	}
+	if _, ok := view.Resolve(hook.Tool); ok {
+		t.Fatal("disabled hook tool was exposed to the planner")
+	}
+	resolved, ok := hook.Catalog.Resolve(hook.Tool)
+	if !ok || resolved.Name != physicalTool {
+		t.Fatalf("hook catalog failed to resolve the first revision's connection: %+v", resolved)
+	}
+	exec := dispatch.NewToolExecutor(cat, nil, nil)
+	hookCtx := steering.WithTrustedCompletionHook(tools.WithRunToolInvocationWrapper(ctx, wrap))
+	_, _, err = exec.ExecuteDecision(hookCtx, planner.RunContext{Quadruple: q, Catalog: hook.Catalog}, planner.CallTool{Tool: hook.Tool, Args: json.RawMessage(`{}`)})
+	if !errors.Is(err, approval.ErrInteractiveApprovalUnavailable) {
+		t.Fatalf("completion dispatch = %v, want first revision's approval rule to apply", err)
+	}
+	_, wrap, hook, err = d.projectRunTools(ctx, agent, q)
+	if err != nil || wrap != nil || hook != nil || reg.agentReads != 2 {
+		t.Fatalf("second revision: wrapper = %t, hook = %+v, reads = %d, error = %v", wrap != nil, hook, reg.agentReads, err)
+	}
 }
 
 func TestRunLoopDriver_CompletionCatalogConcurrentScopes(t *testing.T) {
@@ -68,12 +160,12 @@ func TestRunLoopDriver_CompletionCatalogConcurrentScopes(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			hook, err := d.projectRunCompletionHook(runCtx, agent, q)
+			_, _, hook, err := d.projectRunTools(runCtx, agent, q)
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			if hook.Catalog == nil {
+			if hook == nil || hook.Catalog == nil {
 				t.Error("completion catalog absent")
 				return
 			}

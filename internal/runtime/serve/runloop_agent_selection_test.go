@@ -152,11 +152,11 @@ func TestRunLoopDriver_AgentSelection_ProjectionsFollowTheEffectiveAgent(t *test
 	})
 
 	t.Run("RunCompletionHook", func(t *testing.T) {
-		boot, err := d.projectRunCompletionHook(ctx, selBootAgent, q)
+		_, _, boot, err := d.projectRunTools(ctx, selBootAgent, q)
 		if err != nil {
 			t.Fatalf("boot: %v", err)
 		}
-		named, err := d.projectRunCompletionHook(ctx, selNamedAgent, q)
+		_, _, named, err := d.projectRunTools(ctx, selNamedAgent, q)
 		if err != nil {
 			t.Fatalf("named: %v", err)
 		}
@@ -202,14 +202,17 @@ type selProbe struct {
 }
 
 type selObservation struct {
-	provenance string
-	model      string
-	basePrompt string
+	provenance         string
+	model              string
+	basePrompt         string
+	childConfigAgent   string
+	hasCredentialReach bool
 }
 
 func (p *selProbe) Next(ctx context.Context, rc planner.RunContext) (planner.Decision, error) {
-	obs := selObservation{}
+	obs := selObservation{childConfigAgent: rc.ChildConfigAgentID}
 	obs.provenance, _ = tools.InvokingAgentFrom(ctx)
+	_, obs.hasCredentialReach = tools.EffectiveAgentConfigFrom(ctx)
 	if rc.LLMOverrides != nil {
 		if rc.LLMOverrides.Model != nil {
 			obs.model = *rc.LLMOverrides.Model
@@ -295,6 +298,9 @@ func TestRunLoopDriver_AgentSelection_NamedAgentDrivesTheRun(t *testing.T) {
 	}
 	if obs.basePrompt != "NAMED-BASE-PROMPT" {
 		t.Errorf("run base prompt = %q, want NAMED-BASE-PROMPT", obs.basePrompt)
+	}
+	if obs.childConfigAgent != selNamedAgent || obs.hasCredentialReach {
+		t.Errorf("child config agent = %q, has credential reach = %t", obs.childConfigAgent, obs.hasCredentialReach)
 	}
 	if len(owners) == 0 {
 		t.Fatal("the reconcile leg never ran — the ordering guard cannot be evaluated")

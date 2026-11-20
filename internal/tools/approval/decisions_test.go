@@ -158,20 +158,90 @@ func TestGate_ExpiryProducesTypedOutcome(t *testing.T) {
 	}
 }
 
-// A restart leaves the approval's checkpoint without a waiter; the boot
-// pass resolves it with the typed `interrupted` outcome and event, and
-// records it.
+func TestGate_AbandonedWaiterInterruptsApproval(t *testing.T) {
+	for _, failPublish := range []bool{false, true} {
+		name := "cancelled"
+		if failPublish {
+			name = "publish_failed"
+		}
+		t.Run(name, func(t *testing.T) {
+			env := mkDecisionEnv(t)
+			sub, cancelSub := subscribeTo(t, env.bus, testID, EventTypeToolApprovalRequested, pauseresume.EventTypePauseResumed, EventTypeToolRejected)
+			defer cancelSub()
+			cause := context.Canceled
+			if failPublish {
+				cause = errors.New("failed to publish approval request")
+				env.gate.bus = failApprovalRequestBus{EventBus: env.bus, cause: cause}
+			}
+			ctx, cancel := context.WithCancel(mkPlainCtx(t, testID))
+			defer cancel()
+			res := runGuardedAsync(t, env.gate, ctx, `{"doc":"d-3"}`)
+			var requestedToken string
+			if !failPublish {
+				payload := waitEvent(t, sub).Payload
+				requested, ok := payload.(ToolApprovalRequestedPayload)
+				if !ok {
+					t.Fatalf("request payload = %T, want ToolApprovalRequestedPayload", payload)
+				}
+				requestedToken = requested.PauseToken
+				cancel()
+			}
+			r := awaitResult(t, res)
+			if r.args != nil || !errors.Is(r.err, cause) || (!failPublish && !errors.Is(r.err, ErrApprovalCancelled)) {
+				t.Fatalf("RunGuarded = %+v, want failure %v", r, cause)
+			}
+			payload := waitEvent(t, sub).Payload
+			resumed, ok := payload.(pauseresume.PauseResumedPayload)
+			if !ok {
+				t.Fatalf("resume payload = %T, want PauseResumedPayload", payload)
+			}
+			payload = waitEvent(t, sub).Payload
+			rejected, ok := payload.(ToolRejectedPayload)
+			if !ok {
+				t.Fatalf("rejection payload = %T, want ToolRejectedPayload", payload)
+			}
+			if resumed.Decision != pauseresume.DecisionInterrupted || (requestedToken != "" && resumed.Token != requestedToken) ||
+				rejected.PauseToken != resumed.Token || rejected.Decision != string(pauseresume.DecisionInterrupted) || !rejected.DecidedAt.Equal(resumed.DecidedAt) {
+				t.Fatalf("pause.resumed = %+v, tool.rejected = %+v", resumed, rejected)
+			}
+			recs, err := env.log.Recent(context.Background(), testID)
+			if err != nil || len(recs) != 1 || recs[0].Outcome != OutcomeInterrupted || recs[0].DecisionReason != rejected.Reason {
+				t.Fatalf("Recent = %+v, %v", recs, err)
+			}
+			fresh := pauseresume.New(pauseresume.WithCheckpointStore(env.store))
+			if _, err := fresh.Status(mkPlainCtx(t, testID), pauseresume.Token(resumed.Token)); !errors.Is(err, pauseresume.ErrPauseNotFound) {
+				t.Fatalf("durable checkpoint remains: %v", err)
+			}
+			if env.gate.pendingLen() != 0 {
+				t.Fatal("gate still has a pending request")
+			}
+		})
+	}
+}
+
+type failApprovalRequestBus struct {
+	events.EventBus
+	cause error
+}
+
+func (b failApprovalRequestBus) Publish(ctx context.Context, ev events.Event) error {
+	if ev.Type == EventTypeToolApprovalRequested {
+		return b.cause
+	}
+	return b.EventBus.Publish(ctx, ev)
+}
+
+// A process crash skips waiter cleanup. Boot recovers its parked checkpoint.
 func TestResolveInterruptedApprovals_AfterRestart(t *testing.T) {
 	env := mkDecisionEnv(t)
-	sub, cancel := subscribeTo(t, env.bus, testID, EventTypeToolApprovalRequested, EventTypeToolRejected)
+	sub, cancel := subscribeTo(t, env.bus, testID, EventTypeToolRejected)
 	defer cancel()
-	waitCtx, stopWaiter := context.WithCancel(mkPlainCtx(t, testID))
-	res := runGuardedAsync(t, env.gate, waitCtx, `{"doc":"d-3"}`)
-	req := waitEvent(t, sub).Payload.(ToolApprovalRequestedPayload)
-	// The process "dies": its waiter goes away, the checkpoint stays.
-	stopWaiter()
-	if r := awaitResult(t, res); !errors.Is(r.err, ErrApprovalCancelled) {
-		t.Fatalf("waiter err = %v", r.err)
+	pause, err := env.coord.Request(mkPlainCtx(t, testID), pauseresume.PauseRequest{
+		Identity: testID, Reason: pauseresume.ReasonApprovalRequired,
+		Payload: map[string]any{"tool": "delete_doc", "reason": "needs review"},
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
 	}
 
 	restarted := pauseresume.New(pauseresume.WithCheckpointStore(env.store), pauseresume.WithResolutionRecorder(NewDecisionRecorder(env.log)))
@@ -180,7 +250,7 @@ func TestResolveInterruptedApprovals_AfterRestart(t *testing.T) {
 		t.Fatalf("ResolveInterruptedApprovals = %d, %v; want 1", n, err)
 	}
 	ev := waitEvent(t, sub).Payload.(ToolRejectedPayload)
-	if ev.PauseToken != req.PauseToken || ev.Tool != "delete_doc" || ev.Decision != string(pauseresume.DecisionInterrupted) || ev.Reason != InterruptedReason {
+	if ev.PauseToken != string(pause.Token) || ev.Tool != "delete_doc" || ev.Decision != string(pauseresume.DecisionInterrupted) || ev.Reason != InterruptedReason {
 		t.Fatalf("tool.rejected = %+v", ev)
 	}
 	recs, err := env.log.Recent(context.Background(), testID)
@@ -356,7 +426,10 @@ type blockingResumeCoord struct {
 	release chan struct{}
 }
 
-func (c *blockingResumeCoord) Resume(context.Context, pauseresume.Token, pauseresume.Decision, map[string]any) error {
+func (c *blockingResumeCoord) Resume(ctx context.Context, tok pauseresume.Token, d pauseresume.Decision, payload map[string]any) error {
+	if d == pauseresume.DecisionInterrupted {
+		return c.Coordinator.Resume(ctx, tok, d, payload)
+	}
 	close(c.entered)
 	<-c.release
 	return errors.New("transient store error")

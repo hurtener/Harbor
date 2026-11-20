@@ -1688,6 +1688,9 @@ func classifyAgentConfigError(method methods.Method, err error) (protoerrors.Cod
 	case errors.Is(err, agentcfgprotocol.ErrSkillsUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": skills control is not wired on this runtime"
+	case errors.Is(err, agentcfgprotocol.ErrDynamicApprovalRulesUnavailable):
+		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
+			m + ": dynamic approval rules are not wired on this runtime"
 	case errors.Is(err, agentcfgprotocol.ErrSessionOverlayUnavailable):
 		return protoerrors.CodeUnknownMethod, http.StatusNotImplemented,
 			m + ": session safe-subset control is not wired on this runtime"

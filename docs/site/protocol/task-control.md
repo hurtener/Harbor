@@ -77,7 +77,7 @@ proof. Child tasks a run spawns internally do not go through `start`.
 By default a run executes under the runtime's configured default agent. Pass
 `agent_id` to run under a different agent's configuration — its prompt
 layers, tool exposure, skills membership, LLM parameter overrides, completion
-hook and naming policy:
+hook, naming policy, and approval rules:
 
 ```bash
 curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
@@ -108,6 +108,15 @@ identity, never a client-supplied one.
 `tasks.get` / `tasks.list` reflect the value on `task.agent_id`. An **absent**
 `agent_id` on a task row means the caller named none and the run bound the
 runtime's configured default — "defaulted", not "unknown".
+
+With the `approval_rules_dynamic` capability, an agent-scoped
+`agent_config.set_revision` payload can
+include [`approval.rules`](./types.md#agentconfigpayload). Each new run applies
+the active revision's rules to matching tools. A revision rule can add
+approval, never remove it. Omitting `approval` preserves the active section.
+Send `"approval": {"rules": []}` to clear it. A runtime that cannot enforce
+revision approvals rejects non-empty rules. The resulting interventions
+follow the [pause model](./pause-model.md).
 
 ## The nine steering controls
 

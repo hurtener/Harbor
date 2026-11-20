@@ -17810,3 +17810,41 @@ actionable but could not be approved; MCP-discovered tools could not be
 gated; an expired approval left the gated call blocked.
 
 **Cross-references:** D-071, D-086, D-090, D-096, D-192, D-200, D-509.
+
+## D-520 — Agent-config revisions can add tool approval rules
+
+**Decision.** An agent-scoped revision can carry `approval.rules` using
+the rule shape and matching semantics of `tools.approval_rules`. A run
+uses one active agent revision at run start for approval rules, its
+completion hook, and the hook's catalog. Revision rules are first-match.
+A revision rule can add approval, never remove it. A call pauses at most
+once, with any required entry or boot-rule approval taking priority.
+Omitting `approval` from `agent_config.set_revision` preserves the active
+section. Send `{"rules": []}` as the section to clear the rules.
+
+One shared gate resolves calls from agent-config rules through the
+existing coordinator and steering bridge. Decision attribution,
+`pause.list`, redacted `args_summary`, events, expiry, and interruption
+all use the D-519 paths. Waiter cancellation or failed request publication
+interrupts a still-parked approval. A rendered App checks the current agent
+revision before invoking a callback. A callback that requires approval and
+cannot enter an existing entry gate is refused.
+Run-completion hooks fail before parking when a dynamic policy requires a
+human decision after steering has closed. `runtime.info` advertises
+`approval_rules_dynamic` when the agent-config surface and enforcing run
+driver are wired. `agent_config.set_revision` rejects non-empty approval
+rules when enforcement is unavailable.
+
+Known limits:
+
+- A compiled tool that itself calls another tool through the catalog directly
+  is covered by boot rules and `tools.entries[]`, not by revision rules.
+- A legacy App callback without a reach receipt is evaluated under the
+  default agent's rules.
+
+**Why.** Operators can change which tools require approval for one agent
+by activating a revision. This keeps the policy with the rest of the
+agent's configuration and applies it from the next run without a
+process restart.
+
+**Cross-references:** D-094, D-234, D-519.

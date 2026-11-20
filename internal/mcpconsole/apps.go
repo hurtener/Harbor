@@ -86,7 +86,7 @@ type AppsDeps struct {
 	// app's context is readable here. Mandatory.
 	ToolContext *ToolContextStore
 	// AgentConfig is the agent-config desired-state registry the app→host
-	// call gate reads CURRENT exposure from (the planner-snapshot /
+	// call gate reads current exposure and approval rules from (the planner-snapshot /
 	// app-call-current asymmetry): an App callback to a tool whose server is
 	// currently paused — or whose tool is currently disabled — is rejected,
 	// while an in-flight planner snapshot is undisturbed. Optional: a nil
@@ -110,11 +110,11 @@ type AppsDeps struct {
 	// unions the same overlay. Optional: nil leaves only the admin exposure
 	// gating. Keyed by the ctx (tenant, user, session) triple.
 	SessionOverlay sessionoverlay.Store
-	// ApprovalGated reports whether a configured approval rule gates a
-	// tool. A rendered App's callback has no run to park and no steering
-	// inbox to receive a decision, so a rule-gated tool is refused on
-	// this path (ErrAppToolApprovalRequired) instead of running ungated.
-	// Optional: nil when no approval rules are configured.
+	// ApprovalGated reports whether the selected boot rule requires approval
+	// for a tool. A callback that requires this approval is refused with
+	// ErrAppToolApprovalRequired because it has no steering inbox.
+	// Optional: nil when no boot approval rules are configured. Per-agent
+	// rules are checked against the same revision as exposure.
 	ApprovalGated func(tools.Tool) bool
 	// Threshold is the inline-payload bound in bytes. ≤ 0 falls back to
 	// the Console inline-payload bound. The wiring passes that pinned
@@ -488,7 +488,12 @@ func (a *AppsAccessor) CallToolAdmitted(ctx context.Context, serverID, resourceU
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %w: %q (server %q)",
 			protocol.ErrAccessorNotFound, tools.ErrToolNotFound, tool, serverID)
 	}
-	return a.invokeAppTool(ctx, tool, desc, args)
+	// The registry resolves the generation-bound descriptor directly. Boot
+	// entries wrap the ordinary catalog descriptor and may therefore require
+	// approval even when the generation-bound descriptor has no gate.
+	registered, registeredOK := a.cat.Resolve(desc.Tool.Name)
+	catalogRequiresApproval := registeredOK && registered.Tool.Source == desc.Tool.Source && registered.ConfiguredApprovalRequired
+	return a.invokeAppTool(ctx, tool, desc, args, catalogRequiresApproval)
 }
 
 func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resourceURI, tool string, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
@@ -534,7 +539,7 @@ func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resource
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: app call to tool %q names server %q, but the tool belongs to server %q",
 			protocol.ErrAccessorScopeDenied, tool, serverID, desc.Tool.Source)
 	}
-	return a.invokeAppTool(ctx, tool, desc, args)
+	return a.invokeAppTool(ctx, tool, desc, args, false)
 }
 
 // invokeAppTool runs the shared invocation tail every app-tool-call path
@@ -543,7 +548,7 @@ func (a *AppsAccessor) callTool(ctx context.Context, serverID, binding, resource
 // redaction / retry / audit), and the heavy-content-disciplined result
 // projection. It is the one place the proxy's wrapped invocation lives —
 // no path may bypass it.
-func (a *AppsAccessor) invokeAppTool(ctx context.Context, tool string, desc tools.ToolDescriptor, args json.RawMessage) (protocol.MCPAppToolResultRow, error) {
+func (a *AppsAccessor) invokeAppTool(ctx context.Context, tool string, desc tools.ToolDescriptor, args json.RawMessage, catalogRequiresApproval bool) (protocol.MCPAppToolResultRow, error) {
 	if desc.Invoke == nil {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("mcpconsole: tool %q registered without an Invoke function", tool)
 	}
@@ -555,12 +560,11 @@ func (a *AppsAccessor) invokeAppTool(ctx context.Context, tool string, desc tool
 	// pauses the tool's server (or disables the tool), the App's callbacks
 	// are rejected here, before any side effect, while any still-running
 	// planner snapshot is undisturbed.
-	if err := a.gateToolExposure(ctx, desc.Tool.Name, desc.Tool.Source); err != nil {
+	if err := a.gateToolConfig(ctx, desc.Tool, desc.ConfiguredApprovalRequired); err != nil {
 		return protocol.MCPAppToolResultRow{}, err
 	}
-	// An approval rule gates the planner's descriptor; the App dispatch
-	// view holds the unwrapped one. Refuse rather than run it ungated.
-	if a.approvalGated != nil && a.approvalGated(desc.Tool) {
+	if (a.approvalGated != nil && a.approvalGated(desc.Tool)) ||
+		(catalogRequiresApproval && !desc.ConfiguredApprovalRequired) {
 		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %q", ErrAppToolApprovalRequired, tool)
 	}
 	// Invoke the wrapped descriptor. For a gated tool this parks on the
@@ -606,16 +610,15 @@ func marshalAppResult(value any) ([]byte, error) {
 	return json.Marshal(value)
 }
 
-// gateToolExposure rejects an app→host tool call whose MCP source server is
-// in the agent's CURRENT active-revision paused set, or whose tool name is
-// in the current disabled set. It reads desired-state from the agent-config
-// registry — never the run snapshot, never the transport state (the live
-// transport stays warm while paused). The gate is INERT when no registry /
+// gateToolConfig rejects an app→host tool call whose MCP source is paused,
+// whose tool is disabled or requires an approval gate it cannot reach. The
+// agent-config registry supplies the current desired state, including pauses
+// for transports that remain live. The gate is inert when no registry or
 // agent id is wired (backward compatible). Identity is mandatory: a ctx
 // without a triple fails closed. A registry read error fails the call loud
 // (no silent fall-through, CLAUDE.md §13).
-func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, source tools.ToolSourceID) error {
-	if err := a.gateSourceAttachment(ctx, source); err != nil {
+func (a *AppsAccessor) gateToolConfig(ctx context.Context, tool tools.Tool, hasApprovalGate bool) error {
+	if err := a.gateSourceAttachment(ctx, tool.Source); err != nil {
 		return err
 	}
 	if a.agentCfg == nil {
@@ -640,21 +643,24 @@ func (a *AppsAccessor) gateToolExposure(ctx context.Context, toolName string, so
 	// narrow-only tiers. Apps callbacks are late invocations, so resolving
 	// against this CURRENT view keeps a personal pause/disable effective for
 	// both legacy and render-admission dispatch without a second composition.
-	exposed, err := projection.ToolExposedAtCurrentRevision(
+	exposed, approvalGated, err := projection.AppToolPolicyAtCurrentRevision(
 		ctx,
 		a.agentCfg,
 		a.sessionOverlay,
 		agentID,
 		identity.Quadruple{Identity: id},
 		a.cat,
-		tools.Tool{Name: toolName, Source: source},
+		tool,
 		a.reg,
 	)
 	if err != nil {
 		return fmt.Errorf("mcpconsole: app-call exposure gate: read effective config: %w", err)
 	}
 	if !exposed {
-		return fmt.Errorf("%w: tool %q is not exposed by the current agent configuration", ErrAppToolExposureDenied, toolName)
+		return fmt.Errorf("%w: tool %q is not exposed by the current agent configuration", ErrAppToolExposureDenied, tool.Name)
+	}
+	if approvalGated && !hasApprovalGate {
+		return fmt.Errorf("%w: %q", ErrAppToolApprovalRequired, tool.Name)
 	}
 	return nil
 }

@@ -1,11 +1,36 @@
 package config_test
 
 import (
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
 )
+
+func TestToolApprovalRuleConfig_BootJSONCompatibility(t *testing.T) {
+	rule := config.ToolApprovalRuleConfig{
+		Tools:    []string{"crm_*"},
+		Approval: config.ToolApprovalConfig{Policy: "tagged", RequireTags: []string{"write"}},
+	}
+	data, err := json.Marshal(rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"Tools":["crm_*"],"Sources":null,"Annotations":null,"Approval":{"Policy":"tagged","Reason":"","RequireTags":["write"]}}`
+	if string(data) != want {
+		t.Fatalf("boot JSON = %s, want %s", data, want)
+	}
+	var loaded config.ToolApprovalRuleConfig
+	if err := json.Unmarshal([]byte(want), &loaded); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(loaded.Tools, rule.Tools) || loaded.Approval.Policy != rule.Approval.Policy ||
+		!slices.Equal(loaded.Approval.RequireTags, rule.Approval.RequireTags) {
+		t.Fatalf("v1.59.0 boot JSON read as %+v", loaded)
+	}
+}
 
 // TestValidateTools_ApprovalRules pins the tools.approval_rules[]
 // validator: a selector is mandatory, globs and annotation selectors
@@ -42,5 +67,18 @@ func TestValidateTools_ApprovalRules(t *testing.T) {
 				t.Fatalf("err = %v, want substring %q", err, tc.wantSub)
 			}
 		})
+	}
+}
+
+func TestValidateTools_ApprovalRulesAllowsLargerBootPolicy(t *testing.T) {
+	cfg := mustLoadValid(t)
+	rule := config.ToolApprovalRuleConfig{
+		Tools:    slices.Repeat([]string{"tool-*"}, 33),
+		Sources:  slices.Repeat([]string{"source-*"}, 33),
+		Approval: config.ToolApprovalConfig{Policy: "deny-all"},
+	}
+	cfg.Tools.ApprovalRules = slices.Repeat([]config.ToolApprovalRuleConfig{rule}, 65)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("boot approval rules must retain the YAML validator's existing size behavior: %v", err)
 	}
 }

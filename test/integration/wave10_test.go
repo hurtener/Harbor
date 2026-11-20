@@ -427,6 +427,7 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 var canonicalCapabilityUniverse = []types.Capability{
 	"agent_config",
 	"agent_config_memory_v1",
+	"approval_rules_dynamic",
 	"caller_memory",
 	"events_subscribe",
 	"llm_provider_catalog",

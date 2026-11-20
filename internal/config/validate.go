@@ -2600,38 +2600,8 @@ func (c *Config) validateTools() error {
 		}
 	}
 
-	// approval rules: at least one selector, well-formed globs, known
-	// annotation selectors, and the same approval-block checks as an
-	// entry.
-	for i, r := range c.Tools.ApprovalRules {
-		prefix := fmt.Sprintf("tools.approval_rules[%d]", i)
-		if len(r.Tools) == 0 && len(r.Sources) == 0 && len(r.Annotations) == 0 {
-			return fieldError(prefix, "at least one of `tools`, `sources`, or `annotations` must be set (a rule with no selector would gate every tool; use tools.entries[] or name a pattern)")
-		}
-		for j, pat := range r.Tools {
-			if err := validateGlob(pat); err != nil {
-				return fieldError(fmt.Sprintf("%s.tools[%d]", prefix, j), err.Error())
-			}
-		}
-		for j, pat := range r.Sources {
-			if err := validateGlob(pat); err != nil {
-				return fieldError(fmt.Sprintf("%s.sources[%d]", prefix, j), err.Error())
-			}
-		}
-		for j, a := range r.Annotations {
-			if _, ok := allowedApprovalAnnotations[a]; !ok {
-				return fieldError(fmt.Sprintf("%s.annotations[%d]", prefix, j),
-					fmt.Sprintf("must be one of %s, got %q", sortedKeys(allowedApprovalAnnotations), a))
-			}
-		}
-		if _, ok := allowedApprovalPolicies[r.Approval.Policy]; !ok {
-			return fieldError(prefix+".approval.policy",
-				fmt.Sprintf("must be one of %s, got %q", sortedKeys(allowedApprovalPolicies), r.Approval.Policy))
-		}
-		if r.Approval.Policy == "tagged" && len(r.Approval.RequireTags) == 0 {
-			return fieldError(prefix+".approval.require_tags",
-				"must be set when policy=\"tagged\" (a tagged policy with no tags would never trigger)")
-		}
+	if err := ValidateToolApprovalRules("tools.approval_rules", c.Tools.ApprovalRules); err != nil {
+		return err
 	}
 
 	// catalog wiring entries. Empty list is valid;
@@ -2672,14 +2642,8 @@ func (c *Config) validateTools() error {
 				"at least one of `approval`, `oauth`, or `loading_mode` must be set (an entry with no fields is a configuration typo)")
 		}
 		if e.Approval != nil {
-			if _, ok := allowedApprovalPolicies[e.Approval.Policy]; !ok {
-				return fieldError(prefix+".approval.policy",
-					fmt.Sprintf("must be one of %s, got %q",
-						sortedKeys(allowedApprovalPolicies), e.Approval.Policy))
-			}
-			if e.Approval.Policy == "tagged" && len(e.Approval.RequireTags) == 0 {
-				return fieldError(prefix+".approval.require_tags",
-					"must be set when policy=\"tagged\" (a tagged policy with no tags would never trigger)")
+			if err := validateApprovalPolicy(prefix+".approval", *e.Approval); err != nil {
+				return err
 			}
 		}
 		if e.OAuth != nil {
@@ -2791,6 +2755,48 @@ func sortStringSlice(s []string) {
 			s[j-1], s[j] = s[j], s[j-1]
 		}
 	}
+}
+
+// ValidateToolApprovalRules checks selectors and policies shared by YAML and
+// agent configuration, using field as the diagnostic path of the rules list.
+func ValidateToolApprovalRules(field string, rules []ToolApprovalRuleConfig) error {
+	for i, rule := range rules {
+		prefix := fmt.Sprintf("%s[%d]", field, i)
+		if len(rule.Tools) == 0 && len(rule.Sources) == 0 && len(rule.Annotations) == 0 {
+			return fieldError(prefix, "at least one of `tools`, `sources`, or `annotations` must be set")
+		}
+		for j, pattern := range rule.Tools {
+			if err := validateGlob(pattern); err != nil {
+				return fieldError(fmt.Sprintf("%s.tools[%d]", prefix, j), err.Error())
+			}
+		}
+		for j, pattern := range rule.Sources {
+			if err := validateGlob(pattern); err != nil {
+				return fieldError(fmt.Sprintf("%s.sources[%d]", prefix, j), err.Error())
+			}
+		}
+		for j, annotation := range rule.Annotations {
+			if _, ok := allowedApprovalAnnotations[annotation]; !ok {
+				return fieldError(fmt.Sprintf("%s.annotations[%d]", prefix, j),
+					fmt.Sprintf("must be one of %s, got %q", sortedKeys(allowedApprovalAnnotations), annotation))
+			}
+		}
+		if err := validateApprovalPolicy(prefix+".approval", rule.Approval); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateApprovalPolicy(prefix string, policy ToolApprovalConfig) error {
+	if _, ok := allowedApprovalPolicies[policy.Policy]; !ok {
+		return fieldError(prefix+".policy", fmt.Sprintf("must be one of %s, got %q", sortedKeys(allowedApprovalPolicies), policy.Policy))
+	}
+	if policy.Policy == "tagged" && len(policy.RequireTags) == 0 {
+		return fieldError(prefix+".require_tags",
+			"must be set when policy=\"tagged\" (a tagged policy with no tags would never trigger)")
+	}
+	return nil
 }
 
 // allowedApprovalAnnotations is the closed set of annotation selectors

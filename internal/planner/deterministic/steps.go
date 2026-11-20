@@ -408,6 +408,7 @@ func (s *SpawnAndAwaitStep) Decide(ctx context.Context, rc planner.RunContext) (
 
 		spawnReq := tasks.SpawnRequest{
 			Identity:       rc.Quadruple,
+			AgentID:        rc.ChildConfigAgentID,
 			Kind:           s.kindOrBackground(),
 			Description:    spec.Description,
 			Query:          spec.Query,

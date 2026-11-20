@@ -15,7 +15,7 @@ import (
 func TestRunOne_MemoryBudgetProjectionError_FailsRun(t *testing.T) {
 	env := newFailDriverEnv(t)
 	startFailDriver(t, env, func(o *RunLoopDriverOptions) {
-		o.AgentConfig = &countingFailRegistry{failAt: 6}
+		o.AgentConfig = &countingFailRegistry{failAt: 7}
 		o.AgentConfigID = "fail-agent"
 	})
 	spawnAndAwaitFailure(t, env.reg, nil, planner.TaskErrorCodeRunLoopError, "memory-budget projection failed")

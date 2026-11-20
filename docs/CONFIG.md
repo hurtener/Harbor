@@ -2152,6 +2152,48 @@ tools:
         policy: deny-all
 ```
 
+#### Dynamic rules per agent
+
+To update approval requirements without restarting Harbor, send the agent's
+full payload to `agent_config.set_revision` and include
+`payload.approval.rules`. This method writes agent-scoped revisions. Check
+`runtime.info.capabilities` for `approval_rules_dynamic` before sending this
+section (D-520). The method rejects non-empty approval rules when the runtime
+cannot enforce them.
+
+```json
+{
+  "approval": {
+    "rules": [
+      {
+        "tools": ["files_remove_*"],
+        "sources": ["files"],
+        "annotations": ["destructive"],
+        "approval": {
+          "policy": "deny-all",
+          "reason": "File removal requires approval"
+        }
+      }
+    ]
+  }
+}
+```
+
+The section accepts up to 64 rules, with up to 32 patterns in each rule's
+`tools` and `sources` lists. It uses the same selector matching, order, and
+approval policies as the YAML rules above, including `require_tags` for
+`tagged`. A revision rule can add approval, never remove it. When an entry
+or boot rule already requires approval for a call, that gate handles the
+decision once.
+
+The next run uses the active revision at run start. Omitting `approval`
+preserves the active section. Send `"approval": {"rules": []}` to clear the
+agent's dynamic rules. App callbacks, including App-only callbacks, check the
+current revision at invocation. A callback that requires approval and cannot
+enter an existing entry gate is refused. A run-completion hook with no
+steering inbox fails the invocation if a revision rule adds an approval
+requirement.
+
 ### tools.oauth_providers
 
 Operator-configured OAuth providers (D-095). Each entry needs `name`,

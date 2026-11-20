@@ -17,6 +17,16 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.60.0] - 2026-11-20
+
+### Added
+
+- **Per-agent approval rules (D-520).** Set `approval.rules` on an agent-config
+  revision to require tool approval by name, source, or MCP annotation from
+  the next run. A revision rule can add approval, never remove it.
+  Rendered-App callbacks check the current revision before invoking a tool.
+  `runtime.info` advertises `approval_rules_dynamic`.
+
 ## [1.59.0] - 2026-11-19
 
 ### Upgrade notes

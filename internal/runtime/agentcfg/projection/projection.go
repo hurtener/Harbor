@@ -27,6 +27,7 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/auth"
+	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 )
 
 // ErrSkillBodyMissing is returned by [ActiveSkillViews] when an agent's
@@ -1045,42 +1046,45 @@ func RunCompletionHookFromConfig(rc config.RunCompletionHookConfig) *steering.Co
 // contract). Only the identity triple is used (the registry is
 // identity-scoped, never keyed by run).
 func ActiveRunCompletionHook(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple, yamlDefault *steering.CompletionHookSpec) (*steering.CompletionHookSpec, bool, error) {
-	if reg != nil && agentID != "" {
-		rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
-		if err != nil {
-			return nil, false, err
-		}
-		if ok && rev.Payload.Hooks != nil {
-			// A PRESENT hooks section is authoritative (mirrors the naming
-			// section): a run-completion hook with a non-empty tool pins
-			// it, and a present section with no/empty run-completion tool is the
-			// explicit per-agent NO-HOOK that WINS over the yaml default (returns
-			// (nil, false) rather than falling through — otherwise a per-agent
-			// opt-out of transcript egress would be silently discarded and the
-			// yaml hook would keep dispatching).
-			if rc, set := rev.Payload.RunCompletionHookView(); set && strings.TrimSpace(rc.Tool) != "" {
-				spec := &steering.CompletionHookSpec{
-					Tool:    rc.Tool,
-					Timeout: time.Duration(rc.TimeoutMS) * time.Millisecond,
-					AgentID: agentID,
-				}
-				return spec, true, nil
-			}
-			return nil, false, nil
-		}
+	payload, err := activeAgentPayload(ctx, reg, agentID, id)
+	if err != nil {
+		return nil, false, err
 	}
-	// Fall through to the static yaml default (when set).
+	spec := runCompletionHook(payload, agentID, yamlDefault)
+	return spec, spec != nil, nil
+}
+
+func runCompletionHook(payload agentcfg.ConfigPayload, agentID string, yamlDefault *steering.CompletionHookSpec) *steering.CompletionHookSpec {
+	if payload.Hooks != nil {
+		if rc, set := payload.RunCompletionHookView(); set && strings.TrimSpace(rc.Tool) != "" {
+			return &steering.CompletionHookSpec{
+				Tool:    rc.Tool,
+				Timeout: time.Duration(rc.TimeoutMS) * time.Millisecond,
+				AgentID: agentID,
+			}
+		}
+		// A present but empty hooks section explicitly disables the YAML hook.
+		return nil
+	}
 	if yamlDefault != nil && yamlDefault.Tool != "" {
-		// Copy so the caller cannot mutate the shared boot-time default, and
-		// stamp the acting agent id (the boot default knows no agent).
-		spec := &steering.CompletionHookSpec{
+		return &steering.CompletionHookSpec{
 			Tool:    yamlDefault.Tool,
 			Timeout: yamlDefault.Timeout,
 			AgentID: agentID,
 		}
-		return spec, true, nil
 	}
-	return nil, false, nil
+	return nil
+}
+
+func activeAgentPayload(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) (agentcfg.ConfigPayload, error) {
+	if reg == nil || agentID == "" {
+		return agentcfg.ConfigPayload{}, nil
+	}
+	rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil || !ok {
+		return agentcfg.ConfigPayload{}, err
+	}
+	return rev.Payload, nil
 }
 
 // NamingResolution is the resolved session auto-naming policy for a run: the
@@ -1177,7 +1181,32 @@ func ActiveNamingPolicy(ctx context.Context, reg agentcfg.Registry, agentID stri
 // contract). Only the identity triple is used (the registry is
 // identity-scoped, never keyed by run).
 func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
-	return activeCatalogView(ctx, reg, ov, agentID, id, cat, filter, false, ownerResolvers...)
+	view, _, err := activeCatalogView(ctx, reg, ov, agentID, id, cat, filter, false, ownerResolvers...)
+	return view, err
+}
+
+// ActiveRunToolViews projects the planner catalog, approval rules, and
+// completion hook and its catalog from one active agent revision.
+func ActiveRunToolViews(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, yamlHook *steering.CompletionHookSpec, ownerResolver SourceOwnerResolver) (tools.PlannerCatalogView, *agentcfg.ApprovalSection, *steering.CompletionHookSpec, error) {
+	payload, err := activeAgentPayload(ctx, reg, agentID, id)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	hook := runCompletionHook(payload, agentID, yamlHook)
+	if cat == nil {
+		return nil, nil, hook, nil
+	}
+	view, err := catalogView(ctx, reg, ov, payload, agentID, id, cat, filter, false, ownerResolver)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if hook != nil {
+		hook.Catalog, err = catalogView(ctx, reg, ov, payload, agentID, id, cat, filter, true, ownerResolver)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	return view, payload.Approval, hook, nil
 }
 
 // ActiveCompletionCatalogView supplies the trusted terminal hook with the
@@ -1186,44 +1215,43 @@ func ActivePlannerCatalogView(ctx context.Context, reg agentcfg.Registry, ov ses
 // with the planner projection; only planner exposure exclusions are omitted.
 // The returned view must never be used for planner decisions.
 func ActiveCompletionCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
-	return activeCatalogView(ctx, reg, ov, agentID, id, cat, filter, true, ownerResolvers...)
+	view, _, err := activeCatalogView(ctx, reg, ov, agentID, id, cat, filter, true, ownerResolvers...)
+	return view, err
 }
 
-func activeCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, configuration bool, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, error) {
+func activeCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, configuration bool, ownerResolvers ...SourceOwnerResolver) (tools.PlannerCatalogView, *agentcfg.ApprovalSection, error) {
+	payload, err := activeAgentPayload(ctx, reg, agentID, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ownerResolver SourceOwnerResolver
+	if len(ownerResolvers) > 0 {
+		ownerResolver = ownerResolvers[0]
+	}
+	view, err := catalogView(ctx, reg, ov, payload, agentID, id, cat, filter, configuration, ownerResolver)
+	return view, payload.Approval, err
+}
+
+func catalogView(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, payload agentcfg.ConfigPayload, agentID string, id identity.Quadruple, cat tools.ToolCatalog, filter tools.CatalogFilter, configuration bool, ownerResolver SourceOwnerResolver) (tools.PlannerCatalogView, error) {
 	if configuration {
 		filter.LoadingModes = []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}
 	}
 	// Admin exposure (the baseline). Loading-mode overrides are composed below
 	// with the durable user tier; the ephemeral session tier remains
 	// narrow-only and contributes disable sets only.
-	var adminPaused, adminDisabled []string
-	var adminToolExposure *agentcfg.ToolExposure
+	adminPaused, adminDisabled := payload.PausedServers(), payload.DisabledTools()
 	agentPairNames := make(map[string]struct{})
-	if reg != nil && agentID != "" {
-		rev, ok, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			for _, descriptor := range rev.Payload.ConnectionDescriptors() {
-				agentPairNames[descriptor.Name] = struct{}{}
-			}
-			pairs, err := rev.Payload.EffectiveSignedOAuthMCPPairs()
-			if err != nil {
-				return nil, err
-			}
-			for _, pair := range pairs {
-				// An agent-scope pair retains its registering signer user; that is
-				// lifecycle provenance, not a user-scoped ownership constraint.
-				if pair.OwnerAgentID == agentID {
-					agentPairNames[pair.Connection.Name] = struct{}{}
-				}
-			}
-		}
-		if ok && rev.Payload.ToolExposure != nil {
-			adminPaused = rev.Payload.PausedServers()
-			adminDisabled = rev.Payload.DisabledTools()
-			adminToolExposure = rev.Payload.ToolExposure
+	for _, descriptor := range payload.ConnectionDescriptors() {
+		agentPairNames[descriptor.Name] = struct{}{}
+	}
+	pairs, err := payload.EffectiveSignedOAuthMCPPairs()
+	if err != nil {
+		return nil, err
+	}
+	for _, pair := range pairs {
+		// An agent-scope pair retains its registering signer user as lifecycle provenance.
+		if pair.OwnerAgentID == agentID {
+			agentPairNames[pair.Connection.Name] = struct{}{}
 		}
 	}
 
@@ -1260,10 +1288,6 @@ func activeCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionove
 			}
 		}
 	}
-	var ownerResolver SourceOwnerResolver
-	if len(ownerResolvers) > 0 {
-		ownerResolver = ownerResolvers[0]
-	}
 	actingOwner := auth.Owner{Tenant: id.TenantID, Agent: agentID, User: id.UserID}
 	userLoadingExposure := physicalizeUserLoadingModes(cat, filter, ownerResolver, actingOwner, userToolExposure)
 
@@ -1274,7 +1298,7 @@ func activeCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionove
 	// prompt-time filter is applied. The effective map is resolved once per run
 	// from an immutable view snapshot; the session tier has no loading-mode
 	// write path and can only narrow through the disable union below.
-	adminLoadingExposure := physicalizeUserLoadingModes(cat, filter, ownerResolver, actingOwner, adminToolExposure)
+	adminLoadingExposure := physicalizeUserLoadingModes(cat, filter, ownerResolver, actingOwner, payload.ToolExposure)
 	base := composeLoadingView(cat, filter, adminLoadingExposure, userLoadingExposure)
 
 	// Session overlay (narrow-only): the session's disable set is UNIONED into
@@ -1314,52 +1338,55 @@ func activeCatalogView(ctx context.Context, reg agentcfg.Registry, ov sessionove
 	return tools.NewExclusionView(base, paused, disabled), nil
 }
 
-// ToolExposedAtCurrentRevision reports whether the named catalog tool is in
-// the same effective exposure view a newly-started run would receive for the
-// acting identity. It deliberately delegates to [ActivePlannerCatalogView]
-// instead of re-reading the admin, user, and session tiers here: the durable
-// ConfigScopeUser revision, logical-to-physical source translation, and
-// narrow-only disable union therefore have one implementation for planner
-// discovery and late app callbacks alike.
+// AppToolPolicyAtCurrentRevision reports the effective exposure and any
+// matching agent approval rule for an App callback. It uses the same
+// projection as a newly-started run, keeping both checks on one agent
+// revision even while the active pointer changes.
 //
 // The caller supplies a catalog containing the current dispatch descriptor
 // and should pass the same source-owner resolver used by runtime MCP
 // registrations. Both loading modes are included in the intermediate view so
 // loading preferences do not turn a callback authorization check into a
-// prompt-presence check. A nil registry or empty agent id preserves the
-// existing inert-gate behavior and reports exposed.
-func ToolExposedAtCurrentRevision(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, tool tools.Tool, ownerResolvers ...SourceOwnerResolver) (bool, error) {
+// prompt-presence check. A nil registry or empty agent id reports exposed
+// with no matching approval rule.
+func AppToolPolicyAtCurrentRevision(ctx context.Context, reg agentcfg.Registry, ov sessionoverlay.Store, agentID string, id identity.Quadruple, cat tools.ToolCatalog, tool tools.Tool, ownerResolvers ...SourceOwnerResolver) (exposed, approvalGated bool, err error) {
 	if reg == nil || agentID == "" {
-		return true, nil
+		return true, false, nil
 	}
 	// App-only callbacks are intentionally absent from the ordinary planner
 	// catalog. Include the already-resolved callback as a read-only target in
 	// the temporary projection so user logical-to-physical translation and the
 	// exclusion view still apply to that callback. It never escapes this
 	// predicate into planner discovery or catalog registration.
-	cat = exposureTargetCatalog{ToolCatalog: cat, target: tool}
+	cat = exposureTargetCatalog{ToolCatalog: cat, target: tools.Tool{Name: tool.Name, Source: tool.Source}}
 	filter := tools.CatalogFilter{
 		TenantID:     id.TenantID,
 		UserID:       id.UserID,
 		SessionID:    id.SessionID,
 		LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred},
 	}
-	view, err := ActivePlannerCatalogView(ctx, reg, ov, agentID, id, cat, filter, ownerResolvers...)
+	view, approvalSection, err := activeCatalogView(ctx, reg, ov, agentID, id, cat, filter, false, ownerResolvers...)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	resolved, ok := view.Resolve(tool.Name)
-	if !ok {
-		return false, nil
-	}
 	// The descriptor is resolved before this check by the Apps accessor. A
 	// source mismatch means the catalog changed between those operations, so
 	// do not let a stale descriptor cross the exposure boundary.
-	return resolved.Source == tool.Source, nil
+	if !ok || resolved.Source != tool.Source {
+		return false, false, nil
+	}
+	// Match the descriptor that will actually be invoked, including its MCP
+	// annotations. The temporary exposure catalog may hold a different row.
+	if approvalSection == nil {
+		return true, false, nil
+	}
+	required, err := toolcatalog.ApprovalRuleRequiresApproval(approvalSection.ToolApprovalRules(), tool)
+	return true, required, err
 }
 
 // exposureTargetCatalog is the narrow adapter used by
-// ToolExposedAtCurrentRevision for app-only callbacks, which do not belong to
+// AppToolPolicyAtCurrentRevision for app-only callbacks, which do not belong to
 // the planner catalog. It delegates every catalog operation except the two
 // planner-view reads, and adds only the target descriptor to those reads when
 // the ordinary catalog does not already contain that name. The target is
@@ -1823,5 +1850,5 @@ func (a CatalogViewResolver) ConfigurationCatalogView(ctx context.Context, id id
 		return nil, err
 	}
 	filter := tools.CatalogFilter{TenantID: id.TenantID, UserID: id.UserID, SessionID: id.SessionID, LoadingModes: []tools.LoadingMode{tools.LoadingAlways, tools.LoadingDeferred}}
-	return activeCatalogView(ctx, a.Registry, a.SessionOverlay, agentID, identity.Quadruple{Identity: id}, a.Catalog, filter, true, a.OwnerResolver)
+	return ActiveCompletionCatalogView(ctx, a.Registry, a.SessionOverlay, agentID, identity.Quadruple{Identity: id}, a.Catalog, filter, a.OwnerResolver)
 }

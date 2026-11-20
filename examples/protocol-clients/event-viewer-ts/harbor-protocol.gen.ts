@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:6a21c08de4605e601fd6f0a90d7d7ffc0e8a7940cbda599748ff2d4e4f8c2c0f";
+export const WIRE_SURFACE_DIGEST = "sha256:2e529095832a4f74f1c8c92be95021cd5823fbb38f0f23111155c648cf72486c";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -619,6 +619,23 @@ export interface AgentConfigAgentPacksUpsertResponse {
   protocol_version: string;
 }
 
+export interface AgentConfigApproval {
+  rules?: AgentConfigApprovalRule[];
+}
+
+export interface AgentConfigApprovalPolicy {
+  policy: string;
+  reason?: string;
+  require_tags?: string[];
+}
+
+export interface AgentConfigApprovalRule {
+  tools?: string[];
+  sources?: string[];
+  annotations?: string[];
+  approval: AgentConfigApprovalPolicy;
+}
+
 export interface AgentConfigCompositionPreviewItem {
   name: string;
   semantic_hash: string;
@@ -873,6 +890,7 @@ export interface AgentConfigPayload {
   naming?: AgentConfigNaming;
   memory?: AgentConfigMemory;
   run_limits?: AgentConfigRunLimits;
+  approval?: AgentConfigApproval;
   extra_system_blocks?: AgentConfigExtraSystemBlocks;
   agent_packs?: AgentConfigAgentPackItem[];
 }

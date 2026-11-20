@@ -52,12 +52,9 @@ const (
 	// unpark-and-continue.
 	DecisionTimeout Decision = "timeout"
 
-	// DecisionInterrupted — the runtime restarted while the pause
-	// waited and nothing in the new process can continue it (its waiter
-	// lived only in the process that parked it — an approval-gated tool
-	// call holds its original arguments in memory). Produced once at
-	// boot by ResolveInterrupted. Terminal, like DecisionTimeout: the
-	// gated call never runs.
+	// DecisionInterrupted closes a process-bound pause whose waiter can
+	// no longer continue. The approval gate uses it when a waiter exits;
+	// ResolveInterrupted uses it at boot for pauses left by a restart.
 	DecisionInterrupted Decision = "interrupted"
 	// DecisionCancelled is status-only and is set exclusively by CancelTranche.
 	DecisionCancelled Decision = "cancelled"

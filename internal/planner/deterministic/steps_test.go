@@ -323,7 +323,7 @@ func TestSpawnAndAwaitStep_InheritsRunToolFence(t *testing.T) {
 	}
 	q := validQuadruple()
 	allowed := []string{"read_document"}
-	if _, err := p.Next(context.Background(), planner.RunContext{Quadruple: q, ToolAllowlist: &allowed}); err != nil {
+	if _, err := p.Next(context.Background(), planner.RunContext{Quadruple: q, ToolAllowlist: &allowed, ChildConfigAgentID: "named-agent"}); err != nil {
 		t.Fatal(err)
 	}
 	allowed[0] = "write_document"
@@ -344,6 +344,9 @@ func TestSpawnAndAwaitStep_InheritsRunToolFence(t *testing.T) {
 	}
 	if child.ToolAllowlist == nil || len(*child.ToolAllowlist) != 1 || (*child.ToolAllowlist)[0] != "read_document" {
 		t.Fatalf("child widened or changed run tool fence: %+v", child.ToolAllowlist)
+	}
+	if child.AgentID != "named-agent" || child.AgentReachAdmission != nil {
+		t.Fatalf("child agent ID = %q, has credential admission = %t", child.AgentID, child.AgentReachAdmission != nil)
 	}
 }
 
