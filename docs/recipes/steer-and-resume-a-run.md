@@ -67,6 +67,20 @@ tools:
         reason: "deletion requires human review"
 ```
 
+Tools an MCP server discovers at runtime have no name to list ahead of
+time; gate them with `tools.approval_rules[]` (name / server globs and
+MCP annotation selectors, same `approval:` block — see
+`docs/CONFIG.md` › `tools.approval_rules`):
+
+```yaml
+tools:
+  approval_rules:
+    - sources: ["crm"]
+      annotations: ["destructive"]
+      approval:
+        policy: deny-all
+```
+
 When the planner dispatches `delete_doc`, the gate parks the call
 (`tool.approval_requested` carries the pause token) and the run blocks
 inside the dispatch. The approver answers through the steering inbox —

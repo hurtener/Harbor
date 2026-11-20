@@ -58,6 +58,7 @@ type AppsAccessor struct {
 	// projection, which unions it too). Optional — nil ⇒ only the admin
 	// exposure gates. Keyed by the ctx (tenant, user, session) triple.
 	sessionOverlay sessionoverlay.Store
+	approvalGated  func(tools.Tool) bool
 	threshold      int
 	clock          func() time.Time
 }
@@ -109,6 +110,12 @@ type AppsDeps struct {
 	// unions the same overlay. Optional: nil leaves only the admin exposure
 	// gating. Keyed by the ctx (tenant, user, session) triple.
 	SessionOverlay sessionoverlay.Store
+	// ApprovalGated reports whether a configured approval rule gates a
+	// tool. A rendered App's callback has no run to park and no steering
+	// inbox to receive a decision, so a rule-gated tool is refused on
+	// this path (ErrAppToolApprovalRequired) instead of running ungated.
+	// Optional: nil when no approval rules are configured.
+	ApprovalGated func(tools.Tool) bool
 	// Threshold is the inline-payload bound in bytes. ≤ 0 falls back to
 	// the Console inline-payload bound. The wiring passes that pinned
 	// bound rather than the operator's LLM-context heavy-output
@@ -135,6 +142,13 @@ var ErrAppsMisconfigured = errors.New("mcpconsole: AppsAccessor missing a mandat
 // godoc for why a refusal must not be mintable from foreign wording.
 var ErrAppToolExposureDenied = fmt.Errorf(
 	"%w: mcpconsole: tool unavailable — paused or disabled by agent configuration",
+	protocol.ErrAccessorScopeDenied)
+
+// ErrAppToolApprovalRequired — a rendered App called a tool an approval
+// rule gates. App callbacks cannot park for a human decision, so the call
+// is refused before any side effect. Wraps protocol.ErrAccessorScopeDenied.
+var ErrAppToolApprovalRequired = fmt.Errorf(
+	"%w: mcpconsole: tool requires approval and cannot be called from an App",
 	protocol.ErrAccessorScopeDenied)
 
 // NewAppsAccessor builds the MCP Apps host adapter. Registry, Catalog,
@@ -177,6 +191,7 @@ func NewAppsAccessor(deps AppsDeps) (*AppsAccessor, error) {
 		agentCfg:       deps.AgentConfig,
 		agentID:        deps.AgentID,
 		sessionOverlay: deps.SessionOverlay,
+		approvalGated:  deps.ApprovalGated,
 		threshold:      threshold,
 		clock:          clock,
 	}, nil
@@ -542,6 +557,11 @@ func (a *AppsAccessor) invokeAppTool(ctx context.Context, tool string, desc tool
 	// planner snapshot is undisturbed.
 	if err := a.gateToolExposure(ctx, desc.Tool.Name, desc.Tool.Source); err != nil {
 		return protocol.MCPAppToolResultRow{}, err
+	}
+	// An approval rule gates the planner's descriptor; the App dispatch
+	// view holds the unwrapped one. Refuse rather than run it ungated.
+	if a.approvalGated != nil && a.approvalGated(desc.Tool) {
+		return protocol.MCPAppToolResultRow{}, fmt.Errorf("%w: %q", ErrAppToolApprovalRequired, tool)
 	}
 	// Invoke the wrapped descriptor. For a gated tool this parks on the
 	// unified pause primitive inside the approval wrapper before any side

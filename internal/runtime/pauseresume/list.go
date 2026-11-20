@@ -81,7 +81,9 @@ func (c *coordinator) List(ctx context.Context, req ListRequest) (ListResponse, 
 	matched := make([]pauseEntry, 0, len(snapshot))
 	resumedSeen := false
 	for _, e := range snapshot {
-		if e.state == StatusResumed {
+		// Truncation is judged within the caller's authorized scope only,
+		// so it reveals nothing about pauses the caller cannot see.
+		if e.state == StatusResumed && matchEntry(e, req, []State{StatusResumed}) {
 			resumedSeen = true
 		}
 		if matchEntry(e, req, stateSet) {
@@ -120,13 +122,7 @@ func (c *coordinator) List(ctx context.Context, req ListRequest) (ListResponse, 
 	snapshots := make([]Pause, 0, len(pageRows))
 	statuses := make([]Status, 0, len(pageRows))
 	for _, e := range pageRows {
-		snapshots = append(snapshots, Pause{
-			Token:    e.token,
-			Reason:   e.reason,
-			Payload:  cloneStringMap(e.payload),
-			PausedAt: e.pausedAt,
-			Identity: e.identity,
-		})
+		snapshots = append(snapshots, e.pause())
 		statuses = append(statuses, Status{
 			State:     e.state,
 			Reason:    e.reason,
@@ -249,6 +245,9 @@ func matchEntry(e pauseEntry, req ListRequest, stateSet []State) bool {
 		return false
 	}
 	if len(req.Filter.RunIDs) > 0 && !containsString(req.Filter.RunIDs, e.runID) {
+		return false
+	}
+	if len(req.Filter.WriterIDs) > 0 && !containsString(req.Filter.WriterIDs, e.writer) {
 		return false
 	}
 

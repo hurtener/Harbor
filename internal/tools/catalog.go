@@ -54,6 +54,11 @@ type catalog struct {
 	// verbatim (a pure no-op catalog, used by tests that don't observe
 	// the lifecycle surface). Set via WithCatalogBus at construction.
 	bus events.EventBus
+
+	// gate is the optional registration-time invocation wrapper (see
+	// WithRegistrationGate), applied outside the lifecycle shell on every
+	// Register and StageSource. nil leaves descriptors unchanged.
+	gate func(ToolDescriptor) ToolDescriptor
 }
 
 // ToolSearchCache is the tool search index surface the catalog
@@ -80,6 +85,7 @@ type ToolSearchCache interface {
 type catalogConfig struct {
 	searchCache ToolSearchCache
 	bus         events.EventBus
+	gate        func(ToolDescriptor) ToolDescriptor
 }
 
 // CatalogOption configures a catalog at construction.
@@ -107,6 +113,19 @@ func WithCatalogBus(bus events.EventBus) CatalogOption {
 	}
 }
 
+// WithRegistrationGate installs a wrapper the catalog applies to every
+// descriptor it registers — through Register and through StageSource
+// (MCP discovery, refresh and Protocol-installed connections) — outside
+// the lifecycle shell. It is how pattern- and annotation-matched
+// approval rules reach tools registered after boot. The wrapper returns
+// its input unchanged for a tool it does not gate. Replace (the boot
+// `tools.entries[]` wiring) does not re-apply it.
+func WithRegistrationGate(gate func(ToolDescriptor) ToolDescriptor) CatalogOption {
+	return func(cfg *catalogConfig) {
+		cfg.gate = gate
+	}
+}
+
 // NewCatalog constructs the canonical in-memory ToolCatalog. Safe
 // for N concurrent goroutines after construction. The
 // catalog is empty; callers register descriptors via Register.
@@ -125,6 +144,7 @@ func NewCatalog(opts ...CatalogOption) ToolCatalog {
 		epoch:             newCatalogEpoch(),
 		searchCache:       cfg.searchCache,
 		bus:               cfg.bus,
+		gate:              cfg.gate,
 	}
 }
 
@@ -149,7 +169,7 @@ func (c *catalog) Register(d ToolDescriptor) error {
 	// approval/oauth re-install) does NOT re-wrap: it swaps in
 	// descriptors whose inner Invoke is already this shelled one, so
 	// there is no double emission.
-	d = wrapDescriptorLifecycle(c.bus, d)
+	d = c.applyGate(wrapDescriptorLifecycle(c.bus, d))
 
 	c.mu.Lock()
 	if _, exists := c.byName[d.Tool.Name]; exists {
@@ -166,6 +186,14 @@ func (c *catalog) Register(d ToolDescriptor) error {
 	// missing row only degrades ranked discovery, never dispatch.
 	c.reconcileSearch("register", []string{d.Tool.Name})
 	return nil
+}
+
+// applyGate applies the registration gate, when one is installed.
+func (c *catalog) applyGate(d ToolDescriptor) ToolDescriptor {
+	if c.gate == nil {
+		return d
+	}
+	return c.gate(d)
 }
 
 // maxSearchDirty bounds the retry set of names whose index write failed.
@@ -423,7 +451,7 @@ func (c *catalog) StageSource(source ToolSourceID, replacements []ToolDescriptor
 		if err := validateExamples(d.Tool); err != nil {
 			return nil, err
 		}
-		staged[i] = wrapDescriptorLifecycle(c.bus, d)
+		staged[i] = c.applyGate(wrapDescriptorLifecycle(c.bus, d))
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -532,8 +532,11 @@ pauseresume:
   # an awaited external event) may stay parked before the runtime's
   # pause sweeper resumes it with the typed `timeout` Decision
   # (`pause.resumed`, D-096) and the waiting run terminates as a
-  # constraints-conflict. 0 (the default) = pauses never expire and
-  # the sweeper is not started. Must be >= 0.
+  # constraints-conflict. An expired approval-gated tool call does not
+  # run: `tool.rejected` carries Decision "timeout" (render it as
+  # "approval expired") and the decision record keeps outcome
+  # "expired". 0 (the default) = pauses never expire and the sweeper is
+  # not started. Must be >= 0.
   max_park_duration: 0s
   # Sweeper scan cadence — consumed only when `max_park_duration` > 0.
   # Default 1m (0s = the default applies); when expiry is enabled it
@@ -839,6 +842,26 @@ tools:
   #       provider: weather-broker
   #       binding_scope: user
   entries: []
+
+  # tools.approval_rules[] — approval for tools no entries[] row can name
+  # ahead of time (tools an MCP server discovers at runtime, including
+  # Protocol-installed connections). Ordered; the first matching rule
+  # gates the tool; an unmatched tool behaves as before; a tool named in
+  # entries[] is governed by its entry. Selectors (at least one; all set
+  # selectors must match): `tools` (globs on the catalog name, e.g.
+  # `<server>_<tool>`), `sources` (globs on the MCP server name),
+  # `annotations` (`destructive` = destructiveHint true;
+  # `not_read_only` = readOnlyHint not true; MCP tools only).
+  #
+  # approval_rules:
+  #   - tools: ["crm_delete_*", "crm_update_*"]
+  #     approval:
+  #       policy: deny-all
+  #       reason: "CRM writes need a human"
+  #   - sources: ["files"]
+  #     annotations: ["not_read_only"]
+  #     approval:
+  #       policy: deny-all
 
   # oauth_token_kek_env / oauth_providers — see examples/dev.yaml (D-095)
   # for the fully annotated reference, including the interactive

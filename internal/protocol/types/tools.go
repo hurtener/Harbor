@@ -90,17 +90,22 @@ func IsValidToolOAuthStatus(s ToolOAuthStatus) bool {
 	return false
 }
 
-// ToolApprovalPolicy is the wire enum for a tool's approval gate.
+// ToolApprovalPolicy is the wire enum for a tool's operator approval
+// posture label. The label is what `tools.set_approval_policy` records
+// and the catalog renders; it is not read by the runtime approval gate,
+// which is configured only through `tools.entries[].approval` and
+// `tools.approval_rules[]`.
 type ToolApprovalPolicy string
 
-// Canonical approval policies — the closed set `tools.set_approval_policy`
+// Canonical approval postures — the closed set `tools.set_approval_policy`
 // accepts and the catalog table renders.
 const (
-	// ToolApprovalAuto — the tool runs without a HITL gate.
+	// ToolApprovalAuto — labelled as running without a HITL gate (the
+	// default when no label was recorded).
 	ToolApprovalAuto ToolApprovalPolicy = "auto"
-	// ToolApprovalGated — every invocation pauses for HITL approval.
+	// ToolApprovalGated — labelled as requiring HITL approval.
 	ToolApprovalGated ToolApprovalPolicy = "gated"
-	// ToolApprovalDenied — the tool is administratively denied.
+	// ToolApprovalDenied — labelled as administratively denied.
 	ToolApprovalDenied ToolApprovalPolicy = "denied"
 )
 

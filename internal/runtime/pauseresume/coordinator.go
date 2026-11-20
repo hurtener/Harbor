@@ -54,6 +54,10 @@ type coordinator struct {
 	// continuations is the construction-time handler registry. It shares mu
 	// with pauses; handlers are looked up under the lock and invoked outside it.
 	continuations map[string]ContinuationHandler
+	// recorder is the OPTIONAL resolution recorder (WithResolutionRecorder),
+	// run before every terminal resolution commits. Set once at
+	// construction.
+	recorder ResolutionRecorder
 
 	// mu guards pauses. The map is the coordinator's only mutable
 	// state and is documented internally-synchronised per the concurrent-reuse
@@ -67,11 +71,14 @@ type coordinator struct {
 // never escapes the coordinator (callers receive value copies via the
 // Pause / Status return types).
 type pauseEntry struct {
-	token      Token
-	reason     Reason
-	state      State
-	identity   identity.Identity
-	runID      string
+	token    Token
+	reason   Reason
+	state    State
+	identity identity.Identity
+	runID    string
+	// writer is the session participant that wrote the paused run (from
+	// identity.ParticipantFrom at Request), empty when none was seated.
+	writer     string
 	payload    map[string]any
 	pausedAt   time.Time
 	resumedAt  time.Time
@@ -87,7 +94,11 @@ type pauseEntry struct {
 	// zero value while State == StatusPaused. Recorded so Status (and
 	// the RunLoop's out-of-band timeout detection) can distinguish a
 	// timeout-reaped pause from an approve / reject / generic resume.
-	decision  Decision
+	decision Decision
+	// decider is the verified principal whose control decided the
+	// pause (DeciderFrom on the resuming ctx); zero for timeouts,
+	// runtime-restart resolutions and in-process resolvers.
+	decider   Decider
 	available bool
 	// deletePending marks a RESUMED entry whose checkpoint delete
 	// failed: Resume flips the state before
@@ -100,6 +111,46 @@ type pauseEntry struct {
 	continuation  *Continuation
 	resuming      bool
 	resumeDone    chan struct{}
+	// resolved is created on demand by Resolved and closed when the
+	// entry flips to StatusResumed (any Decision).
+	resolved chan struct{}
+}
+
+// markResolvedLocked closes the on-demand resolution signal. Caller
+// holds c.mu and has just flipped entry to StatusResumed.
+func (e *pauseEntry) markResolvedLocked() {
+	if e.resolved != nil {
+		close(e.resolved)
+		e.resolved = nil
+	}
+}
+
+// Resolved returns a channel that is closed once the pause identified by
+// token resolves, whatever its Decision — an in-process wake-up for a
+// waiter that must observe out-of-band resolutions (the max-park
+// sweeper's timeout). It returns nil when coord is not this package's
+// Coordinator or the token is not in its registry; an already-resolved
+// pause yields a closed channel. Read the Decision with Status.
+func Resolved(coord Coordinator, token Token) <-chan struct{} {
+	c, ok := coord.(*coordinator)
+	if !ok {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.pauses[token]
+	if !ok {
+		return nil
+	}
+	if e.state == StatusResumed {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	if e.resolved == nil {
+		e.resolved = make(chan struct{})
+	}
+	return e.resolved
 }
 
 // Option configures a coordinator at construction. Options are applied
@@ -166,6 +217,35 @@ func WithMaxParkDuration(d time.Duration) Option {
 			c.maxPark = d
 		}
 	}
+}
+
+// Resolution is one terminal pause decision, handed to a
+// ResolutionRecorder once it commits.
+type Resolution struct {
+	// Pause is the pause as recorded (its payload before the resume
+	// payload merges in).
+	Pause Pause
+	// Decision is the typed outcome.
+	Decision Decision
+	// Decider is the verified principal that decided, or zero.
+	Decider Decider
+	// DecidedAt is the resolution time; the same instant pause.resumed
+	// carries and Status reports as ResumedAt.
+	DecidedAt time.Time
+	// ResumePayload is the payload the decision supplied.
+	ResumePayload map[string]any
+}
+
+// ResolutionRecorder persists a committed terminal decision as part of
+// the resolution, with the decision time pause.resumed carries. It is
+// write-once and never gating: it runs after the decision commits (before
+// the checkpoint is deleted), and an error is logged while the decision
+// stands. The events stay the authoritative trail.
+type ResolutionRecorder func(ctx context.Context, r Resolution) error
+
+// WithResolutionRecorder installs the resolution recorder.
+func WithResolutionRecorder(r ResolutionRecorder) Option {
+	return func(c *coordinator) { c.recorder = r }
 }
 
 // New constructs the V1 process-local Coordinator. The returned value
@@ -277,6 +357,7 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		available:    true,
 		identity:     req.Identity,
 		runID:        runIDFromContext(ctx),
+		writer:       writerFromContext(ctx),
 		payload:      cloneStringMap(req.Payload),
 		pausedAt:     pausedAt,
 		trajectory:   req.Trajectory,
@@ -306,6 +387,9 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		}
 	}
 
+	// Snapshot the caller's copy before the entry is shared: once it is
+	// in the registry a concurrent Resume may mutate it.
+	result := entry.pause()
 	c.mu.Lock()
 	c.pauses[token] = entry
 	c.mu.Unlock()
@@ -315,13 +399,7 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		Reason: string(req.Reason),
 	})
 
-	return Pause{
-		Token:    token,
-		Reason:   req.Reason,
-		Payload:  cloneStringMap(req.Payload),
-		PausedAt: pausedAt,
-		Identity: req.Identity,
-	}, nil
+	return result, nil
 }
 
 // Resume terminates a pause. See the Coordinator interface godoc for
@@ -434,7 +512,25 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	// trajectory carries handles could never be reaped. Every
 	// run-continuing decision (approve / reject / resume) keeps the
 	// fail-loud re-attach unchanged.
-	if decision != DecisionTimeout {
+	// The park deadline is enforced here, under the decision lock: a
+	// decision that arrives at or after expiresAt loses to the typed
+	// timeout, even before the sweeper's next pass reaps it.
+	now := c.now()
+	decider := DeciderFrom(ctx)
+	expired := false
+	if decision != DecisionTimeout && decision != DecisionInterrupted &&
+		!entry.expiresAt.IsZero() && !now.Before(entry.expiresAt) {
+		expired = true
+		decision = DecisionTimeout
+		decider = Decider{}
+		payload = map[string]any{
+			"timed_out":         true,
+			"max_park_duration": c.maxPark.String(),
+			"paused_at":         entry.pausedAt.UTC().Format(time.RFC3339Nano),
+			"expired_at":        entry.expiresAt.UTC().Format(time.RFC3339Nano),
+		}
+	}
+	if decision != DecisionTimeout && decision != DecisionInterrupted {
 		if err := c.reattachHandles(entry); err != nil {
 			c.mu.Unlock()
 			return err
@@ -475,9 +571,14 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		}
 	}
 
+	// The resolution as recorded: the pause before the resume payload
+	// merges in, with the decision time pause.resumed carries.
+	resolution := Resolution{Pause: entry.pause(), Decision: decision, Decider: decider, DecidedAt: now, ResumePayload: cloneStringMap(payload)}
 	entry.state = StatusResumed
-	entry.resumedAt = c.now()
+	entry.resumedAt = now
 	entry.decision = decision
+	entry.decider = decider
+	entry.markResolvedLocked()
 	if entry.resumeDone != nil {
 		close(entry.resumeDone)
 		entry.resumeDone = nil
@@ -487,6 +588,11 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	mergeStringMap(&entry.payload, payload)
 	resumed := *entry
 	c.mu.Unlock()
+
+	// The decision has committed. Record it (write-once, never gating):
+	// a recorder failure is logged and the decision stands — the events
+	// are the authoritative trail.
+	c.record(ctx, resolution)
 
 	// Clear the checkpoint AFTER the in-memory flip: the pause is
 	// terminal regardless of whether the store delete succeeds; a
@@ -512,12 +618,11 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 		}
 	}
 
-	c.emit(ctx, EventTypePauseResumed, &resumed, PauseResumedPayload{
-		Token:    string(token),
-		Reason:   string(resumed.reason),
-		Decision: decision,
-	})
+	c.emit(ctx, EventTypePauseResumed, &resumed, resumed.resumedPayload())
 
+	if expired {
+		return fmt.Errorf("%w: %w: token %q", ErrPauseExpired, ErrAlreadyResumed, token)
+	}
 	return nil
 }
 
@@ -559,11 +664,12 @@ func (c *coordinator) CancelTranche(ctx context.Context, token Token) error {
 		return fmt.Errorf("%w: token %q", ErrNotTranchePause, token)
 	}
 	entry.state, entry.available, entry.resumedAt, entry.decision = StatusResumed, false, c.now(), DecisionCancelled
+	entry.markResolvedLocked()
 	terminal := *entry
 	c.mu.Unlock()
 	// Project cancellation before cleanup. Cleanup remains a loud, observable
 	// retry obligation, but must not delay the terminal cancellation event.
-	c.emit(ctx, EventTypePauseResumed, &terminal, PauseResumedPayload{Token: string(token), Reason: string(terminal.reason), Decision: DecisionCancelled})
+	c.emit(ctx, EventTypePauseResumed, &terminal, terminal.resumedPayload())
 	if c.store != nil {
 		rec, rerr := terminal.toCheckpoint()
 		if rerr != nil {
@@ -722,6 +828,51 @@ func (c *coordinator) emit(ctx context.Context, evType events.EventType, entry *
 	}
 }
 
+// record hands a committed resolution to the optional recorder. A failure
+// is logged and never changes the decision.
+func (c *coordinator) record(ctx context.Context, r Resolution) {
+	if c.recorder == nil {
+		return
+	}
+	if err := c.recorder(ctx, r); err != nil {
+		slog.ErrorContext(ctx, "pauseresume: resolution record write failed (decision committed; events remain authoritative)",
+			slog.String("token", string(r.Pause.Token)),
+			slog.String("decision", string(r.Decision)),
+			slog.String("tenant_id", r.Pause.Identity.TenantID),
+			slog.String("user_id", r.Pause.Identity.UserID),
+			slog.String("session_id", r.Pause.Identity.SessionID),
+			slog.String("error", err.Error()))
+	}
+}
+
+// pause projects the entry onto the public Pause value.
+func (e *pauseEntry) pause() Pause {
+	return Pause{
+		Token:    e.token,
+		Reason:   e.reason,
+		Payload:  cloneStringMap(e.payload),
+		PausedAt: e.pausedAt,
+		Identity: e.identity,
+		RunID:    e.runID,
+		Writer:   e.writer,
+	}
+}
+
+// resumedPayload builds the pause.resumed payload for a resolved entry,
+// carrying the typed Decision and the attribution of who decided it.
+func (e *pauseEntry) resumedPayload() PauseResumedPayload {
+	return PauseResumedPayload{
+		Token:            string(e.token),
+		Reason:           string(e.reason),
+		Decision:         e.decision,
+		DecidedByTenant:  e.decider.TenantID,
+		DecidedByUser:    e.decider.UserID,
+		DecidedBySession: e.decider.SessionID,
+		DecidedBySpeaker: e.decider.Speaker,
+		DecidedAt:        e.resumedAt,
+	}
+}
+
 // toCheckpoint builds the persisted checkpoint envelope from the
 // in-memory entry. Calls trajectory.Trajectory.Serialize when a
 // trajectory is present; trajectory.ErrUnserializable propagates
@@ -737,6 +888,7 @@ func (e *pauseEntry) toCheckpoint() (checkpointRecord, error) {
 		State:         e.state,
 		Identity:      e.identity,
 		RunID:         e.runID,
+		Writer:        e.writer,
 		Payload:       e.payload,
 		Continuation:  e.continuation,
 		PausedAt:      e.pausedAt,
@@ -772,6 +924,7 @@ func entryFromCheckpoint(rec checkpointRecord) (*pauseEntry, error) {
 		state:        rec.State,
 		identity:     rec.Identity,
 		runID:        rec.RunID,
+		writer:       rec.Writer,
 		payload:      rec.Payload,
 		pausedAt:     rec.PausedAt,
 		resumedAt:    rec.ResumedAt,

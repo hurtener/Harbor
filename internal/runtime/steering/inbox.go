@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 )
 
 // ControlEvent is the canonical steering record (RFC §6.3
@@ -29,6 +30,14 @@ type ControlEvent struct {
 	// CallerTenant is the tenant the submitting caller authenticated
 	// under. Used by the cross-tenant scope check (RFC §6.3).
 	CallerTenant string
+	// Decider is the verified principal that submitted the control —
+	// the identity the request authenticated as (the acting user when a
+	// session participant submits inside another user's session) plus
+	// its signed display label. Attribution only: it is seated on the
+	// resolving ctx so pause.resumed / tool.approved / tool.rejected
+	// name who decided. Never an authorisation input; the zero value
+	// (an agent-issued or in-process control) attributes no principal.
+	Decider pauseresume.Decider
 	// Payload is the sanitised, bounds-checked control payload. May
 	// be nil — a bare CANCEL / PAUSE carries no payload. Enqueue runs
 	// ValidatePayload against it.

@@ -1295,6 +1295,7 @@ func Boot(ctx context.Context, opts Options) (*Handle, error) {
 		Coordinator:                    coord,
 		MCPRegistry:                    mcpRegistry,
 		MCPToolContext:                 mcpToolContext,
+		ApprovalRuleMatch:              stack.ApprovalRuleMatch,
 		SourceAuthorizer:               sourceAuthorizer,
 		State:                          stack.State,
 		ConfigurationState:             stack.ConfigurationState,

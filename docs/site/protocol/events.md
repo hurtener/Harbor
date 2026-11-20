@@ -1170,6 +1170,11 @@ Payload `PauseResumedPayload` — safe payload (delivered typed, verbatim).
 | `Token` | `string` |  |
 | `Reason` | `string` |  |
 | `Decision` | `pauseresume.Decision` |  |
+| `DecidedByTenant` | `string` |  |
+| `DecidedByUser` | `string` |  |
+| `DecidedBySession` | `string` |  |
+| `DecidedBySpeaker` | `string` |  |
+| `DecidedAt` | `time.Time` |  |
 
 ## `planner.action_extra_field_dropped`
 
@@ -1666,6 +1671,11 @@ Payload `ToolApprovedPayload` — safe payload (delivered typed, verbatim).
 | `Tool` | `string` |  |
 | `PauseToken` | `string` |  |
 | `ApproverReason` | `string` |  |
+| `DecidedByTenant` | `string` |  |
+| `DecidedByUser` | `string` |  |
+| `DecidedBySession` | `string` |  |
+| `DecidedBySpeaker` | `string` |  |
+| `DecidedAt` | `time.Time` |  |
 
 ## `tool.auth_completed`
 
@@ -1802,6 +1812,12 @@ Payload `ToolRejectedPayload` — safe payload (delivered typed, verbatim).
 | `Tool` | `string` |  |
 | `PauseToken` | `string` |  |
 | `Reason` | `string` |  |
+| `Decision` | `string` |  |
+| `DecidedByTenant` | `string` |  |
+| `DecidedByUser` | `string` |  |
+| `DecidedBySession` | `string` |  |
+| `DecidedBySpeaker` | `string` |  |
+| `DecidedAt` | `time.Time` |  |
 
 ## `tools.catalog.changed`
 

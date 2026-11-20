@@ -1,6 +1,10 @@
 package approval
 
-import "github.com/hurtener/Harbor/internal/events"
+import (
+	"time"
+
+	"github.com/hurtener/Harbor/internal/events"
+)
 
 // Canonical tool-approval event types. Registered from this package's
 // init() so a Publish never trips events.ErrUnknownEventType.
@@ -88,6 +92,19 @@ type ToolApprovedPayload struct {
 	// to the APPROVE submission. Free-form but low-cardinality by
 	// convention.
 	ApproverReason string
+	// DecidedByTenant / DecidedByUser / DecidedBySession name the
+	// verified principal whose control decided the approval — the
+	// identity the approve / reject request authenticated as (the acting
+	// user when a session participant decided inside another user's
+	// session). DecidedBySpeaker is that bearer's signed display label,
+	// when it carried one. The event envelope keeps the identity of the
+	// gated run. All empty when no verified principal decided.
+	DecidedByTenant  string
+	DecidedByUser    string
+	DecidedBySession string
+	DecidedBySpeaker string
+	// DecidedAt is when the decision resolved the approval.
+	DecidedAt time.Time
 }
 
 // ToolRejectedPayload is the typed payload for a `tool.rejected`
@@ -105,4 +122,25 @@ type ToolRejectedPayload struct {
 	// Reason is the approver's free-form classification of the
 	// rejection. Low-cardinality by convention.
 	Reason string
+	// Decision is the typed outcome that resolved the approval without
+	// running the tool: "reject" (an approver rejected it), "timeout"
+	// (the approval expired: the configured
+	// pauseresume.max_park_duration elapsed with no decision) or
+	// "interrupted" (the runtime restarted while the approval waited).
+	// Same vocabulary as pause.resumed's Decision. Hosts render
+	// "timeout" as an expired approval.
+	Decision string
+	// DecidedByTenant / DecidedByUser / DecidedBySession name the
+	// verified principal whose control decided the approval — the
+	// identity the approve / reject request authenticated as (the acting
+	// user when a session participant decided inside another user's
+	// session). DecidedBySpeaker is that bearer's signed display label,
+	// when it carried one. The event envelope keeps the identity of the
+	// gated run. All empty when no verified principal decided.
+	DecidedByTenant  string
+	DecidedByUser    string
+	DecidedBySession string
+	DecidedBySpeaker string
+	// DecidedAt is when the decision resolved the approval.
+	DecidedAt time.Time
 }

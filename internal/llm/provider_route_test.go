@@ -166,7 +166,7 @@ func TestProviderRouteProviderErrorCarriesOnlyStatus(t *testing.T) {
 		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 	for _, status := range []int{0, -1, 99, 600} {
-		if got := llm.NewProviderRouteProviderError(status); got != llm.ErrProviderRouteProviderFailed {
+		if got := llm.NewProviderRouteProviderError(status); !errors.Is(got, llm.ErrProviderRouteProviderFailed) {
 			t.Fatalf("status %d = %v, want the bare sentinel", status, got)
 		}
 	}

@@ -98,6 +98,9 @@ type (
 	TelemetryConfig = internal.TelemetryConfig
 	// ToolApprovalConfig configures HITL tool-approval gates.
 	ToolApprovalConfig = internal.ToolApprovalConfig
+	// ToolApprovalRuleConfig gates tools discovered at runtime by name,
+	// source, or MCP annotation.
+	ToolApprovalRuleConfig = internal.ToolApprovalRuleConfig
 	// ToolEntryConfig declares one operator tool entry.
 	ToolEntryConfig = internal.ToolEntryConfig
 	// ToolOAuthConfig configures tool-side OAuth.

@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 497 canonical Harbor Protocol wire types, generated from the single-source
+The 498 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -2765,6 +2765,17 @@ Declared in `internal/protocol/types`.
 | `rate_limit` | `types.RateLimitView` — see [`RateLimitView`](./types.md#ratelimitview) |  |
 | `max_tokens` | `int` |  |
 
+## InterventionDecider
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `tenant_id` | `string` |  |
+| `user_id` | `string` |  |
+| `session_id` | `string` | optional (`omitempty`) |
+| `speaker` | `string` | optional (`omitempty`) |
+
 ## InterventionSummary
 
 Declared in `internal/protocol/types`.
@@ -2775,6 +2786,12 @@ Declared in `internal/protocol/types`.
 | `reason` | `string` |  |
 | `outcome` | `string` |  |
 | `occurred_at` | `time.Time` |  |
+| `tool` | `string` | optional (`omitempty`) |
+| `pause_token` | `string` | optional (`omitempty`) |
+| `decision_reason` | `string` | optional (`omitempty`) |
+| `decided_by` | `*types.InterventionDecider` — see [`InterventionDecider`](./types.md#interventiondecider) | optional (`omitempty`) |
+| `decided_at` | `time.Time` | optional (`omitempty`) |
+| `args_summary` | `any` | optional (`omitempty`) |
 
 ## LLMPostureResponse
 
@@ -3835,6 +3852,7 @@ Declared in `internal/protocol/types`.
 | `reason` | `string` |  |
 | `state` | `types.PauseSnapshotState` |  |
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
+| `task_id` | `string` | optional (`omitempty`) |
 | `paused_at` | `time.Time` |  |
 | `resumed_at` | `time.Time` | optional (`omitempty`) |
 | `available` | `bool` |  |

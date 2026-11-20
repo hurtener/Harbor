@@ -240,12 +240,33 @@ export interface SessionsInspectRequest {
   projection?: SessionProjection;
 }
 
-/** One Recent-Interventions card entry on the Sessions detail view. */
+/** The verified principal that decided an intervention. */
+export interface InterventionDecider {
+  tenant_id: string;
+  user_id: string;
+  session_id?: string;
+  /** The deciding bearer's signed display label, when present. */
+  speaker?: string;
+}
+
+/**
+ * One Recent-Interventions card entry on the Sessions detail view. The
+ * runtime fills it from the durable approval decision record (D-519).
+ */
 export interface InterventionSummary {
   type: string;
   reason: string;
+  /** pending / resolved / approved / rejected / expired / interrupted. */
   outcome: string;
   occurred_at: string;
+  tool?: string;
+  pause_token?: string;
+  decision_reason?: string;
+  /** Absent when no verified principal decided (expired / interrupted). */
+  decided_by?: InterventionDecider;
+  decided_at?: string;
+  /** Audit-redacted, size-bounded args summary — never the original args. */
+  args_summary?: unknown;
 }
 
 /** One Recent-Artifacts card entry — metadata only (D-026). */

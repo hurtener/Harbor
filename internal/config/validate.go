@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -2599,6 +2600,40 @@ func (c *Config) validateTools() error {
 		}
 	}
 
+	// approval rules: at least one selector, well-formed globs, known
+	// annotation selectors, and the same approval-block checks as an
+	// entry.
+	for i, r := range c.Tools.ApprovalRules {
+		prefix := fmt.Sprintf("tools.approval_rules[%d]", i)
+		if len(r.Tools) == 0 && len(r.Sources) == 0 && len(r.Annotations) == 0 {
+			return fieldError(prefix, "at least one of `tools`, `sources`, or `annotations` must be set (a rule with no selector would gate every tool; use tools.entries[] or name a pattern)")
+		}
+		for j, pat := range r.Tools {
+			if err := validateGlob(pat); err != nil {
+				return fieldError(fmt.Sprintf("%s.tools[%d]", prefix, j), err.Error())
+			}
+		}
+		for j, pat := range r.Sources {
+			if err := validateGlob(pat); err != nil {
+				return fieldError(fmt.Sprintf("%s.sources[%d]", prefix, j), err.Error())
+			}
+		}
+		for j, a := range r.Annotations {
+			if _, ok := allowedApprovalAnnotations[a]; !ok {
+				return fieldError(fmt.Sprintf("%s.annotations[%d]", prefix, j),
+					fmt.Sprintf("must be one of %s, got %q", sortedKeys(allowedApprovalAnnotations), a))
+			}
+		}
+		if _, ok := allowedApprovalPolicies[r.Approval.Policy]; !ok {
+			return fieldError(prefix+".approval.policy",
+				fmt.Sprintf("must be one of %s, got %q", sortedKeys(allowedApprovalPolicies), r.Approval.Policy))
+		}
+		if r.Approval.Policy == "tagged" && len(r.Approval.RequireTags) == 0 {
+			return fieldError(prefix+".approval.require_tags",
+				"must be set when policy=\"tagged\" (a tagged policy with no tags would never trigger)")
+		}
+	}
+
 	// catalog wiring entries. Empty list is valid;
 	// duplicate names are rejected; an entry whose Approval AND OAuth
 	// are both nil is a configuration typo (nothing to wire) and is
@@ -2756,6 +2791,25 @@ func sortStringSlice(s []string) {
 			s[j-1], s[j] = s[j], s[j-1]
 		}
 	}
+}
+
+// allowedApprovalAnnotations is the closed set of annotation selectors
+// a `tools.approval_rules[]` row accepts (mirrored by the catalog rule
+// matcher).
+var allowedApprovalAnnotations = map[string]struct{}{
+	"destructive":   {},
+	"not_read_only": {},
+}
+
+// validateGlob rejects an empty or malformed path.Match pattern.
+func validateGlob(pattern string) error {
+	if strings.TrimSpace(pattern) == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if _, err := path.Match(pattern, ""); err != nil {
+		return fmt.Errorf("invalid glob %q: %w", pattern, err)
+	}
+	return nil
 }
 
 // allowedApprovalPolicies mirrors the bundled `approval.ApprovalPolicy`

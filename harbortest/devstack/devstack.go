@@ -1267,6 +1267,7 @@ func assembleWith(ctx context.Context, cfg *config.Config, opts AssembleOpts) (*
 			Coordinator:                    stack.Coordinator,
 			MCPRegistry:                    stack.MCPRegistry,
 			MCPToolContext:                 stack.MCPToolContext,
+			ApprovalRuleMatch:              core.ApprovalRuleMatch,
 			State:                          stack.State,
 			ConfigurationState:             core.ConfigurationState,
 			Skills:                         stack.Skills,

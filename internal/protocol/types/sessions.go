@@ -385,17 +385,50 @@ type SessionsListResponse struct {
 
 // InterventionSummary is one entry in the right-rail Session Summary's
 // Recent Interventions card. Capped at MaxSessionInterventionSummaries.
+// The runtime fills it from the durable approval decision record:
+// resolved tool approvals (approved / rejected / expired /
+// interrupted), most recent first, with who decided and when.
 type InterventionSummary struct {
 	// Type is the intervention kind — a HITL pause, a tool-approval
-	// gate, or a tool-OAuth gate.
+	// gate ("tool_approval"), or a tool-OAuth gate.
 	Type string `json:"type"`
 	// Reason is the operator-facing reason the intervention fired.
 	Reason string `json:"reason"`
 	// Outcome is the intervention's resolution — pending, resolved,
-	// approved, or rejected.
+	// approved, rejected, expired (the approval outlived
+	// pauseresume.max_park_duration), or interrupted (a runtime restart
+	// left it without a waiter).
 	Outcome string `json:"outcome"`
 	// OccurredAt is when the intervention fired.
 	OccurredAt time.Time `json:"occurred_at"`
+	// Tool is the gated tool's catalog name (tool-approval entries).
+	Tool string `json:"tool,omitempty"`
+	// PauseToken correlates the entry with its pause and tool.* events.
+	PauseToken string `json:"pause_token,omitempty"`
+	// DecisionReason is the approver's note, or the system reason for an
+	// expired / interrupted approval.
+	DecisionReason string `json:"decision_reason,omitempty"`
+	// DecidedBy names the verified principal whose control decided the
+	// intervention. Absent when no principal decided (an expired or
+	// restart-interrupted approval).
+	DecidedBy *InterventionDecider `json:"decided_by,omitempty"`
+	// DecidedAt is when the intervention resolved. Absent while pending.
+	DecidedAt time.Time `json:"decided_at,omitempty"`
+	// ArgsSummary is the audit-redacted, size-bounded summary of the
+	// gated call's arguments the approval request carried — never the
+	// original arguments. Absent when none was retained.
+	ArgsSummary any `json:"args_summary,omitempty"`
+}
+
+// InterventionDecider is the verified principal that decided an
+// intervention: the identity its approve / reject request authenticated
+// as (the acting user when a session participant decided) and that
+// bearer's signed display label, when present.
+type InterventionDecider struct {
+	TenantID  string `json:"tenant_id"`
+	UserID    string `json:"user_id"`
+	SessionID string `json:"session_id,omitempty"`
+	Speaker   string `json:"speaker,omitempty"`
 }
 
 // ArtifactRefSummary is one entry in the right-rail Session Summary's

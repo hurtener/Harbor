@@ -1,6 +1,10 @@
 package pauseresume
 
-import "github.com/hurtener/Harbor/internal/events"
+import (
+	"time"
+
+	"github.com/hurtener/Harbor/internal/events"
+)
 
 // Canonical event types emitted by the Coordinator. Registered into
 // the events package's canonical registry from this package's init()
@@ -67,6 +71,17 @@ type PauseResumedPayload struct {
 	// (approve / reject / resume / timeout). Wire consumers switch on
 	// this value rather than parsing `Reason` strings.
 	Decision Decision
+	// DecidedByTenant / DecidedByUser / DecidedBySession name the
+	// verified principal whose control decided the pause (the acting
+	// user when a session participant decided), and DecidedBySpeaker is
+	// that bearer's signed display label. All empty when no principal
+	// decided (timeout, runtime-restart resolution, in-process resolver).
+	DecidedByTenant  string
+	DecidedByUser    string
+	DecidedBySession string
+	DecidedBySpeaker string
+	// DecidedAt is when the pause resolved (the Coordinator clock).
+	DecidedAt time.Time
 }
 
 // PausePayloadArtifactRoutedPayload is the typed payload for a

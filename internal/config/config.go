@@ -1366,6 +1366,12 @@ type ToolsConfig struct {
 	OAuthProviders   []ToolOAuthProviderConfig `yaml:"oauth_providers,omitempty"`
 	OAuthTokenKEKEnv string                    `yaml:"oauth_token_kek_env,omitempty"`
 
+	// ApprovalRules gate tools that no `entries[]` row can name ahead of
+	// time — tools an MCP server (configured or Protocol-installed)
+	// discovers at runtime — by name / source pattern and by declared
+	// tool annotations. See ToolApprovalRuleConfig. Restart-required.
+	ApprovalRules []ToolApprovalRuleConfig `yaml:"approval_rules,omitempty"`
+
 	// OAuthCredentialBrokers is the boot-declared list of NAMED credential
 	// sinks (token endpoint + allowed downstream hosts + broker
 	// credential env). It is the config home for the pinned sinks a
@@ -2137,6 +2143,52 @@ type ToolApprovalConfig struct {
 	// `Policy: tagged` AND `RequireTags: []` is rejected — the
 	// tagged policy with no tags is a no-op (configuration smell).
 	RequireTags []string `yaml:"require_tags,omitempty"`
+}
+
+// ToolApprovalRuleConfig requires approval for every tool that matches
+// its selectors, including tools registered after boot (MCP discovery
+// and refresh, Protocol-installed connections). Rules are evaluated in
+// order and the first match wins; a tool no rule matches behaves as
+// before. A tool named in any `tools.entries[]` row is governed by that
+// entry and never by a rule.
+//
+// Layout in YAML:
+//
+//	tools:
+//	  approval_rules:
+//	    - tools: ["crm_delete_*", "crm_update_*"]   # glob on the catalog tool name
+//	      approval:
+//	        policy: deny-all
+//	        reason: "CRM writes need a human"
+//	    - sources: ["files"]                       # every tool of one MCP server ...
+//	      annotations: ["not_read_only"]           # ... that is not declared read-only
+//	      approval:
+//	        policy: deny-all
+//
+// Restart-required.
+type ToolApprovalRuleConfig struct {
+	// Tools are glob patterns (path.Match syntax) over the catalog tool
+	// name — for an MCP tool the namespaced `<server>_<tool>` name.
+	// Optional; empty matches every name.
+	Tools []string `yaml:"tools,omitempty"`
+	// Sources are glob patterns over the tool's source id — for an MCP
+	// tool the server (connection) name. Optional; empty matches every
+	// source. In-process tools have an empty source and never match a
+	// non-empty pattern.
+	Sources []string `yaml:"sources,omitempty"`
+	// Annotations match the tool's declared MCP annotations; a tool
+	// matches when it satisfies any listed value:
+	//   - "destructive"   — destructiveHint is true and readOnlyHint is not
+	//   - "not_read_only" — readOnlyHint is not true (includes tools that
+	//                       declare no annotations at all)
+	// Optional; empty matches regardless of annotations. A rule that sets
+	// annotations matches MCP tools only. Annotations are server-declared
+	// hints, not guarantees.
+	Annotations []string `yaml:"annotations,omitempty"`
+	// Approval is the approval-gate wiring applied to matching tools —
+	// the same block as `tools.entries[].approval`. For the `tagged`
+	// policy the request carries the tool's own tags.
+	Approval ToolApprovalConfig `yaml:"approval"`
 }
 
 // ToolOAuthConfig declares an OAuth binding for one tool. It

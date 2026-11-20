@@ -57,6 +57,9 @@ type checkpointRecord struct {
 	// RunID is the per-execution run id, when the pause is run-scoped.
 	// Empty for session-scoped pauses (e.g. a pre-run approval gate).
 	RunID string `json:"run_id,omitempty"`
+	// Writer is the session participant that wrote the paused run, when
+	// one was seated (pause.list narrows a participant to its own runs).
+	Writer string `json:"writer,omitempty"`
 	// Payload is the sanitised, bounded pause payload.
 	Payload map[string]any `json:"payload,omitempty"`
 	// Continuation is the optional non-secret durable work identity.

@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:cf4fc292db51eb7f15213b6746b7ab87169075b2356687eeb72df02004b0c13a";
+export const WIRE_SURFACE_DIGEST = "sha256:6a21c08de4605e601fd6f0a90d7d7ffc0e8a7940cbda599748ff2d4e4f8c2c0f";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -2166,11 +2166,24 @@ export interface IdentityTierView {
   max_tokens: number;
 }
 
+export interface InterventionDecider {
+  tenant_id: string;
+  user_id: string;
+  session_id?: string;
+  speaker?: string;
+}
+
 export interface InterventionSummary {
   type: string;
   reason: string;
   outcome: string;
   occurred_at: string;
+  tool?: string;
+  pause_token?: string;
+  decision_reason?: string;
+  decided_by?: InterventionDecider;
+  decided_at?: string;
+  args_summary?: unknown;
 }
 
 export interface LLMPostureResponse {
@@ -2847,6 +2860,7 @@ export interface PauseSnapshot {
   reason: string;
   state: string;
   identity: IdentityScope;
+  task_id?: string;
   paused_at: string;
   resumed_at?: string;
   available: boolean;

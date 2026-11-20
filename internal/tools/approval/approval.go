@@ -229,6 +229,15 @@ func (e *ErrToolRejected) Is(target error) bool {
 	return errors.Is(target, ErrToolRejectedSentinel)
 }
 
+// ExpiredReason is the Reason carried on `tool.rejected` and the
+// returned *ErrToolRejected when an approval expired unanswered.
+const ExpiredReason = "approval expired before a decision"
+
+// InterruptedReason is the Reason carried on `tool.rejected` when a
+// runtime restart left an approval without a waiter (see
+// ResolveInterruptedApprovals).
+const InterruptedReason = "runtime restarted before a decision"
+
 // Sentinel errors. Callers compare via errors.Is.
 var (
 	// ErrToolRejectedSentinel — comparison target for
@@ -281,6 +290,14 @@ var (
 	// the approver resolved the gate. Returned by `RunGuarded` so
 	// the runtime distinguishes "approver said no" from "ctx died."
 	ErrApprovalCancelled = errors.New("approval: cancelled before resolution")
+
+	// ErrApprovalExpired — the approval's pause outlived the configured
+	// max-park duration (`pauseresume.max_park_duration`) with no
+	// decision, and the pause sweeper resolved it with the typed
+	// `timeout` Decision. Returned by `RunGuarded` joined with a typed
+	// `*ErrToolRejected` (Reason ExpiredReason), so callers matching
+	// either keep working; `tool.rejected` carries Decision "timeout".
+	ErrApprovalExpired = errors.New("approval: expired before a decision")
 
 	// ErrGateClosed — any operation called after `Close`.
 	ErrGateClosed = errors.New("approval: gate closed")

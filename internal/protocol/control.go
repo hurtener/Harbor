@@ -899,6 +899,7 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 		Identity:     q,
 		CallerScope:  scope,
 		CallerTenant: caller.TenantID, // the VERIFIED caller tenant — drives steering.CheckScope's cross-tenant-requires-admin gate. A control whose target run lives in a different tenant only passes when the caller holds the admin scope.
+		Decider:      verifiedDecider(ctx, caller),
 		Payload:      cr.Payload,
 		EventID:      cr.EventID,
 	}
@@ -911,6 +912,28 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 		Method:          string(method),
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
+}
+
+// verifiedDecider names the verified principal behind a control for
+// decision attribution. It reads the VERIFIED identity the bearer
+// authenticated as — never the working identity, which an admin
+// impersonation replaces with its target — and overlays the signed
+// participant claims (the participant's own user and speaker label when
+// the bearer writes inside another user's session). Attribution only;
+// authorization is decided elsewhere.
+func verifiedDecider(ctx context.Context, caller identity.Identity) pauseresume.Decider {
+	verified, ok := identity.FromVerified(ctx)
+	if !ok {
+		verified = caller
+	}
+	d := pauseresume.Decider{TenantID: verified.TenantID, UserID: verified.UserID, SessionID: verified.SessionID}
+	if p, ok := identity.ParticipantFrom(ctx); ok {
+		if p.UserID != "" {
+			d.UserID = p.UserID
+		}
+		d.Speaker = p.Speaker
+	}
+	return d
 }
 
 // addsRunInput reports whether a steering control adds caller input to a

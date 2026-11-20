@@ -474,7 +474,10 @@ func (s *Service) ContentStats(ctx context.Context, req prototypes.ToolContentSt
 }
 
 // SetApprovalPolicy implements the `tools.set_approval_policy` ADMIN
-// method. adminScoped is the verified-JWT scope decision the wire
+// method. It records an operator posture label the catalog displays; it
+// does not configure the runtime approval gate, which is driven only by
+// `tools.entries[].approval` and `tools.approval_rules[]`. adminScoped
+// is the verified-JWT scope decision the wire
 // handler computes; a false value fails closed with
 // ErrAdminScopeRequired. On success, emits an
 // `audit.admin_scope_used` event.
@@ -502,7 +505,8 @@ func (s *Service) SetApprovalPolicy(ctx context.Context, req prototypes.ToolSetA
 	if err := setter.SetApprovalPolicy(ctx, id, req.ID, req.Policy); err != nil {
 		return prototypes.ToolSetApprovalPolicyResponse{}, mapProjectorErr(err)
 	}
-	s.emitAdminAudit(ctx, id, string(prototypes.ToolApprovalAuto), "tools.set_approval_policy", req.ID)
+	// The audit detail is the posture actually written.
+	s.emitAdminAudit(ctx, id, string(req.Policy), "tools.set_approval_policy", req.ID)
 	return prototypes.ToolSetApprovalPolicyResponse{ID: req.ID, Policy: req.Policy}, nil
 }
 

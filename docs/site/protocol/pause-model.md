@@ -36,8 +36,8 @@ intervention:  POST /v1/control/approve | reject | resume     (HITL / operator)
                …or nobody acts and the max-park sweeper reaps it
         |
         v
-event stream:  pause.resumed {Token, Reason, Decision}
-               Decision ∈ approve | reject | resume | timeout
+event stream:  pause.resumed {Token, Reason, Decision, DecidedBy*, DecidedAt}
+               Decision ∈ approve | reject | resume | timeout | interrupted
 ```
 
 The **pause token** is the thread through everything: minted by the Runtime
@@ -129,6 +129,13 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/pause/list" \
 }
 ```
 
+Each snapshot names its run (`identity.run`) and task (`task_id`, equal to the
+run). An approval pause's `payload` carries `tool`, the policy `reason` and
+`args_summary` — the same redacted summary `tool.approval_requested` carried,
+bounded to 2 KiB; never the original arguments. A session participant acting
+in another user's session may call `pause.list` and sees only pauses of runs
+it wrote in that session.
+
 [`PauseListRequest`](./types.md#pauselistrequest) supports a
 [`PauseFilter`](./types.md#pausefilter) and cursorless page/page_size
 pagination; cross-tenant fan-in requires `admin` or `console:fleet`. A heavy
@@ -181,7 +188,67 @@ data: {"type":"tool.approved","sequence":11,…,"payload":{"Tool":"deploy_to_pro
 ```
 
 The gated tool call proceeds with its original arguments, the run re-enters
-the planner, and a subsequent `pause.list` is empty again. (Don't rely on
+the planner, and a subsequent `pause.list` is empty again.
+
+### Who decided
+
+`pause.resumed`, `tool.approved` and `tool.rejected` name the principal whose
+control decided the pause, additively (D-519). The event envelope keeps the
+gated run's identity; the payload adds:
+
+| Payload key | Meaning |
+|---|---|
+| `DecidedByTenant` / `DecidedByUser` / `DecidedBySession` | The verified identity the `approve` / `reject` request authenticated as. When a session participant decides inside another user's session, this is the participant's own user, not the session owner. |
+| `DecidedBySpeaker` | The deciding bearer's signed display label (the `speaker` claim), when it carried one. |
+| `DecidedAt` | When the decision resolved the pause (RFC 3339). |
+
+An admin deciding while impersonating is named as the admin (the verified
+identity); the envelope still names the gated run. The `tool.*` envelopes
+carry the gated run ID. A pending approval is bound to the run that
+requested it: an `approve` / `reject` sent for one run cannot resolve another
+run's approval, even in the same shared session. The approver's `reason` is
+redacted with the argument redactor and bounded to 512 bytes before it
+reaches any event or record.
+
+All three `DecidedBy*` fields are empty when no verified principal decided: a
+`timeout`, an `interrupted` resolution, or an in-process resolver. Clients
+that ignore unknown keys are unaffected.
+
+`tool.rejected` also carries a typed `Decision`: `reject` (an approver
+rejected), `timeout` (the approval expired) or `interrupted` (a restart left
+it without a waiter).
+
+### The decision record
+
+Resolving a pause deletes its checkpoint, so the decision would otherwise live
+only on the event stream. Each committed resolution is written once, with the same
+decision time the events carry. The record is a convenience projection: a
+failed write is logged and never blocks or delays the decision — the events
+remain the authoritative trail. The runtime keeps the most recent resolved
+approvals of each session (bounded: 20 per session, removed with the session)
+and `sessions.inspect` projects the newest five as `recent_interventions`
+(empty when the bearer's signed `session_reach` excludes that session):
+
+```json
+{
+  "type": "tool_approval",
+  "reason": "production deploys require human sign-off",
+  "outcome": "approved",
+  "occurred_at": "2026-11-19T10:00:00Z",
+  "tool": "deploy_to_production",
+  "pause_token": "01KTT3C5T1S9WBT9ASTJHQ4GJK",
+  "decision_reason": "reviewed the deploy plan — go",
+  "decided_by": { "tenant_id": "dev", "user_id": "dev", "session_id": "hitl-demo", "speaker": "Dev" },
+  "decided_at": "2026-11-19T10:02:11Z",
+  "args_summary": { "args": { "build": "v1.3.0", "environment": "production" }, "tool": "deploy_to_production" }
+}
+```
+
+`outcome` is `approved`, `rejected`, `expired` or `interrupted`. `decided_by`
+is absent when no principal decided. `args_summary` is the same audit-redacted
+summary `tool.approval_requested` carried, bounded to 2 KiB (a larger one is
+replaced by `{"omitted": "too_large", "bytes": n}`); the original arguments
+are never stored. (Don't rely on
 intra-step event ordering beyond the sequence numbers — the resume can land
 before the control-lifecycle records, as it did here.)
 
@@ -287,6 +354,20 @@ the pauses themselves persisted. Reconcile your intervention inbox against
 `pause.list` on every (re)attach, exactly as you re-snapshot tasks via
 `tasks.list` after a `bus.dropped` ([streaming semantics](./streaming-semantics.md)).
 
+**Approval-gated tool calls are the exception.** A gate keeps the gated
+call's original arguments in memory and waits inside the dispatch, so a new
+process cannot continue it, and task recovery fails the run's task
+(`runtime_restarted`). At boot the runtime resolves every such approval it
+finds with `pause.resumed {Decision: "interrupted"}` and `tool.rejected
+{Decision: "interrupted", Reason: "runtime restarted before a decision"}`, and
+records outcome `interrupted`. The approval leaves `pause.list` instead of
+looking actionable while `approve` returns not-found. The pass assumes the
+checkpoint store is not shared with another live runtime process, the same
+assumption task recovery makes (D-519). During a rolling restart over a shared
+store, the new process therefore resolves the old process's still-pending
+approvals as `interrupted`; those gated calls do not run. The pass finishes
+before the pause sweeper starts.
+
 Two V1 boundaries, stated so you don't design against more than is promised:
 resume must land on a Runtime that can re-attach the pause's non-serializable
 tool handles — re-attachment failure fails loudly (`ErrToolContextLost`-shaped,
@@ -309,7 +390,14 @@ data: {"type":"pause.resumed","sequence":8,…,"run":"01KTT3RUNTIMEOUT0000000000
 
 A timeout is **terminal**: the run finishes as a `constraints_conflict`
 failure — a deadline the human missed is a constraint the planner cannot
-resolve, never a silent unpark-and-continue. This is why a client should
+resolve, never a silent unpark-and-continue. When the expired pause is an
+in-flight approval-gated tool call, the call does not run: the gate emits
+`tool.rejected` with `Decision: "timeout"` and `Reason: "approval expired
+before a decision"`, the planner observes the failure, and the decision record
+keeps outcome `expired`. Render that as "approval expired". The deadline is
+enforced when a decision arrives, too: an `approve` / `reject` at or after
+`paused_at + max_park_duration` loses to the typed timeout even before the
+sweeper's next pass. This is why a client should
 render deadlines next to pending interventions: an unanswered approval is not
 "pending forever", it is "failing at `paused_at + max_park_duration`".
 
@@ -323,7 +411,8 @@ field echoes why the run *paused*, not how it resolved):
 | `approve` | `POST /v1/control/approve` | `tool.approved`; the gated call runs; the run continues. |
 | `reject` | `POST /v1/control/reject`, or an upstream OAuth denial | `tool.rejected`; the gated call fails with the reason; a boundary-pause reject terminates the run (`constraints_conflict`). |
 | `resume` | `POST /v1/control/resume`, or the OAuth callback completing | The run re-enters the planner. |
-| `timeout` | The max-park sweeper | Terminal: the run fails as `constraints_conflict`. |
+| `timeout` | The max-park sweeper | Terminal: the run fails as `constraints_conflict`; an expired gated call emits `tool.rejected` with `Decision: "timeout"`. |
+| `interrupted` | The boot pass after a restart | Terminal: an approval whose waiter died with the previous process; `tool.rejected` with `Decision: "interrupted"`. |
 
 ## The minimum correct intervention client
 
