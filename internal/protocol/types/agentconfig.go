@@ -57,10 +57,8 @@ type AgentConfigToolExposure struct {
 }
 
 // AgentConfigPromptLayers is the wire projection of an agent's layered
-// system prompt in a config revision: an operator-owned base layer plus an
-// optional user layer that composes ABOVE the base without mutating it. The
-// composition order is the security boundary — the user layer can extend
-// the operator's guidance but never precede, replace, or weaken the base.
+// system prompt in a config revision: an operator-owned base layer and
+// guidance override, plus an optional lower-trust user layer.
 type AgentConfigPromptLayers struct {
 	// Base is the operator-owned base prompt layer. When set it is the run's
 	// base system prompt (overriding the agent's configured default base);
@@ -69,6 +67,10 @@ type AgentConfigPromptLayers struct {
 	// User is the optional higher user-instruction layer composed above the
 	// base in the lower-trust guidance position.
 	User *string `json:"user,omitempty"`
+	// Guidance replaces the configured planner.extra_guidance for this agent
+	// in the operator-trusted additive prompt section. An unset value inherits
+	// the configured guidance.
+	Guidance *string `json:"guidance,omitempty"`
 }
 
 // AgentConfigNamedBlock is the wire projection of one named, additive
@@ -520,7 +522,7 @@ type AgentConfigApproval struct {
 // break.
 type AgentConfigPayload struct {
 	// PromptLayers, when non-nil, pins the agent's layered system prompt
-	// (operator base + optional user layer) for the revision.
+	// for the revision.
 	PromptLayers *AgentConfigPromptLayers `json:"prompt_layers,omitempty"`
 	// Skills, when non-nil, pins the agent's skills membership for the
 	// revision.
@@ -635,8 +637,8 @@ type AgentConfigLoadingModeChange struct {
 	To   string `json:"to,omitempty"`
 }
 
-// AgentConfigPromptLayersDiff is the wire projection of the base + user
-// prompt-layer text delta across two revisions.
+// AgentConfigPromptLayersDiff is the wire projection of the base, user, and
+// guidance prompt-layer text deltas across two revisions.
 type AgentConfigPromptLayersDiff struct {
 	// BaseChanged reports whether the base layer text differs.
 	BaseChanged bool `json:"base_changed"`
@@ -648,6 +650,11 @@ type AgentConfigPromptLayersDiff struct {
 	// UserFrom / UserTo are the user layer text in the from / to revision.
 	UserFrom string `json:"user_from,omitempty"`
 	UserTo   string `json:"user_to,omitempty"`
+	// GuidanceChanged reports whether the guidance override text differs.
+	GuidanceChanged bool `json:"guidance_changed"`
+	// GuidanceFrom / GuidanceTo are the override text in the from / to revision.
+	GuidanceFrom string `json:"guidance_from,omitempty"`
+	GuidanceTo   string `json:"guidance_to,omitempty"`
 }
 
 // AgentConfigConnectionsDiff is the wire projection of the structured
@@ -810,9 +817,12 @@ type AgentConfigGetResponse struct {
 // `agent_config.set_revision` request — write a new revision and advance
 // the active pointer.
 type AgentConfigSetRevisionRequest struct {
-	Identity IdentityScope      `json:"identity"`
-	AgentID  string             `json:"agent_id"`
-	Payload  AgentConfigPayload `json:"payload"`
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// Payload replaces the active revision. When prompt_layers is present,
+	// its fields follow the patch rules of agent_config.set_prompt_layers.
+	// An omitted or null prompt_layers clears the section.
+	Payload AgentConfigPayload `json:"payload"`
 	// ExpectedContentHash is the OPTIONAL expected-revision token. When
 	// non-empty, the write requires the agent's ACTIVE revision to still
 	// carry exactly this content hash (as returned by `agent_config.get`)
@@ -992,14 +1002,16 @@ type AgentConfigSetToolExposureResponse struct {
 }
 
 // AgentConfigSetPromptLayersRequest is the admin-scoped
-// `agent_config.set_prompt_layers` request — set the agent's layered system
-// prompt (operator base and/or user layer) as a desired-state REPLACE of the
-// prompt-layer section (the skills + tool-exposure sections of the active
-// revision are preserved). The edit records a new config revision and applies
-// to the agent's NEXT run.
+// `agent_config.set_prompt_layers` request. It edits the active revision's
+// prompt layers for the agent's next run and preserves sibling sections.
 type AgentConfigSetPromptLayersRequest struct {
-	Identity     IdentityScope           `json:"identity"`
-	AgentID      string                  `json:"agent_id"`
+	Identity IdentityScope `json:"identity"`
+	AgentID  string        `json:"agent_id"`
+	// PromptLayers preserves the Base/User pair when the only supplied
+	// string is Guidance. Other edits replace that pair. Omitted or null
+	// Guidance preserves the active override. An empty or
+	// whitespace-only Guidance value clears it and inherits the configured
+	// planner.extra_guidance.
 	PromptLayers AgentConfigPromptLayers `json:"prompt_layers"`
 	// ExpectedContentHash is the OPTIONAL expected-revision token. When
 	// non-empty, the write requires the agent's ACTIVE revision to still

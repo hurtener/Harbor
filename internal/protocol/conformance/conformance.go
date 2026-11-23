@@ -2060,6 +2060,7 @@ func runVersionHandshake(t *testing.T) {
 		types.CapStateSnapshots:                {},
 		types.CapAgentConfig:                   {},
 		types.CapApprovalRulesDynamic:          {},
+		types.CapPromptGuidanceOverride:        {},
 		types.CapSessionLifecycle:              {},
 		types.CapToolAnnotations:               {},
 		types.CapToolsConfigurationView:        {},

@@ -443,6 +443,10 @@ const (
 
 	// CapApprovalRulesDynamic advertises approval rules on active agent-config revisions.
 	CapApprovalRulesDynamic Capability = "approval_rules_dynamic"
+
+	// CapPromptGuidanceOverride advertises the agent-config guidance override.
+	CapPromptGuidanceOverride Capability = "prompt_guidance_override"
+
 	// CapSessionLifecycle — the session data-lifecycle surface: the
 	// `sessions.delete` identity-scoped erasure method that deletes a
 	// session and cascades deletion of its scoped State, Memory, and
@@ -537,6 +541,7 @@ var canonicalCapabilities = map[Capability]struct{}{
 	CapAgentConfig:                   {},
 	CapAgentConfigMemory:             {},
 	CapApprovalRulesDynamic:          {},
+	CapPromptGuidanceOverride:        {},
 	CapSessionLifecycle:              {},
 	CapToolAnnotations:               {},
 	CapToolsConfigurationView:        {},
@@ -559,9 +564,8 @@ func IsValidCapability(c Capability) bool {
 	return ok
 }
 
-// Capabilities returns the deterministic, lexicographically-sorted set
-// of Protocol capabilities the Runtime advertises. At Protocol 0.1.0
-// this is exactly {CapTaskControl}.
+// Capabilities returns the lexicographically sorted set of canonical
+// Protocol capabilities.
 func Capabilities() []Capability {
 	out := make([]Capability, 0, len(canonicalCapabilities))
 	for c := range canonicalCapabilities {

@@ -1224,7 +1224,7 @@ func (s *Service) SetRevision(ctx context.Context, req prototypes.AgentConfigSet
 		payload.Connections.Servers = normalizedConns
 	}
 	rev, err := s.registry.SetRevision(ctx, identity.Quadruple{Identity: id}, req.AgentID, agentcfg.ConfigScopeAgent, payload,
-		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash, MergePromptLayers: true})
 	if err != nil {
 		return prototypes.AgentConfigSetRevisionResponse{}, err
 	}
@@ -1471,8 +1471,9 @@ func payloadToWire(p agentcfg.ConfigPayload) prototypes.AgentConfigPayload {
 	var out prototypes.AgentConfigPayload
 	if p.PromptLayers != nil {
 		out.PromptLayers = &prototypes.AgentConfigPromptLayers{
-			Base: copyStringPtr(p.PromptLayers.Base),
-			User: copyStringPtr(p.PromptLayers.User),
+			Base:     copyStringPtr(p.PromptLayers.Base),
+			User:     copyStringPtr(p.PromptLayers.User),
+			Guidance: copyStringPtr(p.PromptLayers.Guidance),
 		}
 	}
 	if p.Skills != nil {
@@ -1734,8 +1735,9 @@ func payloadToDomain(p prototypes.AgentConfigPayload) agentcfg.ConfigPayload {
 	var out agentcfg.ConfigPayload
 	if p.PromptLayers != nil {
 		out.PromptLayers = &agentcfg.PromptLayers{
-			Base: copyStringPtr(p.PromptLayers.Base),
-			User: copyStringPtr(p.PromptLayers.User),
+			Base:     copyStringPtr(p.PromptLayers.Base),
+			User:     copyStringPtr(p.PromptLayers.User),
+			Guidance: copyStringPtr(p.PromptLayers.Guidance),
 		}
 	}
 	if p.Skills != nil {
@@ -1828,12 +1830,15 @@ func diffToWire(d agentcfg.Diff) prototypes.AgentConfigDiff {
 			ToolLoadingChanges:   loadingChangesToWire(d.ToolExposure.ToolLoadingChanges),
 		},
 		PromptLayers: prototypes.AgentConfigPromptLayersDiff{
-			BaseChanged: d.PromptLayers.BaseChanged,
-			BaseFrom:    d.PromptLayers.BaseFrom,
-			BaseTo:      d.PromptLayers.BaseTo,
-			UserChanged: d.PromptLayers.UserChanged,
-			UserFrom:    d.PromptLayers.UserFrom,
-			UserTo:      d.PromptLayers.UserTo,
+			BaseChanged:     d.PromptLayers.BaseChanged,
+			BaseFrom:        d.PromptLayers.BaseFrom,
+			BaseTo:          d.PromptLayers.BaseTo,
+			UserChanged:     d.PromptLayers.UserChanged,
+			UserFrom:        d.PromptLayers.UserFrom,
+			UserTo:          d.PromptLayers.UserTo,
+			GuidanceChanged: d.PromptLayers.GuidanceChanged,
+			GuidanceFrom:    d.PromptLayers.GuidanceFrom,
+			GuidanceTo:      d.PromptLayers.GuidanceTo,
 		},
 		Connections: prototypes.AgentConfigConnectionsDiff{
 			Added:   append([]string(nil), d.Connections.Added...),

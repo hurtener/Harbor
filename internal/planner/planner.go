@@ -469,6 +469,10 @@ type RunContext struct {
 //     — it can extend the operator's guidance but never precede, replace,
 //     or weaken the base. A session SystemPromptOverride replaces the whole
 //     base+user spine for its single message.
+//   - GuidanceOverride is the durable, operator-owned replacement for the
+//     configured operator guidance in `<additional_guidance>`. A nonblank
+//     value renders verbatim and survives SystemPromptOverride. Nil or blank
+//     inherits the configured guidance.
 //   - ExtraSystemBlocks are the durable, operator-authored NAMED blocks
 //     resolved from the agent's active config at run start. They render
 //     VERBATIM, in declared order, into the operator-trusted additive
@@ -485,6 +489,7 @@ type LLMOverrides struct {
 	SystemPromptOverride *string
 	BasePromptLayer      *string
 	UserPromptLayer      *string
+	GuidanceOverride     *string
 	ExtraSystemBlocks    []NamedBlock
 }
 

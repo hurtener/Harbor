@@ -766,6 +766,7 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `base` | `*string` | optional (`omitempty`) |
 | `user` | `*string` | optional (`omitempty`) |
+| `guidance` | `*string` | optional (`omitempty`) |
 
 ## AgentConfigPromptLayersDiff
 
@@ -779,6 +780,9 @@ Declared in `internal/protocol/types`.
 | `user_changed` | `bool` |  |
 | `user_from` | `string` | optional (`omitempty`) |
 | `user_to` | `string` | optional (`omitempty`) |
+| `guidance_changed` | `bool` |  |
+| `guidance_from` | `string` | optional (`omitempty`) |
+| `guidance_to` | `string` | optional (`omitempty`) |
 
 ## AgentConfigRegisterOAuthMCPCapabilityRequest
 

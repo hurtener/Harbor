@@ -433,6 +433,7 @@ var canonicalCapabilityUniverse = []types.Capability{
 	"llm_provider_catalog",
 	"llm_provider_route",
 	"llm_provider_route_model_profile_v1",
+	"prompt_guidance_override",
 	"run_limits_v1",
 	"run_llm_settings_v1",
 	"run_scoped_tools_v1",

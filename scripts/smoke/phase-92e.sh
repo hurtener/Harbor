@@ -22,13 +22,16 @@ assert_grep_present 'MethodAgentConfigSetPromptLayers Method = "agent_config.set
     internal/protocol/methods/methods.go \
     'phase 92e: set_prompt_layers method constant present'
 
-# 2. The PromptLayers payload section is on the envelope (base + user).
+# 2. The PromptLayers payload section is on the envelope.
 assert_grep_present 'type PromptLayers struct' \
     internal/agentcfg/agentcfg.go \
     'phase 92e: PromptLayers type present'
 assert_grep_present 'Base \*string' \
     internal/agentcfg/agentcfg.go \
     'phase 92e: PromptLayers.Base field present'
+assert_grep_present 'Guidance \*string `json:"guidance,omitempty"`' \
+    internal/agentcfg/agentcfg.go \
+    'phase 92e: optional operator guidance field present'
 
 # 3. The prompt-layers service method records a revision, preserving siblings.
 assert_grep_present 'func \(s \*Service\) SetPromptLayers' \
@@ -64,16 +67,28 @@ assert_grep_present 'agent_config.set_prompt_layers' \
     docs/site/protocol/methods.md \
     'phase 92e: generated methods.md carries set_prompt_layers'
 
-# 8. Live (preflight dev server): the set_prompt_layers route is admin-gated.
-# An unauthenticated POST must NOT be 200 — 401 / 403 / 501 are all healthy.
-# A 404 means the surface is not mounted (SKIP).
+# 8. Live (preflight dev server): probe the POST route without credentials,
+# then check the guidance write with the dev bearer.
 ROUTE="$(api_url /v1/agent_config/set_prompt_layers)"
-if skip_if_404 "${ROUTE}" 'phase 92e: agent_config.set_prompt_layers route mounted'; then
+if ! command -v curl >/dev/null 2>&1; then
+    skip 'phase 92e: curl not available'
+else
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
         -X POST -H 'Content-Type: application/json' -d '{}' "${ROUTE}" || true)
     case "${code}" in
-        401|403) ok "phase 92e: agent_config.set_prompt_layers is identity/admin-gated (${code})" ;;
-        501)     ok "phase 92e: agent_config.set_prompt_layers route present but unwired (501)" ;;
+        401|403)
+            ok "phase 92e: agent_config.set_prompt_layers is identity/admin-gated (${code})"
+            TOKEN="$(dev_bearer)"
+            if [ -n "${TOKEN}" ]; then
+                assert_post_status_auth 200 "${ROUTE}" \
+                    '{"agent_id":"phase92e-guidance-smoke","prompt_layers":{"guidance":"Prefer concise answers."}}' \
+                    "${TOKEN}" 'phase 92e: an admin can write a guidance-only revision'
+            else
+                skip 'phase 92e: guidance write requires a dev bearer'
+            fi
+            ;;
+        404|405|501) skip "phase 92e: agent_config.set_prompt_layers unavailable (${code})" ;;
+        000|'')  skip 'phase 92e: server unreachable (000)' ;;
         200)     fail "phase 92e: agent_config.set_prompt_layers answered 200 unauthenticated — admin gate missing" ;;
         *)       fail "phase 92e: agent_config.set_prompt_layers unexpected status ${code}" ;;
     esac

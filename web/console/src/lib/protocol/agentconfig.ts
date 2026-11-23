@@ -42,14 +42,14 @@ export interface AgentConfigToolExposure {
 	tool_loading_modes?: Record<string, string>;
 }
 
-/** An agent's layered system prompt in a config revision: an operator-owned
- * base layer plus an optional user layer composed ABOVE the base without
- * mutating it. The composition order is the security boundary — the user layer
- * can extend but never replace or weaken the operator base. Mirrors
- * `types.AgentConfigPromptLayers`. */
+/** An agent's layered system prompt in a config revision, with an operator-owned
+ * base layer and guidance override plus an optional lower-trust user layer.
+ * Mirrors `types.AgentConfigPromptLayers`. */
 export interface AgentConfigPromptLayers {
 	base?: string;
 	user?: string;
+	/** Replaces the configured `planner.extra_guidance` for this agent. */
+	guidance?: string;
 }
 
 /** One named, additive prompt block: the NAME a contributor addresses its own
@@ -499,7 +499,7 @@ export interface AgentConfigToolExposureDiff {
 	tool_loading_changes?: AgentConfigLoadingModeChange[];
 }
 
-/** The base + user prompt-layer text delta across two revisions. Mirrors
+/** The base, user, and guidance prompt-layer text deltas across two revisions. Mirrors
  * `types.AgentConfigPromptLayersDiff`. */
 export interface AgentConfigPromptLayersDiff {
 	base_changed: boolean;
@@ -508,6 +508,9 @@ export interface AgentConfigPromptLayersDiff {
 	user_changed: boolean;
 	user_from?: string;
 	user_to?: string;
+	guidance_changed: boolean;
+	guidance_from?: string;
+	guidance_to?: string;
 }
 
 /** The structured runtime-added MCP-connection set-diff (by name) across two
@@ -633,6 +636,11 @@ export interface AgentConfigGetResponse {
 export interface AgentConfigSetRevisionRequest {
 	identity: IdentityScope;
 	agent_id: string;
+	/**
+	 * Replaces the active revision. A present `prompt_layers` uses the same
+	 * field rules as `agent_config.set_prompt_layers`. An omitted or null
+	 * `prompt_layers` clears the section.
+	 */
 	payload: AgentConfigPayload;
 	/**
 	 * OPTIONAL expected-revision token. When set, the write requires the
@@ -761,13 +769,17 @@ export interface AgentConfigSetToolExposureResponse {
 	protocol_version: string;
 }
 
-/** `agent_config.set_prompt_layers` request — admin-scoped. Replaces ONLY
- * the prompt-layer section (the skills + tool-exposure sections are
- * preserved). The user layer composes above the base in the lower-trust
- * position; it can never replace or weaken the operator base. */
+/** Admin-scoped `agent_config.set_prompt_layers` request. Edits the prompt
+ * layers for the next run and preserves sibling sections. */
 export interface AgentConfigSetPromptLayersRequest {
 	identity: IdentityScope;
 	agent_id: string;
+	/**
+	 * Preserves the base/user pair when the only supplied string is guidance.
+	 * Other edits replace the pair. Omitting guidance preserves the active
+	 * override. Empty or whitespace-only guidance restores the configured
+	 * `planner.extra_guidance`.
+	 */
 	prompt_layers: AgentConfigPromptLayers;
 	/**
 	 * OPTIONAL expected-revision token. When set, the write requires the

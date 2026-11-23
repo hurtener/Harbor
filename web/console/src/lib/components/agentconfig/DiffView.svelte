@@ -2,7 +2,7 @@
   // Harbor Console — agent-config two-revision diff view (92a).
   //
   // Renders the server-side `AgentConfigDiff`: a TEXT delta for the prompt
-  // layers (base / user, before → after) and a structured SET-diff for
+  // layers (base / user / operator guidance, before → after) and a structured SET-diff for
   // skills, MCP tool-exposure, and runtime-added connections. Page-specific
   // component; composes the shared StatusChip. Tokens only; runes (D-092).
   import { StatusChip } from '$lib/components/ui';
@@ -22,7 +22,11 @@
   const hasConnChanges = $derived(
     (diff.connections.added?.length ?? 0) > 0 || (diff.connections.removed?.length ?? 0) > 0
   );
-  const hasPromptChanges = $derived(diff.prompt_layers.base_changed || diff.prompt_layers.user_changed);
+  const hasPromptChanges = $derived(
+    diff.prompt_layers.base_changed ||
+      diff.prompt_layers.user_changed ||
+      diff.prompt_layers.guidance_changed
+  );
   const hasLlmChanges = $derived(
     diff.llm_params.model_changed ||
       diff.llm_params.temperature_changed ||
@@ -86,6 +90,13 @@
           <span class="delta-label">User</span>
           <pre class="delta from">{diff.prompt_layers.user_from ?? '(empty)'}</pre>
           <pre class="delta to">{diff.prompt_layers.user_to ?? '(empty)'}</pre>
+        </div>
+      {/if}
+      {#if diff.prompt_layers.guidance_changed}
+        <div class="text-delta">
+          <span class="delta-label">Operator guidance</span>
+          <pre class="delta from">{diff.prompt_layers.guidance_from ?? '(inherit)'}</pre>
+          <pre class="delta to">{diff.prompt_layers.guidance_to ?? '(inherit)'}</pre>
         </div>
       {/if}
     </section>

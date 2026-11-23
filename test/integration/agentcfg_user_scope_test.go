@@ -126,6 +126,53 @@ func usID(user, session string) identity.Identity {
 
 func userScopes() []auth.Scope { return []auth.Scope{auth.ScopeAgentConfigUser} }
 
+func TestE2E_AgentConfig_GuidanceOverride_RequiresAdmin(t *testing.T) {
+	h := newUSHarness(t)
+	id := usID("alice", "sa")
+	const guidance = "operator guidance"
+	set := decode[prototypes.AgentConfigSetPromptLayersResponse](t, h.call(t, "/v1/agent_config/set_prompt_layers", prototypes.AgentConfigSetPromptLayersRequest{
+		AgentID: usAgent, PromptLayers: prototypes.AgentConfigPromptLayers{Guidance: ptr(guidance)},
+	}, id, adminScopes()))
+	edit := map[string]string{"guidance": "forged guidance"}
+	for _, caller := range []struct {
+		name   string
+		scopes []auth.Scope
+	}{
+		{"session", nil},
+		{"user", userScopes()},
+	} {
+		for _, route := range []struct {
+			method string
+			fields map[string]any
+		}{
+			{"set_prompt_layers", map[string]any{"agent_id": usAgent, "prompt_layers": edit}},
+			{"set_revision", map[string]any{"agent_id": usAgent, "payload": map[string]any{"prompt_layers": edit}}},
+		} {
+			rec := h.call(t, "/v1/agent_config/"+route.method, route.fields, id, caller.scopes)
+			if rec.Code != http.StatusForbidden || errCode(t, rec) != protoerrors.CodeScopeMismatch {
+				t.Fatalf("%s caller on %s: status=%d body=%s", caller.name, route.method, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	for _, route := range []struct {
+		method string
+		fields map[string]any
+		scopes []auth.Scope
+	}{
+		{"session/set_user_prompt", map[string]any{"agent_id": usAgent, "user_prompt": "refinement", "guidance": edit["guidance"]}, nil},
+		{"user/set_revision", map[string]any{"agent_id": usAgent, "payload": map[string]any{"user_prompt": "refinement", "guidance": edit["guidance"]}}, userScopes()},
+	} {
+		rec := h.call(t, "/v1/agent_config/"+route.method, route.fields, id, route.scopes)
+		if rec.Code != http.StatusBadRequest || errCode(t, rec) != protoerrors.CodeInvalidRequest {
+			t.Fatalf("%s accepted a forged field: status=%d body=%s", route.method, rec.Code, rec.Body.String())
+		}
+	}
+	get := decode[prototypes.AgentConfigGetResponse](t, h.call(t, "/v1/agent_config/get", prototypes.AgentConfigGetRequest{AgentID: usAgent}, id, adminScopes()))
+	if !get.Set || get.Revision == nil || get.Revision.RevisionID != set.Revision.RevisionID {
+		t.Fatalf("a rejected write moved the admin revision: %+v", get)
+	}
+}
+
 func TestE2E_AgentConfig_UserScopeTier(t *testing.T) {
 	h := newUSHarness(t)
 	alice := usID("alice", "sa")

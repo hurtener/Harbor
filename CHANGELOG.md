@@ -17,6 +17,14 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+### Added
+
+- **Per-agent operator guidance (D-521).** Set `prompt_layers.guidance` in an
+  admin agent-config revision to replace `planner.extra_guidance` from the next
+  run. An empty value restores the configured guidance. Revisions track
+  guidance for diff and rollback, and `runtime.info` advertises
+  `prompt_guidance_override`.
+
 ## [1.60.0] - 2026-11-20
 
 ### Added

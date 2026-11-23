@@ -18,12 +18,10 @@
 //
 // # The safe subset is structurally narrow-only
 //
-// The persisted Overlay carries ONLY a user prompt layer (never a base),
-// a source/tool DISABLE set (never an enable), and the read-only legacy names
-// of the session's ephemeral personal skills. Because the shape has no base-prompt
-// field and no enable field, a session caller PHYSICALLY cannot widen a
-// capability or edit the operator base — the data model carries the
-// guarantee; the projection's union-only composition is the second layer.
+// The persisted Overlay carries a lower-trust user prompt layer, a
+// source/tool disable set, and the read-only legacy names of the session's
+// ephemeral personal skills. The operator owns the trusted prompt layers
+// and capability enablement.
 //
 // # Concurrent reuse (the concurrent-reuse contract)
 //
@@ -69,9 +67,7 @@ var (
 type Overlay struct {
 	// UserPrompt is the session's user-instruction prompt layer. It composes
 	// ABOVE the admin base in the lower-trust `<user_instructions>` position
-	// (escaped); it can extend the operator's guidance but never precede,
-	// replace, or weaken the operator base. There is intentionally NO Base
-	// field — a session caller cannot write the operator base.
+	// (escaped). The operator base and guidance are agent-scoped.
 	UserPrompt string `json:"user_prompt,omitempty"`
 	// DisabledServers names MCP servers the session has DISABLED. At
 	// projection these are UNIONED into the admin exclusion set (the session

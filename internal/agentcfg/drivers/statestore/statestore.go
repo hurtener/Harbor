@@ -340,6 +340,9 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	if err := payload.Approval.Validate(scope); err != nil {
 		return agentcfg.Revision{}, err
 	}
+	if scope == agentcfg.ConfigScopeUser && payload.PromptLayers != nil && payload.PromptLayers.Guidance != nil {
+		return agentcfg.Revision{}, fmt.Errorf("%w: prompt_layers.guidance requires agent scope", agentcfg.ErrInvalidPayload)
+	}
 	if err := r.ensureNotRetired(ctx, id, agentID); err != nil {
 		return agentcfg.Revision{}, err
 	}
@@ -382,6 +385,10 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 		}
 	}
 	if scope == agentcfg.ConfigScopeAgent {
+		if opts.MergePromptLayers {
+			// Merge against the active revision protected by the publication CAS.
+			payload.PromptLayers = mergePromptLayers(active.Payload.PromptLayers, payload.PromptLayers)
+		}
 		// Carry omitted approval through from the same active revision used
 		// by the publication CAS. An explicit empty section clears the rules.
 		if hasActive && payload.Approval == nil {
@@ -491,6 +498,23 @@ func (r *registry) SetRevision(ctx context.Context, id identity.Quadruple, agent
 	r.emitRevised(ctx, agentID, rev)
 	r.emitCatalogChanged(ctx, id, agentID, scope, agentcfg.CatalogChangeReasonConfigRevision)
 	return rev, nil
+}
+
+// mergePromptLayers preserves the existing desired-state base/user pair on
+// guidance-only writes. Other supplied sections replace that pair. Omitted
+// guidance carries forward and explicit blank guidance normalizes to nil.
+// An omitted section retains whole-payload replacement semantics.
+func mergePromptLayers(active, supplied *agentcfg.PromptLayers) *agentcfg.PromptLayers {
+	if active == nil || supplied == nil {
+		return supplied
+	}
+	merged := *supplied
+	if supplied.Guidance == nil {
+		merged.Guidance = active.Guidance
+	} else if supplied.Base == nil && supplied.User == nil {
+		merged.Base, merged.User = active.Base, active.User
+	}
+	return &merged
 }
 
 func preserveSignedOAuthMCPPairs(ctx context.Context, active agentcfg.Revision, hasActive bool, payload agentcfg.ConfigPayload) (agentcfg.ConfigPayload, error) {

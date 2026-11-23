@@ -3,6 +3,8 @@ package projection_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/agentcfg"
@@ -15,16 +17,16 @@ func ps(s string) *string { return &s }
 
 // TestActivePromptLayers_NoRegistry returns the no-op path.
 func TestActivePromptLayers_NoRegistry(t *testing.T) {
-	base, user, ok, err := projection.ActivePromptLayers(context.Background(), nil, projAgent, projID())
-	if err != nil || ok || base != "" || user != "" {
-		t.Fatalf("nil registry should be a no-op: base=%q user=%q ok=%v err=%v", base, user, ok, err)
+	base, user, guidance, ok, err := projection.ActivePromptLayers(context.Background(), nil, projAgent, projID())
+	if err != nil || ok || base != "" || user != "" || guidance != nil {
+		t.Fatalf("nil registry should be a no-op: base=%q user=%q guidance=%v ok=%v err=%v", base, user, guidance, ok, err)
 	}
 }
 
 // TestActivePromptLayers_NoActiveRevision returns the backward-compatible path.
 func TestActivePromptLayers_NoActiveRevision(t *testing.T) {
 	reg := newRegistry(t)
-	_, _, ok, err := projection.ActivePromptLayers(context.Background(), reg, projAgent, projID())
+	_, _, _, ok, err := projection.ActivePromptLayers(context.Background(), reg, projAgent, projID())
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -33,22 +35,20 @@ func TestActivePromptLayers_NoActiveRevision(t *testing.T) {
 	}
 }
 
-// TestActivePromptLayers_ResolvesBaseAndUser proves the projection reads the
-// active revision's base + user layers.
-func TestActivePromptLayers_ResolvesBaseAndUser(t *testing.T) {
+func TestActivePromptLayers_ResolvesBaseUserAndGuidance(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
-		PromptLayers: &agentcfg.PromptLayers{Base: ps("the base"), User: ps("the user")},
+		PromptLayers: &agentcfg.PromptLayers{Base: ps("the base"), User: ps("the user"), Guidance: ps("  the guidance\n")},
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	base, user, ok, err := projection.ActivePromptLayers(ctx, reg, projAgent, projID())
+	base, user, guidance, ok, err := projection.ActivePromptLayers(ctx, reg, projAgent, projID())
 	if err != nil || !ok {
 		t.Fatalf("resolve: ok=%v err=%v", ok, err)
 	}
-	if base != "the base" || user != "the user" {
-		t.Fatalf("base=%q user=%q", base, user)
+	if base != "the base" || user != "the user" || deref(guidance) != "  the guidance\n" {
+		t.Fatalf("base=%q user=%q guidance=%q", base, user, deref(guidance))
 	}
 }
 
@@ -62,7 +62,7 @@ func TestActivePromptLayers_NoPromptSection(t *testing.T) {
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	_, _, ok, err := projection.ActivePromptLayers(ctx, reg, projAgent, projID())
+	_, _, _, ok, err := projection.ActivePromptLayers(ctx, reg, projAgent, projID())
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -90,17 +90,86 @@ func TestApplyPromptLayers_OverlaysOntoNil(t *testing.T) {
 	}
 }
 
+func TestApplyPromptLayers_GuidanceOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		guidance *string
+		want     string
+	}{
+		{name: "unset"},
+		{name: "empty", guidance: ps("")},
+		{name: "whitespace", guidance: ps(" \n\t ")},
+		{name: "verbatim", guidance: ps("  <operator>\n\tGuidance & details.\n "), want: "  <operator>\n\tGuidance & details.\n "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			reg := newRegistry(t)
+			if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+				PromptLayers: &agentcfg.PromptLayers{Guidance: tc.guidance},
+			}, agentcfg.SetOptions{}); err != nil {
+				t.Fatalf("set guidance: %v", err)
+			}
+			ov, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, projID(), nil)
+			if err != nil {
+				t.Fatalf("apply guidance: %v", err)
+			}
+			if tc.want == "" {
+				if ov != nil {
+					t.Fatalf("blank guidance allocated a bundle: %+v", ov)
+				}
+				return
+			}
+			if ov == nil || deref(ov.GuidanceOverride) != tc.want || ov.BasePromptLayer != nil || ov.UserPromptLayer != nil {
+				t.Fatalf("guidance-only projection should set only guidance: %+v", ov)
+			}
+		})
+	}
+}
+
+func TestApplyPromptLayers_GuidanceConcurrentIsolation(t *testing.T) {
+	ctx := t.Context()
+	reg := newRegistry(t)
+	for _, tenant := range []string{projTenant, "other-tenant"} {
+		id := projID()
+		id.TenantID = tenant
+		if _, err := reg.SetRevision(ctx, id, projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
+			PromptLayers: &agentcfg.PromptLayers{Guidance: ps("guidance for " + tenant)},
+		}, agentcfg.SetOptions{}); err != nil {
+			t.Fatalf("set %s guidance: %v", tenant, err)
+		}
+	}
+	var wg sync.WaitGroup
+	for i := range 100 {
+		wg.Go(func() {
+			id := projID()
+			id.SessionID = fmt.Sprintf("session-%d", i)
+			if i%2 == 1 {
+				id.TenantID = "other-tenant"
+			}
+			ov, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, id, nil)
+			if err != nil || ov == nil {
+				t.Errorf("%s: apply guidance: bundle=%+v err=%v", id.SessionID, ov, err)
+				return
+			}
+			if got, want := deref(ov.GuidanceOverride), "guidance for "+id.TenantID; got != want {
+				t.Errorf("%s: guidance = %q, want %q", id.SessionID, got, want)
+			}
+		})
+	}
+	wg.Wait()
+}
+
 // TestApplyPromptLayers_PreservesExistingOverrides overlays onto an existing
 // bundle without clobbering its other fields.
 func TestApplyPromptLayers_PreservesExistingOverrides(t *testing.T) {
 	ctx := context.Background()
 	reg := newRegistry(t)
 	if _, err := reg.SetRevision(ctx, projID(), projAgent, agentcfg.ConfigScopeAgent, agentcfg.ConfigPayload{
-		PromptLayers: &agentcfg.PromptLayers{Base: ps("B")},
+		PromptLayers: &agentcfg.PromptLayers{Base: ps("B"), Guidance: ps("G")},
 	}, agentcfg.SetOptions{}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	existing := &planner.LLMOverrides{ExtraInstructions: ps("tenant default")}
+	existing := &planner.LLMOverrides{ExtraInstructions: ps("tenant default"), SystemPromptOverride: ps("one-shot")}
 	ov, err := projection.ApplyPromptLayers(ctx, reg, nil, projAgent, projID(), existing)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
@@ -110,6 +179,9 @@ func TestApplyPromptLayers_PreservesExistingOverrides(t *testing.T) {
 	}
 	if ov.BasePromptLayer == nil || *ov.BasePromptLayer != "B" {
 		t.Fatalf("base not applied: %+v", ov)
+	}
+	if deref(ov.GuidanceOverride) != "G" || deref(ov.SystemPromptOverride) != "one-shot" {
+		t.Fatalf("guidance and one-shot base override should coexist: %+v", ov)
 	}
 	if ov.UserPromptLayer != nil {
 		t.Fatalf("user should be unset when not configured: %+v", ov.UserPromptLayer)

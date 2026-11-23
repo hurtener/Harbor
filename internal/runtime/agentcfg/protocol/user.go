@@ -18,23 +18,19 @@ import (
 // # The structural widening boundary
 //
 // The verb maps the bounded AgentConfigUserPayload onto a RESTRICTED
-// ConfigPayload: UserPrompt → PromptLayers.User (Base stays nil),
+// ConfigPayload: UserPrompt → PromptLayers.User,
 // DisabledServers/DisabledTools → ToolExposure (PausedServers/DisabledTools),
 // ServerLoadingModes/ToolLoadingModes → ToolExposure loading maps, and
-// PersonalSkills → Skills.Names; Base, Connections, and LLMParams stay nil.
-// Because the wire payload carries no base / connections / enable / model
-// field AND the mapping never populates those sections, a user caller
-// physically cannot widen a capability or edit the operator base — the
-// restricted mapping is the structural boundary, the scope gate is
-// defence-in-depth.
+// PersonalSkills → Skills.Names. The wire payload and mapping only expose
+// those fields. Trusted prompt layers and capability enablement remain
+// under operator authority.
 //
 // Authority derives from the verified ctx scope (enforced at the wire
 // handler), never the request body.
 
 // userPayloadToDomain maps the bounded safe-subset wire payload onto the
 // restricted domain ConfigPayload. It populates ONLY the prompt user layer,
-// the tool-exposure disables/loading choices, and the skills membership —
-// never Base, Connections, or LLMParams (the structural widening boundary).
+// the tool-exposure disables/loading choices, and the skills membership.
 func userPayloadToDomain(p prototypes.AgentConfigUserPayload) agentcfg.ConfigPayload {
 	var out agentcfg.ConfigPayload
 	if p.UserPrompt != "" {

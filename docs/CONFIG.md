@@ -2866,11 +2866,27 @@ not need narration, and the final answer must stand on its own. To suppress
 updates for a silent or machine-readable consumer, say so in trusted guidance.
 An output schema alone governs the terminal answer, not intermediate prose.
 
-`planner.extra_guidance`, operator-authored `extra_system_blocks`, and resolved
-**tenant** `LLMOverrides.ExtraInstructions` compose in `<additional_guidance>`
-(in that order, followed by runtime repair guidance). In contrast, the ordinary
-caller's `RunOverrides.extra_instructions` becomes escaped
-`UserPersonalization`, not trusted guidance. User preferences, tool results,
+The active agent-config revision can replace this YAML value with
+`prompt_layers.guidance` (D-521). Use the admin-scoped
+`agent_config.set_prompt_layers` with the current `expected_content_hash`
+and `"prompt_layers": {"guidance": "Use the incident-response runbook."}`.
+The override applies from the next run. Empty or whitespace-only
+`guidance` restores the YAML value. Omitted or null `guidance` preserves the
+active override when an admin supplies a `prompt_layers` object. When the
+only string supplied is `guidance`, the base and user layers carry forward.
+Null is equivalent to omission for all three fields. A `base` or `user`
+string replaces the pair. Include an explicit empty string for either field
+to clear both layers in the same edit as a guidance string. The empty
+object `{}` also clears the pair while preserving active guidance.
+`agent_config.set_revision` uses the same field semantics when its
+`payload.prompt_layers` object is present. Omitting that section or
+sending it as null clears the full section on a whole-revision write.
+
+The effective planner guidance, operator-authored `extra_system_blocks`,
+and resolved **tenant** `LLMOverrides.ExtraInstructions` compose in
+`<additional_guidance>` in that order, followed by runtime repair guidance.
+An ordinary caller's `RunOverrides.extra_instructions` becomes escaped
+`UserPersonalization`. User preferences, tool results,
 retrieved documents, skills, memory, and prior assistant text must not override
 operator restrictions merely by claiming a higher role (D-387).
 

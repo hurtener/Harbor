@@ -71,6 +71,21 @@ func userQuad(user, agentID string) identity.Quadruple {
 	return identity.Quadruple{Identity: identity.Identity{TenantID: tenantT, UserID: user, SessionID: agentID}}
 }
 
+func TestStateStore_SetRevision_RejectsUserScopeGuidance(t *testing.T) {
+	r, _ := newRegistryWithStore(t)
+	ctx := context.Background()
+	const agent = "a1"
+	id := userQuad("alice", agent)
+	guidance := "trusted guidance"
+	payload := agentcfg.ConfigPayload{PromptLayers: &agentcfg.PromptLayers{Guidance: &guidance}}
+	if _, err := r.SetRevision(ctx, id, agent, agentcfg.ConfigScopeUser, payload, agentcfg.SetOptions{}); !errors.Is(err, agentcfg.ErrInvalidPayload) {
+		t.Fatalf("user-scoped guidance write = %v, want ErrInvalidPayload", err)
+	}
+	if _, found, err := r.Active(ctx, id, agent, agentcfg.ConfigScopeUser); err != nil || found {
+		t.Fatalf("active revision after rejected write: found=%v, err=%v", found, err)
+	}
+}
+
 // TestStateStore_UserScope_KeyingAndKinds asserts a ConfigScopeUser write
 // persists under the caller's REAL (tenant, user) + agent-in-session AND the
 // distinct agentcfg.user.* kinds — and writes NOTHING onto the agent-level

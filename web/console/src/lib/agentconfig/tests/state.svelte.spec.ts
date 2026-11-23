@@ -105,7 +105,13 @@ function fakeClient(overrides: Record<string, unknown> = {}, capabilities: strin
 				to_revision_id: 'rev-2',
 				skills: { added: ['recap'] },
 				tool_exposure: {},
-				prompt_layers: { base_changed: true, base_from: '', base_to: 'You are a base.', user_changed: false },
+				prompt_layers: {
+					base_changed: true,
+					base_from: '',
+					base_to: 'You are a base.',
+					user_changed: false,
+					guidance_changed: false
+				},
 				connections: {},
 				llm_params: { model_changed: false, temperature_changed: false, max_tokens_changed: false, reasoning_effort_changed: false }
 			},
@@ -674,6 +680,30 @@ describe('AgentConfigPanelState — atomic "Save all" (92i)', () => {
 		expect(payload.approval).toEqual(approval);
 		expect(expectedContentHash).toBe(revision.content_hash);
 	});
+
+	it.each([undefined, { guidance: 'Use the runbook.' }])(
+		'Save all preserves active or concurrent guidance with empty base and user layers (%j)',
+		async (prompt_layers) => {
+			seedConnection();
+			const revision = {
+				...ACTIVE_REVISION,
+				payload: { ...ACTIVE_REVISION.payload, prompt_layers }
+			};
+			const client = fakeClient({
+				get: vi.fn(async () => ({ revision, set: true, protocol_version: '0.1.0' })),
+				listRevisions: vi.fn(async () => ({ revisions: [revision], protocol_version: '0.1.0' }))
+			}, ['prompt_guidance_override']);
+			const state = new AgentConfigPanelState();
+			await state.load(client);
+			state.llmModel = 'model-x';
+			state.markLlmEdited();
+			await state.saveAll();
+
+			const [, payload] = ac(client).setRevision.mock.calls[0];
+			expect(JSON.parse(JSON.stringify(payload)).prompt_layers).toEqual({});
+			expect(payload.llm_params.model).toBe('model-x');
+		}
+	);
 
 	it('keeps staged edits when the loaded approval revision is no longer active', async () => {
 		seedConnection();

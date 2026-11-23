@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,19 +18,75 @@ import (
 
 func strPtr(s string) *string { return &s }
 
-// TestSetPromptLayers_RecordsRevision_PreservesSiblings proves a prompt-layer
-// edit composes a new revision pinning base+user AND preserves the active
-// revision's skills + tool-exposure sections (the desired-state REPLACE only
-// touches the prompt-layer section).
+func TestPromptLayerWrites_MergeGuidanceIndependently(t *testing.T) {
+	base, user, guidance := strPtr("base"), strPtr("user"), strPtr("  new guidance\n")
+	for _, method := range []string{"set_prompt_layers", "set_revision"} {
+		t.Run(method, func(t *testing.T) {
+			ctx := context.Background()
+			s := svc(t, false)
+			write := func(layers *prototypes.AgentConfigPromptLayers) prototypes.AgentConfigRevisionView {
+				t.Helper()
+				if method == "set_prompt_layers" {
+					resp, err := s.SetPromptLayers(ctx, prototypes.AgentConfigSetPromptLayersRequest{
+						Identity: scope(), AgentID: testAgentID, PromptLayers: *layers,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return resp.Revision
+				}
+				resp, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
+					Identity: scope(), AgentID: testAgentID, Payload: prototypes.AgentConfigPayload{PromptLayers: layers},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return resp.Revision
+			}
+			steps := []struct {
+				name string
+				in   prototypes.AgentConfigPromptLayers
+				want *prototypes.AgentConfigPromptLayers
+			}{
+				{"seed", prototypes.AgentConfigPromptLayers{Base: base, User: user}, &prototypes.AgentConfigPromptLayers{Base: base, User: user}},
+				{"guidance only", prototypes.AgentConfigPromptLayers{Guidance: guidance}, &prototypes.AgentConfigPromptLayers{Base: base, User: user, Guidance: guidance}},
+				{"base only", prototypes.AgentConfigPromptLayers{Base: base}, &prototypes.AgentConfigPromptLayers{Base: base, Guidance: guidance}},
+				{"user only", prototypes.AgentConfigPromptLayers{User: user}, &prototypes.AgentConfigPromptLayers{User: user, Guidance: guidance}},
+				{"empty object", prototypes.AgentConfigPromptLayers{}, &prototypes.AgentConfigPromptLayers{Guidance: guidance}},
+				{"set all", prototypes.AgentConfigPromptLayers{Base: base, User: user, Guidance: guidance}, &prototypes.AgentConfigPromptLayers{Base: base, User: user, Guidance: guidance}},
+				{"blank guidance only", prototypes.AgentConfigPromptLayers{Guidance: strPtr(" \t\n")}, &prototypes.AgentConfigPromptLayers{Base: base, User: user}},
+				{"empty guidance only", prototypes.AgentConfigPromptLayers{Guidance: strPtr("")}, &prototypes.AgentConfigPromptLayers{Base: base, User: user}},
+			}
+			for _, step := range steps {
+				got := write(&step.in).Payload.PromptLayers
+				if !reflect.DeepEqual(got, step.want) {
+					t.Fatalf("%s: prompt layers = %+v, want %+v", step.name, got, step.want)
+				}
+			}
+			if method == "set_revision" {
+				write(&prototypes.AgentConfigPromptLayers{Guidance: guidance})
+				if got := write(nil).Payload.PromptLayers; got != nil {
+					t.Fatalf("whole-payload replacement retained prompt layers: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+// TestSetPromptLayers_RecordsRevision_PreservesSiblings pins the prompt layers
+// and preserves the active revision's skills, tool exposure, and OAuth providers.
 func TestSetPromptLayers_RecordsRevision_PreservesSiblings(t *testing.T) {
 	ctx := context.Background()
 	s := svc(t, false)
-	// Seed both sibling sections.
+	providers := &prototypes.AgentConfigOAuthProviders{Providers: []prototypes.AgentConfigOAuthProviderDescriptor{{
+		Name: "seed-provider", Driver: "tokenexchange", CredentialSource: "remote", CredentialBroker: "seed-broker", Scopes: []string{"seed.scope"},
+	}}}
 	if _, err := s.SetRevision(ctx, prototypes.AgentConfigSetRevisionRequest{
 		Identity: scope(), AgentID: testAgentID,
 		Payload: prototypes.AgentConfigPayload{
-			Skills:       &prototypes.AgentConfigSkillsSelection{Names: []string{"skA", "skB"}},
-			ToolExposure: &prototypes.AgentConfigToolExposure{PausedServers: []string{"srvA"}},
+			Skills:         &prototypes.AgentConfigSkillsSelection{Names: []string{"skA", "skB"}},
+			ToolExposure:   &prototypes.AgentConfigToolExposure{PausedServers: []string{"srvA"}},
+			OAuthProviders: providers,
 		},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -37,8 +94,9 @@ func TestSetPromptLayers_RecordsRevision_PreservesSiblings(t *testing.T) {
 	resp, err := s.SetPromptLayers(ctx, prototypes.AgentConfigSetPromptLayersRequest{
 		Identity: scope(), AgentID: testAgentID,
 		PromptLayers: prototypes.AgentConfigPromptLayers{
-			Base: strPtr("operator base"),
-			User: strPtr("user refinement"),
+			Base:     strPtr("operator base"),
+			User:     strPtr("user refinement"),
+			Guidance: strPtr("operator guidance"),
 		},
 	})
 	if err != nil {
@@ -51,11 +109,17 @@ func TestSetPromptLayers_RecordsRevision_PreservesSiblings(t *testing.T) {
 	if pl.PromptLayers.User == nil || *pl.PromptLayers.User != "user refinement" {
 		t.Fatalf("user not recorded: %+v", pl.PromptLayers)
 	}
+	if pl.PromptLayers.Guidance == nil || *pl.PromptLayers.Guidance != "operator guidance" {
+		t.Fatalf("guidance not recorded: %+v", pl.PromptLayers)
+	}
 	if pl.Skills == nil || len(pl.Skills.Names) != 2 {
 		t.Fatalf("skills section not preserved across prompt edit: %+v", pl.Skills)
 	}
 	if pl.ToolExposure == nil || len(pl.ToolExposure.PausedServers) != 1 {
 		t.Fatalf("tool-exposure section not preserved across prompt edit: %+v", pl.ToolExposure)
+	}
+	if !reflect.DeepEqual(pl.OAuthProviders, providers) {
+		t.Fatalf("OAuth providers not preserved across prompt edit: %+v", pl.OAuthProviders)
 	}
 }
 
@@ -67,7 +131,7 @@ func TestSetPromptLayers_PreservedByOtherEdits(t *testing.T) {
 	s := svc(t, false)
 	if _, err := s.SetPromptLayers(ctx, prototypes.AgentConfigSetPromptLayersRequest{
 		Identity: scope(), AgentID: testAgentID,
-		PromptLayers: prototypes.AgentConfigPromptLayers{Base: strPtr("the base")},
+		PromptLayers: prototypes.AgentConfigPromptLayers{Base: strPtr("the base"), Guidance: strPtr("the guidance")},
 	}); err != nil {
 		t.Fatalf("set prompt layers: %v", err)
 	}
@@ -80,7 +144,8 @@ func TestSetPromptLayers_PreservedByOtherEdits(t *testing.T) {
 		t.Fatalf("set tool exposure: %v", err)
 	}
 	if teResp.Revision.Payload.PromptLayers == nil || teResp.Revision.Payload.PromptLayers.Base == nil ||
-		*teResp.Revision.Payload.PromptLayers.Base != "the base" {
+		*teResp.Revision.Payload.PromptLayers.Base != "the base" || teResp.Revision.Payload.PromptLayers.Guidance == nil ||
+		*teResp.Revision.Payload.PromptLayers.Guidance != "the guidance" {
 		t.Fatalf("prompt layers cleared by tool-exposure edit: %+v", teResp.Revision.Payload.PromptLayers)
 	}
 	// A skills edit must keep the prompt layers too.

@@ -219,9 +219,10 @@ func (b defaultBuilder) buildRequestWithProjectedTools(rc planner.RunContext, sy
 //  3. A session one-shot [planner.LLMOverrides.SystemPromptOverride] REPLACES
 //     the whole base+user spine for that single message (a per-message escape
 //     hatch; the durable user layer is suppressed when it fires).
-//  4. Tenant [planner.LLMOverrides.ExtraInstructions] remains trusted
-//     `<additional_guidance>`. One-run UserPersonalization renders in its own
-//     escaped lower-authority section. Both survive a spine replacement.
+//  4. [planner.LLMOverrides.GuidanceOverride] replaces the configured
+//     operator guidance in `<additional_guidance>`. The effective operator
+//     guidance and the other contributors to that section survive a spine
+//     replacement, as does the separately framed one-run personalization.
 func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
 	snapshot := newDiscoverySnapshot(rc.Catalog)
 	projected, _, _ := projectModelToolsListedFrom(rc, rc.DiscoveredTools, snapshot)
@@ -713,31 +714,18 @@ func renderProjectedToolsSection(catalog []tools.Tool, maxToolExamples int) stri
 // provider already sends, so repeating them here only doubled their tokens.
 const availableToolsLead = "Callable catalog tools (each tool's description and argument schema are in its native tool declaration):\n"
 
-// buildAdditionalGuidance composes the `<additional_guidance>` section
-// body: operator-supplied guidance first, then the
-// per-turn repair guidance below it when a `RunContext.RepairCounters`
-// field has tripped. A blank line separates the two when both are
-// present. Returns the empty string when neither contributes — the
-// caller then omits the section entirely.
-//
-// The durable, operator-authored NAMED blocks
-// (`RunContext.LLMOverrides.ExtraSystemBlocks`) render here too, in their
-// DECLARED order, between the operator's baked guidance and the additive
-// extra-instructions. Their fixed slot in this sequence is what gives them
-// their two structural properties for free: they compose rather than
-// replace, and they survive a session `SystemPromptOverride` (this function
-// is reached on BOTH branches of the base request).
-//
-// The run-start-resolved additive extra-instructions
-// (`RunContext.LLMOverrides.ExtraInstructions` — an admin-set tenant
-// default today) render here too, BELOW the operator's baked guidance and
-// ABOVE the per-turn repair guidance. The field is additive by design: it
-// extends the system prompt, it never replaces it (the full-replace knob is
-// the session layer's `SystemPromptOverride`, applied elsewhere).
-//
-// Pure read of `extraGuidance` + `rc`: it never mutates the counters.
+// buildAdditionalGuidance composes operator guidance, named blocks in
+// declared order, tenant extra instructions, and per-turn repair guidance.
+// Each contribution survives a session SystemPromptOverride. A nonblank
+// durable override replaces configured operator guidance verbatim. The
+// caller omits the section when every contribution is empty.
 func buildAdditionalGuidance(extraGuidance string, rc planner.RunContext) string {
 	op := strings.TrimSpace(extraGuidance)
+	if rc.LLMOverrides != nil && rc.LLMOverrides.GuidanceOverride != nil {
+		if guidance := *rc.LLMOverrides.GuidanceOverride; strings.TrimSpace(guidance) != "" {
+			op = guidance
+		}
+	}
 	blocks := renderExtraSystemBlocks(rc)
 	extra := overrideExtraInstructions(rc)
 	repair := renderRepairGuidance(rc.RepairCounters)

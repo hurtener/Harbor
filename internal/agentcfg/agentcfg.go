@@ -132,11 +132,14 @@ var (
 // 64-hex token still behaves exactly as it did.
 const ExpectNoActiveRevision = "-"
 
-// SetOptions carries the optional preconditions a durable spine write
-// (SetRevision / Rollback) may declare. The ZERO value is the
-// unconditional write — byte-for-byte the behaviour that shipped before
-// this option existed, on every door.
+// SetOptions carries options for durable revision writes. The zero value
+// leaves the write unconditional.
 type SetOptions struct {
+	// MergePromptLayers applies the admin prompt-edit semantics when the
+	// payload supplies a prompt-layer section. A guidance-only edit preserves
+	// the base/user pair. Other edits replace that pair, and omitted guidance
+	// carries forward. Exact-payload writers leave this false.
+	MergePromptLayers bool
 	// PublicationFence adds an exact durable receipt generation to the
 	// publication predicate for a resumable mutation.
 	PublicationFence *PublicationFence
@@ -263,13 +266,8 @@ type SkillsSelection struct {
 	Names []string `json:"names"`
 }
 
-// PromptLayers is the prompt-layer section of the config envelope: an
-// operator-owned, versioned base prompt layer plus an optional user layer
-// that composes ABOVE the base without mutating it. The composition order
-// is the structural security boundary — because Base and User are distinct
-// fields and the user layer is always appended below the base, a writer of
-// only User can extend the operator's guidance but can never precede,
-// replace, or weaken the operator base.
+// PromptLayers is the prompt-layer section of the config envelope. Base and
+// Guidance are operator-owned. User composes in the lower-trust user layer.
 type PromptLayers struct {
 	// Base is the admin-owned, versioned base prompt layer. When set it is
 	// the run's base system prompt (overriding the agent's configured
@@ -279,6 +277,10 @@ type PromptLayers struct {
 	// ABOVE the base without mutating it (the composition order is the
 	// security boundary — the agent-config authorization model).
 	User *string `json:"user,omitempty"`
+	// Guidance replaces the configured planner.extra_guidance for this agent's
+	// runs. Unset inherits the configured guidance. The base spine is resolved
+	// independently.
+	Guidance *string `json:"guidance,omitempty"`
 }
 
 // NamedBlock is one named, operator-authored unit of additive prompt text
@@ -969,7 +971,7 @@ type Diff struct {
 	// ToolExposure is the structured set-diff of the MCP-exposure /
 	// per-tool policy.
 	ToolExposure ToolExposureDiff
-	// PromptLayers is the text delta of the base + user prompt layers.
+	// PromptLayers is the text delta of the prompt layers.
 	PromptLayers PromptLayersDiff
 	// Connections is the structured set-diff of the runtime-added MCP
 	// connection descriptors (by name).
@@ -1012,6 +1014,7 @@ type Registry interface {
 	// For an agent-scoped write, a nil Approval section carries forward
 	// the approval rules from the active revision used at publication.
 	// A non-nil Approval section with no rules clears them.
+	// User-scope writes cannot supply an operator guidance override.
 	//
 	// opts carries the optional precondition. Its zero value is the
 	// unconditional write. When opts.ExpectedContentHash is set, the
@@ -1068,9 +1071,13 @@ func NormalizePayload(p ConfigPayload) ConfigPayload {
 		// "inherit the default" state (whether the client sent `nil` or `""`)
 		// produces one canonical form — equal states hash equal, no spurious
 		// revision on a re-set, no phantom diff. A section that normalises to
-		// both-nil drops out entirely.
-		pl := &PromptLayers{Base: emptyToNil(p.PromptLayers.Base), User: emptyToNil(p.PromptLayers.User)}
-		if pl.Base != nil || pl.User != nil {
+		// all-nil drops out entirely.
+		pl := &PromptLayers{
+			Base:     emptyToNil(p.PromptLayers.Base),
+			User:     emptyToNil(p.PromptLayers.User),
+			Guidance: emptyToNil(p.PromptLayers.Guidance),
+		}
+		if pl.Base != nil || pl.User != nil || pl.Guidance != nil {
 			out.PromptLayers = pl
 		}
 	}
@@ -1591,6 +1598,15 @@ func (p ConfigPayload) UserPrompt() (string, bool) {
 	return *p.PromptLayers.User, true
 }
 
+// GuidancePrompt returns the nonblank override, or nil to inherit the
+// configured planner guidance. The returned pointer is read-only.
+func (p ConfigPayload) GuidancePrompt() *string {
+	if p.PromptLayers == nil {
+		return nil
+	}
+	return emptyToNil(p.PromptLayers.Guidance)
+}
+
 // LLMParamsView returns the agent's per-agent LLM-parameter section from a
 // payload and whether it is set. A nil section returns (nil, false). The
 // returned pointer is the payload's own (read-only) section — callers that
@@ -1797,7 +1813,7 @@ func DiffVirtualAgents(from, to ConfigPayload) VirtualAgentsDiff {
 	return d
 }
 
-// PromptLayersDiff is the text delta of the base + user prompt layers
+// PromptLayersDiff is the text delta of the prompt layers
 // across two revisions. An unset layer compares as the empty string, so a
 // set→unset change registers as a change to "".
 type PromptLayersDiff struct {
@@ -1811,11 +1827,15 @@ type PromptLayersDiff struct {
 	// UserFrom / UserTo are the user layer text in the from / to revision.
 	UserFrom string
 	UserTo   string
+	// GuidanceChanged reports whether the guidance override text differs.
+	GuidanceChanged bool
+	// GuidanceFrom / GuidanceTo are the override text in each revision.
+	GuidanceFrom string
+	GuidanceTo   string
 }
 
-// Changed reports whether either prompt layer differs between the two
-// revisions.
-func (d PromptLayersDiff) Changed() bool { return d.BaseChanged || d.UserChanged }
+// Changed reports whether any prompt layer differs between the revisions.
+func (d PromptLayersDiff) Changed() bool { return d.BaseChanged || d.UserChanged || d.GuidanceChanged }
 
 // DiffPromptLayers computes the text delta of two prompt-layer states.
 // Exported so the diff is one canonical implementation shared by the driver
@@ -1825,13 +1845,23 @@ func DiffPromptLayers(from, to ConfigPayload) PromptLayersDiff {
 	tb, _ := to.BasePrompt()
 	fu, _ := from.UserPrompt()
 	tu, _ := to.UserPrompt()
+	var fg, tg string
+	if guidance := from.GuidancePrompt(); guidance != nil {
+		fg = *guidance
+	}
+	if guidance := to.GuidancePrompt(); guidance != nil {
+		tg = *guidance
+	}
 	return PromptLayersDiff{
-		BaseChanged: fb != tb,
-		BaseFrom:    fb,
-		BaseTo:      tb,
-		UserChanged: fu != tu,
-		UserFrom:    fu,
-		UserTo:      tu,
+		BaseChanged:     fb != tb,
+		BaseFrom:        fb,
+		BaseTo:          tb,
+		UserChanged:     fu != tu,
+		UserFrom:        fu,
+		UserTo:          tu,
+		GuidanceChanged: fg != tg,
+		GuidanceFrom:    fg,
+		GuidanceTo:      tg,
 	}
 }
 

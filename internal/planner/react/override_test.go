@@ -3,7 +3,10 @@ package react_test
 import (
 	"context"
 	"encoding/json"
+	"regexp"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -222,5 +225,102 @@ func TestApplyLLMOverrides_SystemPromptOverride_EmptyClears(t *testing.T) {
 	// The default base sections must be GONE (cleared, not the default).
 	if messageBodyContains(req.Messages, "<tool_usage>") {
 		t.Errorf("empty SystemPromptOverride did not clear the base prompt (default sections present)")
+	}
+}
+
+func TestApplyLLMOverrides_GuidanceReplacesConfiguredOperatorText(t *testing.T) {
+	const configured = "CONFIGURED_GUIDANCE"
+	const durable = "  <operator>\n\tDurable & verbatim.\n "
+	dateSuffix := regexp.MustCompile(`<current_date>(\d{4}-\d{2}-\d{2})</current_date>$`)
+	for _, tc := range []struct {
+		name       string
+		guidance   *string
+		base       *string
+		session    *string
+		want       string
+		wantPrefix string
+	}{
+		{name: "unset", want: configured},
+		{name: "empty", guidance: strPtr(""), want: configured},
+		{name: "whitespace", guidance: strPtr(" \n\t "), want: configured},
+		{name: "default spine", guidance: strPtr(durable), want: durable},
+		{name: "custom base", guidance: strPtr(durable), base: strPtr("CUSTOM_BASE"), want: durable, wantPrefix: "CUSTOM_BASE"},
+		{name: "one-shot spine", guidance: strPtr(durable), base: strPtr("CUSTOM_BASE"), session: strPtr("SESSION_BASE"), want: durable, wantPrefix: "SESSION_BASE"},
+		{name: "one-shot empty spine", guidance: strPtr(durable), base: strPtr("CUSTOM_BASE"), session: strPtr(""), want: durable, wantPrefix: "\n\n<available_tools>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cap := finishClient()
+			p := react.New(cap, react.WithSystemPromptExtra(" "+configured+" "))
+			rc := overrideRC(&planner.LLMOverrides{
+				BasePromptLayer:      tc.base,
+				UserPromptLayer:      strPtr("DURABLE_USER"),
+				SystemPromptOverride: tc.session,
+				GuidanceOverride:     tc.guidance,
+				ExtraSystemBlocks: []planner.NamedBlock{
+					{Name: "second", Body: "SECOND_BLOCK"},
+					{Name: "first", Body: "FIRST_BLOCK"},
+				},
+				ExtraInstructions:   strPtr("TENANT_GUIDANCE"),
+				UserPersonalization: strPtr("SESSION_PERSONALIZATION"),
+			})
+			rc.RepairCounters = &planner.RepairCounters{ArgsRepair: 1}
+			dayBefore := time.Now().UTC().Format(time.DateOnly)
+			if _, err := p.Next(t.Context(), rc); err != nil {
+				t.Fatalf("Next: %v", err)
+			}
+			dayAfter := time.Now().UTC().Format(time.DateOnly)
+			messages := cap.lastRequest().Messages
+			if len(messages) == 0 {
+				t.Fatal("expected the planner to send a system prompt")
+			}
+			msg := messages[0]
+			if msg.Role != llm.RoleSystem || msg.Content.Text == nil {
+				t.Fatalf("expected a system prompt, got %+v", msg)
+			}
+			body := *msg.Content.Text
+			const start = "<additional_guidance>\n"
+			const end = "\n</additional_guidance>"
+			_, tail, ok := strings.Cut(body, start)
+			if !ok {
+				t.Fatalf("missing additional guidance: %q", body)
+			}
+			guidance, _, ok := strings.Cut(tail, end)
+			want := strings.Join([]string{tc.want, "[second]\nSECOND_BLOCK", "[first]\nFIRST_BLOCK", "TENANT_GUIDANCE", react.ReminderArgsGuidance}, "\n\n")
+			if !ok || guidance != want {
+				t.Errorf("guidance = %q, want %q", guidance, want)
+			}
+			if tc.want == durable && strings.Contains(body, configured) {
+				t.Error("configured guidance also rendered with durable override")
+			}
+			if !strings.Contains(body, "SESSION_PERSONALIZATION") || strings.Contains(guidance, "SESSION_PERSONALIZATION") {
+				t.Error("session personalization left its separate prompt slot")
+			}
+			if got, want := strings.Contains(body, "<user_instructions>"), tc.session == nil; got != want {
+				t.Errorf("user instructions present = %t, want %t", got, want)
+			}
+			spineTags := []string{"<identity>", "<tool_discovery>", "<heavy_results>", "<tool_usage>", "<reasoning>", "<tone>", "<error_handling>"}
+			if tc.wantPrefix != "" {
+				if !strings.HasPrefix(body, tc.wantPrefix) {
+					t.Errorf("system prompt should start with %q", tc.wantPrefix)
+				}
+				for _, tag := range append(spineTags, "<current_date>") {
+					if strings.Contains(body, tag) {
+						t.Errorf("custom spine rendered structured section %s", tag)
+					}
+				}
+				return
+			}
+			last := -1
+			for _, tag := range spineTags {
+				if index := strings.Index(body, tag); index <= last || strings.Count(body, tag) != 1 {
+					t.Errorf("structured section %s missing, duplicated, or out of order", tag)
+				} else {
+					last = index
+				}
+			}
+			if date := dateSuffix.FindStringSubmatch(body); date == nil || (date[1] != dayBefore && date[1] != dayAfter) {
+				t.Errorf("structured spine should end with today's UTC date: %s", body)
+			}
+		})
 	}
 }
