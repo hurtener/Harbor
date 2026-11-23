@@ -17,6 +17,8 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+## [1.61.0] - 2026-11-23
+
 ### Added
 
 - **Per-agent operator guidance (D-521).** Set `prompt_layers.guidance` in an
