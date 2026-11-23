@@ -17,7 +17,7 @@ export const PROTOCOL_VERSION = "0.1.0";
  * Compare it against the live runtime's digest to detect a wire skew
  * between what you vendored and what the runtime speaks.
  */
-export const WIRE_SURFACE_DIGEST = "sha256:2e529095832a4f74f1c8c92be95021cd5823fbb38f0f23111155c648cf72486c";
+export const WIRE_SURFACE_DIGEST = "sha256:0ea0c4521a17e49a80c0a1b3bc8c24165e35124be39afec8e2492d2f94913d04";
 
 /** Every canonical Harbor Protocol method name. */
 export type HarborMethod =
@@ -898,6 +898,7 @@ export interface AgentConfigPayload {
 export interface AgentConfigPromptLayers {
   base?: string;
   user?: string;
+  guidance?: string;
 }
 
 export interface AgentConfigPromptLayersDiff {
@@ -907,6 +908,9 @@ export interface AgentConfigPromptLayersDiff {
   user_changed: boolean;
   user_from?: string;
   user_to?: string;
+  guidance_changed: boolean;
+  guidance_from?: string;
+  guidance_to?: string;
 }
 
 export interface AgentConfigRegisterOAuthMCPCapabilityRequest {

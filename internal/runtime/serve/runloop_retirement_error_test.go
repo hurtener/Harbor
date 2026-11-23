@@ -41,8 +41,7 @@ func TestRunOne_RetirementDuringConfigProjectionKeepsTypedRefusal(t *testing.T) 
 		{"llm overrides", 3, "tenant-override resolution failed"},
 		{"agent prompt", 4, "prompt-layer projection failed"},
 		{"user prompt", 5, "prompt-layer projection failed"},
-		{"prompt blocks", 6, "prompt-layer projection failed"},
-		{"memory budget", 7, "memory-budget projection failed"},
+		{"memory budget", 6, "memory-budget projection failed"},
 	} {
 		for _, retired := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/retired=%t", stage.name, retired), func(t *testing.T) {

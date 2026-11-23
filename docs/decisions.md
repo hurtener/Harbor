@@ -17848,3 +17848,31 @@ agent's configuration and applies it from the next run without a
 process restart.
 
 **Cross-references:** D-094, D-234, D-519.
+
+## D-521 — Agent-config revisions can override operator guidance
+
+**Decision.** An admin can set `prompt_layers.guidance` on an agent-config
+revision. From the next run, the built-in ReAct prompt uses the override
+in place of `planner.extra_guidance` in `<additional_guidance>`. The base
+prompt, named operator blocks, tenant instructions, and runtime repair
+guidance keep their existing roles and order. Session and user prompt
+methods accept only the lower-trust user prompt.
+
+An explicit `prompt_layers` object on either admin write method preserves
+active guidance when the field is omitted or null. An empty or
+whitespace-only guidance string restores the configured value. Nonblank
+guidance keeps its original whitespace. Supplying a guidance string
+alone preserves the base and user layers. Null is equivalent to omission
+for all three fields. Other edits replace the base/user pair. Include an
+explicit blank base or user string to clear both layers alongside a
+guidance string. A whole-revision write with an omitted or null
+`prompt_layers` clears the section.
+
+Guidance takes part in revision hashing, diff, and rollback through the
+existing agent-config contract. `runtime.info` advertises
+`prompt_guidance_override` for field negotiation.
+
+**Why.** Operators can edit and roll back one agent's trusted instructions
+without rebuilding its system prompt or restarting the Runtime.
+
+**Cross-references:** D-367, D-387.

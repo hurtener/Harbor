@@ -159,6 +159,17 @@ describe('AgentConfig layered prompt (92e)', () => {
 		expect(url).toBe('http://127.0.0.1:18080/v1/agent_config/set_prompt_layers');
 		expect(JSON.parse(init.body as string).prompt_layers.base).toBe('You are…');
 	});
+
+	it('routes a guidance-only write', async () => {
+		const fetchImpl = vi.fn(async () =>
+			okResponse({ revision: { revision_id: 'r' }, protocol_version: '0.1.0' })
+		);
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		await client.agentConfig.setPromptLayers('a1', { guidance: 'Use the runbook.' });
+		const [url, init] = call(fetchImpl);
+		expect(url).toBe('http://127.0.0.1:18080/v1/agent_config/set_prompt_layers');
+		expect(JSON.parse(init.body as string).prompt_layers).toEqual({ guidance: 'Use the runbook.' });
+	});
 });
 
 describe('AgentConfig add MCP connection (92f)', () => {

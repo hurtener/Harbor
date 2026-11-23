@@ -937,18 +937,18 @@ export class AgentConfigPanelState {
 		const active = this.activeRevision();
 		const base = active?.payload ?? {};
 		const payload: AgentConfigPayload = {
+			// Supply the base/user pair even if both are empty. An omitted
+			// section would clear operator guidance added since the form loaded.
+			prompt_layers: {
+				base: this.promptBase || undefined,
+				user: this.promptUser || undefined
+			},
 			skills: base.skills,
 			connections: base.connections,
 			memory: base.memory
 		};
 		if (base.approval !== undefined) {
 			payload.approval = base.approval;
-		}
-		if (this.promptBase !== '' || this.promptUser !== '') {
-			payload.prompt_layers = {
-				base: this.promptBase || undefined,
-				user: this.promptUser || undefined
-			};
 		}
 		if (this.pausedServers.length > 0 || this.disabledTools.length > 0) {
 			payload.tool_exposure = {

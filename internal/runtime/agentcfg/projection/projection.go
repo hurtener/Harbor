@@ -1606,37 +1606,28 @@ func (a LoadingResolverAdapter) EffectiveLoading(ctx context.Context, id identit
 	return EffectiveLoadingMode(ctx, a.Registry, agentID, identity.Quadruple{Identity: id}, t, boot, a.OwnerResolver)
 }
 
-// ActivePromptLayers resolves the agent's active-config layered system
-// prompt at run start. It returns the base + user layer text and whether the
-// active revision carries a prompt-layer section (ok). A nil registry, an
-// empty agentID, an agent with no active revision, or an active revision with
-// no prompt-layer section returns ("", "", false, nil) — the
-// backward-compatible "no durable prompt layers" path (the run keeps its
-// configured base). A registry read error is returned so the caller fails the
-// run loudly (CLAUDE.md §13): no silent fall-through on a read failure.
-//
-// An unset layer within a present section returns the empty string for that
-// layer (the caller treats empty as "inherit the configured default" for the
-// base, and "no user layer" for the user layer).
-//
-// The active revision is read ONCE per run; the returned values are plain
-// strings, so concurrent / in-flight runs keep their own snapshot (the
-// concurrent-reuse contract). Only the identity triple is used (the registry
-// is identity-scoped, never keyed by run).
-func ActivePromptLayers(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) (base string, user string, ok bool, err error) {
-	if reg == nil || agentID == "" {
-		return "", "", false, nil
+// ActivePromptLayers reads the active agent revision's base, user, and
+// operator guidance layers. An unset base inherits the configured spine, an
+// unset user layer contributes nothing, and nil guidance inherits configured
+// operator guidance. The guidance pointer belongs to the caller. The ok
+// result reports whether the revision has a prompt-layer section.
+func ActivePromptLayers(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) (base, user string, guidance *string, ok bool, err error) {
+	payload, err := activeAgentPromptPayload(ctx, reg, agentID, id)
+	if err != nil || payload.PromptLayers == nil {
+		return "", "", nil, false, err
 	}
-	rev, found, rerr := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
-	if rerr != nil {
-		return "", "", false, rerr
+	base, user, guidance = promptLayerValues(payload)
+	return base, user, guidance, true, nil
+}
+
+func promptLayerValues(payload agentcfg.ConfigPayload) (base, user string, guidance *string) {
+	base, _ = payload.BasePrompt()
+	user, _ = payload.UserPrompt()
+	if configured := payload.GuidancePrompt(); configured != nil {
+		value := *configured
+		guidance = &value
 	}
-	if !found || rev.Payload.PromptLayers == nil {
-		return "", "", false, nil
-	}
-	base, _ = rev.Payload.BasePrompt()
-	user, _ = rev.Payload.UserPrompt()
-	return base, user, true, nil
+	return base, user, guidance
 }
 
 // ActiveExtraSystemBlocks resolves the agent's active-config ORDERED
@@ -1655,17 +1646,11 @@ func ActivePromptLayers(ctx context.Context, reg agentcfg.Registry, agentID stri
 // triple is used (the registry is identity-scoped, never keyed by run) —
 // agent_id is a KEY, never an isolation filter (CLAUDE.md §6).
 func ActiveExtraSystemBlocks(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) ([]agentcfg.NamedBlock, bool, error) {
-	if reg == nil || agentID == "" {
-		return nil, false, nil
+	payload, err := activeAgentPromptPayload(ctx, reg, agentID, id)
+	if err != nil {
+		return nil, false, err
 	}
-	rev, found, rerr := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
-	if rerr != nil {
-		return nil, false, rerr
-	}
-	if !found || rev.Payload.ExtraSystemBlocks == nil {
-		return nil, false, nil
-	}
-	blocks := rev.Payload.ExtraSystemBlockList()
+	blocks := payload.ExtraSystemBlockList()
 	if len(blocks) == 0 {
 		return nil, false, nil
 	}
@@ -1673,6 +1658,22 @@ func ActiveExtraSystemBlocks(ctx context.Context, reg agentcfg.Registry, agentID
 	out := make([]agentcfg.NamedBlock, len(blocks))
 	copy(out, blocks)
 	return out, true, nil
+}
+
+// activeAgentPromptPayload lets a run pin every operator-owned prompt
+// contribution from the same active revision.
+func activeAgentPromptPayload(ctx context.Context, reg agentcfg.Registry, agentID string, id identity.Quadruple) (agentcfg.ConfigPayload, error) {
+	if reg == nil || agentID == "" {
+		return agentcfg.ConfigPayload{}, nil
+	}
+	rev, found, err := reg.Active(ctx, identity.Quadruple{Identity: id.Identity}, agentID, agentcfg.ConfigScopeAgent)
+	if err != nil {
+		return agentcfg.ConfigPayload{}, fmt.Errorf("read active agent prompt configuration: %w", err)
+	}
+	if !found {
+		return agentcfg.ConfigPayload{}, nil
+	}
+	return rev.Payload, nil
 }
 
 // ApplyPromptLayers overlays the agent's active-config durable prompt layers
@@ -1684,22 +1685,23 @@ func ActiveExtraSystemBlocks(ctx context.Context, reg agentcfg.Registry, agentID
 // A non-empty base layer is set as ov.BasePromptLayer (overriding the run's
 // configured base at the prompt builder); a non-empty user layer is set as
 // ov.UserPromptLayer (composed below the base in the lower-trust position).
-// An empty layer is treated as unset (the base inherits the configured
-// default; no user layer is added) — so a run with no durable prompt layers
-// is unchanged. When ov is nil but a layer is present, a fresh bundle is
-// allocated. A registry read error is returned so the caller fails the run
-// loudly. The returned bundle is fresh-per-run (no shared mutable state).
+// A nonblank guidance layer is copied to ov.GuidanceOverride, replacing the
+// configured operator guidance at render time. Empty layers contribute
+// nothing. When ov is nil but a layer is present, a fresh bundle is allocated.
+// A registry read error is returned so the caller fails the run loudly.
 func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore sessionoverlay.Store, agentID string, id identity.Quadruple, ov *planner.LLMOverrides) (*planner.LLMOverrides, error) {
-	base, adminUser, _, err := ActivePromptLayers(ctx, reg, agentID, id)
+	payload, err := activeAgentPromptPayload(ctx, reg, agentID, id)
 	if err != nil {
 		return nil, err
 	}
+	base, adminUser, guidance := promptLayerValues(payload)
+	blocks := payload.ExtraSystemBlockList()
 
 	// Session user layer (the safe subset): the session writes ONLY the user
-	// layer — the overlay shape carries no base field, so a session caller
-	// physically cannot edit the operator base. The session layer composes
-	// ABOVE the admin base in the lower-trust `<user_instructions>` position
-	// (escaped by the prompt builder), appended below any admin user layer.
+	// layer. The operator base and guidance are resolved from the agent
+	// revision. The session layer composes in the lower-trust
+	// `<user_instructions>` position (escaped by the prompt builder), appended
+	// below any admin user layer.
 	overlay, oerr := loadOverlay(ctx, overlayStore, agentID, id)
 	if oerr != nil {
 		return nil, oerr
@@ -1717,20 +1719,7 @@ func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore 
 	}
 	user := composeUserLayer(adminUser, durableUser, overlay.UserPrompt)
 
-	// The durable ORDERED additive prompt blocks. They ride the same
-	// run-start seam as the prompt layers so both binaries reach them
-	// through ONE function and cannot drift, but they are a DIFFERENT
-	// position: they compose into the operator-trusted additive guidance
-	// and are NOT suppressed by a session SystemPromptOverride, which
-	// replaces only the base+user spine.
-	blocks, _, berr := ActiveExtraSystemBlocks(ctx, reg, agentID, id)
-	if berr != nil {
-		return nil, berr
-	}
-
-	// The admin base is ALWAYS the spine — it is never sourced from the
-	// session overlay (base-unwritable-by-session is structural).
-	if base == "" && user == "" && len(blocks) == 0 {
+	if base == "" && user == "" && guidance == nil && len(blocks) == 0 {
 		return ov, nil
 	}
 	if ov == nil {
@@ -1743,6 +1732,9 @@ func ApplyPromptLayers(ctx context.Context, reg agentcfg.Registry, overlayStore 
 	if user != "" {
 		u := user
 		ov.UserPromptLayer = &u
+	}
+	if guidance != nil {
+		ov.GuidanceOverride = guidance
 	}
 	if len(blocks) > 0 {
 		// Positional projection onto the planner shape — no sort, no map:

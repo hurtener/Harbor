@@ -12,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/agentcfg/projection"
 )
@@ -22,10 +23,10 @@ func plStrPtr(s string) *string { return &s }
 // carrying the supplied per-run overrides and returns the system message body
 // the planner sent to the LLM. It reuses the shared capturingLLM
 // (tenant_overrides_test.go).
-func systemMessageBody(t *testing.T, ov *planner.LLMOverrides) string {
+func systemMessageBody(t *testing.T, ov *planner.LLMOverrides, opts ...react.Option) string {
 	t.Helper()
 	cap := &capturingLLM{}
-	p := react.New(cap)
+	p := react.New(cap, opts...)
 	id := identity.Identity{TenantID: acTenant, UserID: acUser, SessionID: acSession}
 	rc := planner.RunContext{
 		Quadruple:    identity.Quadruple{Identity: id, RunID: "run-pl"},
@@ -44,6 +45,78 @@ func systemMessageBody(t *testing.T, ov *planner.LLMOverrides) string {
 		t.Fatal("no system message captured")
 	}
 	return *req.Messages[0].Content.Text
+}
+
+func TestE2E_AgentConfig_GuidanceOverride(t *testing.T) {
+	h := newACHarness(t)
+	id := identity.Quadruple{Identity: identity.Identity{TenantID: acTenant, UserID: acUser, SessionID: acSession}}
+	const configured = "configured operator guidance"
+	const override = "  <operator>revision guidance</operator>\n"
+	setGuidance := func(guidance string) prototypes.AgentConfigRevisionView {
+		t.Helper()
+		return decode[prototypes.AgentConfigSetPromptLayersResponse](t, h.call(t, "/v1/agent_config/set_prompt_layers", prototypes.AgentConfigSetPromptLayersRequest{
+			AgentID: acAgent, PromptLayers: prototypes.AgentConfigPromptLayers{Guidance: plStrPtr(guidance)},
+		}, adminScopes())).Revision
+	}
+	render := func() string {
+		t.Helper()
+		ov, err := projection.ApplyPromptLayers(context.Background(), h.registry, nil, acAgent, id, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _, hasDate := strings.Cut(systemMessageBody(t, ov, react.WithSystemPromptExtra(configured)), "<current_date>")
+		if !hasDate {
+			t.Fatal("the default prompt must retain the current date section")
+		}
+		return body
+	}
+	before := render()
+	if !strings.Contains(before, configured) {
+		t.Fatal("a run without an override must render configured guidance")
+	}
+	set := setGuidance(override)
+	if after, want := render(), strings.Replace(before, configured, override, 1); after != want {
+		t.Fatal("guidance override must change only the configured guidance in the system message")
+	}
+	cleared := setGuidance(" \n")
+	if after := render(); after != before {
+		t.Fatal("clearing the override must restore the configured guidance")
+	}
+	diff := decode[prototypes.AgentConfigDiffResponse](t, h.call(t, "/v1/agent_config/diff", prototypes.AgentConfigDiffRequest{
+		AgentID: acAgent, FromRevision: set.RevisionID, ToRevision: cleared.RevisionID,
+	}, adminScopes())).Diff.PromptLayers
+	if !diff.GuidanceChanged || diff.GuidanceFrom != override || diff.GuidanceTo != "" || diff.BaseChanged || diff.UserChanged {
+		t.Fatalf("unexpected guidance diff: %+v", diff)
+	}
+	_ = decode[prototypes.AgentConfigRollbackResponse](t, h.call(t, "/v1/agent_config/rollback", prototypes.AgentConfigRollbackRequest{
+		AgentID: acAgent, RevisionID: set.RevisionID,
+	}, adminScopes()))
+	if after := render(); !strings.Contains(after, override) || strings.Contains(after, configured) {
+		t.Fatal("rollback must reactivate the guidance override")
+	}
+}
+
+func TestE2E_AgentConfig_GuidanceOverride_SharesBaseSizeLimit(t *testing.T) {
+	h := newACHarness(t)
+	// The agent-config envelope has a 1 MiB body cap shared by both fields.
+	for _, size := range []int{(1 << 20) - 512, 1 << 20} {
+		content := strings.Repeat("x", size)
+		want := http.StatusOK
+		if size == 1<<20 {
+			want = http.StatusBadRequest
+		}
+		for _, field := range []string{"base", "guidance"} {
+			rec := h.call(t, "/v1/agent_config/set_prompt_layers", map[string]any{
+				"agent_id": acAgent, "prompt_layers": map[string]string{field: content},
+			}, adminScopes())
+			if rec.Code != want {
+				t.Fatalf("%s size %d: status=%d, want %d", field, size, rec.Code, want)
+			}
+			if want == http.StatusBadRequest && errCode(t, rec) != protoerrors.CodeInvalidRequest {
+				t.Fatalf("%s: oversized request error = %s", field, rec.Body.String())
+			}
+		}
+	}
 }
 
 // TestE2E_AgentConfig_PromptLayers wires the layered-system-prompt control

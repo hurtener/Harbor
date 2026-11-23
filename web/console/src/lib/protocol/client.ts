@@ -1490,11 +1490,9 @@ export class AgentConfigNamespace {
 			},
 		);
 	}
-	/** `agent_config.set_prompt_layers` — set the layered system prompt
-	 * (operator base and/or user layer) as a desired-state replace of the
-	 * prompt-layer section; records a revision. The user layer composes above
-	 * the base in the lower-trust position; it can never replace or weaken the
-	 * operator base. The skills + tool-exposure sections are preserved. */
+	/** `agent_config.set_prompt_layers` — edits the prompt layers for the
+	 * agent's next run and preserves sibling sections. A guidance-only edit
+	 * preserves the base and user layers. */
 	setPromptLayers(
 		agentId: string,
 		promptLayers: AgentConfigPromptLayers,

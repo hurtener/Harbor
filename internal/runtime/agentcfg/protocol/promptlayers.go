@@ -14,26 +14,12 @@ import (
 // revision (so the layered prompt inherits the unified diff + rollback) and
 // the registry emits the generic `agent.config.revised` event.
 //
-// Desired-state replace semantics: a set REPLACES ONLY the prompt-layer
-// section of the envelope; the skills + tool-exposure + connections +
-// llm-params + hooks sections of the active revision are preserved (a
-// prompt edit never clears an agent's skills, MCP pause state, or a pinned
-// run-completion hook — the symmetric invariant the skills + tool-exposure
-// services honour for prompt layers). The edit applies NEXT-turn (the
-// run-start projection reads the active revision; the immutable per-run
-// snapshot is undisturbed for in-flight runs).
-//
-// The base / user composition order is the structural security boundary:
-// Base and User are distinct fields and the user layer is always composed
-// ABOVE the base at run start, so a writer of only User can extend the
-// operator's guidance but can never precede, replace, or weaken the
-// operator base.
+// The registry merges the supplied prompt layers with the active revision.
+// Other config sections carry forward. The edit applies on the next run.
 
-// SetPromptLayers records a new config revision pinning the supplied layered
-// system prompt (operator base and/or user layer) as a desired-state replace
-// of the prompt-layer section. The skills + tool-exposure + connections +
-// llm-params + hooks sections of the active revision are carried forward
-// unchanged.
+// SetPromptLayers records an admin prompt-layer edit. Guidance-only edits
+// preserve the base/user pair. Other edits replace that pair. Omitted
+// guidance carries forward and explicit blank guidance restores inheritance.
 func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfigSetPromptLayersRequest) (prototypes.AgentConfigSetPromptLayersResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSetPromptLayersResponse{}, err
@@ -45,40 +31,24 @@ func (s *Service) SetPromptLayers(ctx context.Context, req prototypes.AgentConfi
 	q := identity.Quadruple{Identity: id}
 	defer s.lockAgent(id.TenantID, req.AgentID)()
 
-	// Read the active revision so the new revision PRESERVES the skills +
-	// tool-exposure sections (a prompt edit replaces only its own section).
+	// Read the active revision to carry forward sibling sections.
 	active, hasActive, err := s.registry.Active(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent)
 	if err != nil {
 		return prototypes.AgentConfigSetPromptLayersResponse{}, err
 	}
-	payload := agentcfg.ConfigPayload{
-		PromptLayers: &agentcfg.PromptLayers{
-			Base: copyStringPtr(req.PromptLayers.Base),
-			User: copyStringPtr(req.PromptLayers.User),
-		},
-	}
+	payload := carrySiblingsForward(active, hasActive)
 	if hasActive {
-		payload.Skills = active.Payload.Skills
-		payload.ToolExposure = active.Payload.ToolExposure
-		payload.Connections = active.Payload.Connections
-		payload.LLMParams = active.Payload.LLMParams
-		payload.Hooks = active.Payload.Hooks
-		payload.Naming = active.Payload.Naming
-		payload.Memory = active.Payload.Memory
-		payload.RunLimits = active.Payload.RunLimits.Clone()
-		payload.Approval = active.Payload.Approval.Clone()
-		payload.AgentPacks = copyAgentPackItems(active.Payload.AgentPacks)
-		// The ordered additive prompt blocks are a sibling section like any
-		// other: this verb replaces only its own, so the blocks survive.
-		payload.ExtraSystemBlocks = active.Payload.ExtraSystemBlocks
+		// Provider-editing callers of carrySiblingsForward rebuild this section.
 		payload.OAuthProviders = active.Payload.OAuthProviders
-		payload.SignedOAuthMCPPair = active.Payload.SignedOAuthMCPPair
-		payload.SignedOAuthMCPPairs = active.Payload.SignedOAuthMCPPairs
-		payload.VirtualAgents = active.Payload.VirtualAgents
+	}
+	payload.PromptLayers = &agentcfg.PromptLayers{
+		Base:     copyStringPtr(req.PromptLayers.Base),
+		User:     copyStringPtr(req.PromptLayers.User),
+		Guidance: copyStringPtr(req.PromptLayers.Guidance),
 	}
 
 	rev, err := s.registry.SetRevision(ctx, q, req.AgentID, agentcfg.ConfigScopeAgent, payload,
-		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash})
+		agentcfg.SetOptions{ExpectedContentHash: req.ExpectedContentHash, MergePromptLayers: true})
 	if err != nil {
 		return prototypes.AgentConfigSetPromptLayersResponse{}, err
 	}

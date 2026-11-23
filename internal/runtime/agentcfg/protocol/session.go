@@ -20,8 +20,7 @@ import (
 //
 //   - set a USER prompt layer that composes ABOVE the operator base (it can
 //     extend the operator's guidance but never precede, replace, or weaken
-//     the base — the session-writable shape carries no Base field, so a
-//     session caller physically cannot edit the operator base);
+//     the base. The session-writable shape exposes only the User layer);
 //   - NARROW (never widen) source/tool enablement by naming servers/tools to
 //     DISABLE — at run start the disable set is UNIONED into the admin
 //     exclusion set, so a session edit can only narrow the admin-allowed
@@ -43,8 +42,7 @@ import (
 var ErrSessionOverlayUnavailable = errors.New("agentcfg/protocol: session safe-subset control not wired on this runtime")
 
 // SessionSetUserPrompt sets ONLY the session's user prompt layer. The
-// session-writable shape carries no base field, so this can never alter the
-// operator base — base-unwritable-by-session is structural.
+// session-writable shape exposes only lower-trust user instructions.
 func (s *Service) SessionSetUserPrompt(ctx context.Context, req prototypes.AgentConfigSessionSetUserPromptRequest) (prototypes.AgentConfigSessionSetUserPromptResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return prototypes.AgentConfigSessionSetUserPromptResponse{}, err
